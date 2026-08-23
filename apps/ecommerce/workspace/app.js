@@ -363,18 +363,19 @@ async function loadMemory() {
 //     collection / detail endpoints are strictly read-only.
 //   - No Event Bus / Wake / Scheduler.
 //   - Does NOT change Situation.lifecycle.
-const OUTPUT_COLLECTION_STATUS_LABEL = {
-  ready: '待交付',
-  delivered: '已交付',
-  acknowledged: '已确认',
-  closed: '已关闭',
-};
-const OUTPUT_COLLECTION_TYPE_LABEL = {
-  recommendation: '建议',
-  analysis: '分析',
-  work_item: '工作项',
-  report: '报告',
-};
+//
+// P0010.1 REPAIR-6: there is exactly ONE source of truth for these
+// labels — the schema in `shared/schemas/output.ts` — exposed to the
+// vanilla-JS Workspace by `apps/ecommerce/workspace/output-labels.js`
+// as `window.WORK_ITEM_STATUS_LABEL` / `window.WORK_ITEM_TYPE_LABEL`,
+// loaded by `index.html` BEFORE this `app.js`. The contract test
+// `tests/contract/output-labels-sync.test.ts` enforces the JS mirror
+// is in sync with the schema. There are no local copies in this file
+// any more.
+const getOutputStatusLabel = (status) =>
+  (window.WORK_ITEM_STATUS_LABEL || {})[status] || status;
+const getOutputTypeLabel = (type) =>
+  (window.WORK_ITEM_TYPE_LABEL || {})[type] || type || '交付物';
 let outputsActiveStatus = ''; // '' = 全部; otherwise WorkItemStatus
 
 async function loadOutputs() {
@@ -416,7 +417,7 @@ function renderOutputsCollection(items) {
   const ct = document.getElementById('outputsContent');
   if (!ct) return;
   if (!items.length) {
-    ct.innerHTML = '<p class="muted placeholder">当前没有' + escHtml(outputsActiveStatus ? OUTPUT_COLLECTION_STATUS_LABEL[outputsActiveStatus] || outputsActiveStatus : '') + '输出。<br/><small>提示：所有状态的 WorkItem 来自现有 Situation 的 outputs[]，未复制第二套 Store。</small></p>';
+    ct.innerHTML = '<p class="muted placeholder">当前没有' + escHtml(outputsActiveStatus ? getOutputStatusLabel(outputsActiveStatus) : '') + '输出。<br/><small>提示：所有状态的 WorkItem 来自现有 Situation 的 outputs[]，未复制第二套 Store。</small></p>';
     return;
   }
   var html = '<div class="outputs-collection">';
@@ -433,8 +434,8 @@ function renderCollectionOutputItem(o) {
   // resultRef: learning_context · ctx_xxx) in business mode. The
   // Output Detail view is where dev/diagnostic info lives, if ever.
   var status = o.status || 'ready';
-  var typeLabel = OUTPUT_COLLECTION_TYPE_LABEL[o.type] || o.type || '交付物';
-  var statusLabel = OUTPUT_COLLECTION_STATUS_LABEL[status] || status;
+  var typeLabel = getOutputTypeLabel(o.type);
+  var statusLabel = getOutputStatusLabel(status);
   var createdAt = (o.createdAt || '').slice(0, 16).replace('T', ' ');
   var content = o.content || '';
   var sit = o.situation || {};
@@ -573,8 +574,8 @@ function renderOutputDetail(out) {
   // the schema (exposed via window globals in index.html). No more
   // drift between schema and Workspace.
   const status = out.status || 'ready';
-  const statusLabel = (window.WORK_ITEM_STATUS_LABEL || OUTPUT_STATUS_LABEL)[status] || status;
-  const typeLabel = (window.WORK_ITEM_TYPE_LABEL || OUTPUT_TYPE_LABEL)[out.type] || out.type || '交付物';
+  const statusLabel = getOutputStatusLabel(status);
+  const typeLabel = getOutputTypeLabel(out.type);
   const createdAt = (out.createdAt || '').slice(0, 16).replace('T', ' ');
   const acknowledgedAt = (out.acknowledgedAt || '').slice(0, 16).replace('T', ' ');
   const closedAt = (out.closedAt || '').slice(0, 16).replace('T', ' ');
@@ -1773,19 +1774,14 @@ function renderCommitmentCard(inv) {
 // Situation's lifecycle is computed independently in
 // deriveSituationLifecycle. Closing a deliverable here is purely a
 // per-WorkItem status transition; the Situation keeps its own lifecycle.
-const OUTPUT_STATUS_LABEL = {
-  ready: '待交付',
-  delivered: '已交付',
-  acknowledged: '已确认',
-  closed: '已关闭',
-};
-
-const OUTPUT_TYPE_LABEL = {
-  recommendation: '建议',
-  analysis: '分析',
-  work_item: '工作项',
-  report: '报告',
-};
+//
+// P0010.1 REPAIR-6: status / type label constants have been REMOVED
+// from this file. The single source of truth is
+// `shared/schemas/output.ts` (exposed via `window.WORK_ITEM_*` by
+// `output-labels.js`, loaded before this file). All three surfaces
+// (Collection, Detail, Situation summary) call `getOutputStatusLabel`
+// / `getOutputTypeLabel`, which are defined near the top of the
+// Output Workspace section.
 
 function renderOutputsSection(outputs, situationId) {
   // P0010.1 Output Workspace v0: in the Situation Detail body, the Output
@@ -1816,8 +1812,8 @@ function renderOutputItem(o, situationId) {
   //   - the inline "已知悉" / "结束" buttons (those are in Output Detail)
   // to avoid duplicating the Output Detail surface.
   var status = o.status || 'ready';
-  var typeLabel = OUTPUT_TYPE_LABEL[o.type] || o.type || '交付物';
-  var statusLabel = OUTPUT_STATUS_LABEL[status] || status;
+  var typeLabel = getOutputTypeLabel(o.type);
+  var statusLabel = getOutputStatusLabel(status);
   var bodyText = o.content || '';
 
   return '<div class="output-item output-item-summary" data-output-id="' + escHtml(o.outputId) + '" data-output-status="' + escHtml(status) + '">' +

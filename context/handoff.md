@@ -1,5 +1,65 @@
 # 交接文档
 
+## 本次会话 (2026-08-23) - P0010.1 REPAIR-6（Output Workspace 三处语义收紧：knownEvidence 不再伪 Evidence、状态机 forward-only、label 唯一事实源落地）
+
+### 目标
+
+用户审 `e270c7e` 之后找到 3 个语义问题：①`knownEvidence` 被混进 `evidenceRefs` 假冒 Evidence；②PATCH 任何状态都能改任何状态，没有真正执行状态机；③`app.js` 还有两套本地 label 常量，"label 单一事实源" 只在 Detail 表面成立。**REPAIR-6 严格按用户边界**（不改 Trust schema / 不改 delivery 设计 / 不接 transport / 不改 UI 产品结构）做 3 处最小收紧。
+
+### 三处修复
+
+1. **P0 Trust: `knownEvidence` 不再是 Evidence** — 之前 `outputs.ts` 把 `findings[].evidenceRefs` 和整个 `investigation.knownEvidence[]` 合并进 `evidenceLabels`，只要任一存在就 `hasEvidence=true`。但 `knownEvidence` 是 free-text 调查笔记，可能含 "Prior human guidance…" / 知识规则 / 运营笔记，**和外部 Evidence 完全不是一类**。改成：
+   - `hasEvidence` 只由 `findings[].evidenceRefs.length > 0` 驱动
+   - `evidenceLabels` 只含 `findings[].evidenceRefs`（**不**含 `knownEvidence`）
+   - `knownEvidence` 保持原状仍在 canonical investigation 表面（`/api/situations/:id` response / Situation Detail Layer 2）— 但不进入 provenance
+   - 用户原话: "无法分类的保持普通文本，禁止猜 Knowledge/Human 类型"
+   - 新测试 `REPAIR-6: provenance is hasEvidence:false when ONLY knownEvidence is present` 专门覆盖该路径
+
+2. **PATCH 状态机 forward-only** — 之前 PATCH 只做 enum 校验，`closed → ready` / `acknowledged → delivered` 都能成功。改成显式 forward-only：
+   - `STATUS_ORDER = { ready: 0, delivered: 1, acknowledged: 2, closed: 3 }`
+   - `body.status === prev.status` → 400（防止 re-stamp `acknowledgedAt` / `closedAt` — 重新确认不是新事件）
+   - `STATUS_ORDER[body.status] < STATUS_ORDER[prev.status]` → 400 with "rollback rejected" 错误
+   - skip-ahead 允许（`ready → acknowledged` / `ready → closed` 直接跳）
+   - `closed` 是 terminal（任何 further PATCH 拒绝）
+   - **WorkItem.closed 仍然不影响 Situation lifecycle**（不变）
+   - 新测试 4 个: backward reject / closed terminal / same-status no-op / skip-ahead still works
+
+3. **Label 单一事实源落地** — 之前虽然 schema → `output-labels.js` 通了，但 `app.js` 残留 2 套本地常量 (`OUTPUT_COLLECTION_STATUS_LABEL` / `OUTPUT_COLLECTION_TYPE_LABEL` + `OUTPUT_STATUS_LABEL` / `OUTPUT_TYPE_LABEL`)，Collection / Situation 内嵌摘要直接用本地副本，所以**实际是 3 套显示常量**。改成：
+   - 删 4 个本地常量
+   - 顶部定义 2 个 helper: `getOutputStatusLabel(s)` / `getOutputTypeLabel(t)`，都从 `window.WORK_ITEM_*` 读，**单一入口**
+   - 7 个使用点（Collection placeholder / Collection row type+status / Detail type+status / Situation summary type+status）全部改 helper
+   - Defensive `|| {}` 兜底（防止 `output-labels.js` 加载失败时 crash；CI 必跑 contract test 保证不漂移）
+
+### 边界（严格遵守）
+
+- ❌ 不改 Trust schema（provenance 仍是 inline JSON）
+- ❌ 不改 delivery 设计（`delivered` 状态语义仍悬空 — 用户明示 "等我们讨论 Human Protocol 时再决定 delivered 的真正 authority"）
+- ❌ 不接 transport
+- ❌ 不改 UI 产品结构
+- ❌ 不增加 schema 字段
+
+### 验收
+
+- `npx vitest run tests/integration/outputs-api.test.ts tests/contract/output-labels-sync.test.ts` — **35/35 ✅**（29 integration + 6 contract，含 5 个新 REPAIR-6 测试）
+- 全量 717/717 pass（pre-existing 1 test failure 偶发：chat.contract.ts 5s timeout，flaky，与本刀无关）
+- 浏览器 Playwright smoke (`/tmp/verify_repair6.py`)：labels 暴露 ✅ / Collection 3 items 状态+类型正确 ✅ / Detail 状态表 6 行 honest ✅ / source tag `人工` 真实显示（demo 的 evidenceRefs 数组空时不会假造 `证据`）✅ / PATCH skip-ahead ready → closed 200 ✅ / 0 console error ✅
+- typecheck 0 新增错误
+
+### 文件改动
+
+- 修改：`platform/server/routes/outputs.ts`（provenenace 只读 evidenceRefs / PATCH 状态机 forward-only guard）
+- 修改：`apps/ecommerce/workspace/app.js`（删 4 个本地 label 常量 + 顶部 2 个 helper + 7 个使用点统一）
+- 修改：`tests/integration/outputs-api.test.ts`（5 个新 REPAIR-6 测试 + 1 个 canonical-path 测试断言 evidenceLabels 不再含 knownEvidence）
+- 修改：`context/{current_state.md,decisions.md,handoff.md,status.json}`
+
+### 未做（明确不属本刀）
+
+- **`delivered` 状态语义** — 用户明示 "等讨论 Human Protocol 时再决定 delivered 的真正 authority"，不属本刀
+- **Trust schema 化** — provenance 仍 inline JSON；first-class `provenance` 表是 P0011+ scope
+- **Action/Approval / transport** — 都不在 REPAIR-6 范围
+
+---
+
 ## 本次会话 (2026-08-22) - P0010.1 REPAIR-5（Output Workspace 诚实性：canonical path、no fake source、no deliveredAt、统一 label、global badge）
 
 ### 目标

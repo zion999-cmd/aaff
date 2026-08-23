@@ -149,6 +149,106 @@ describe('P0010.1 Output / WorkItem API (integration)', () => {
     expect(res.status).toBe(400);
   });
 
+  // ═══ P0010.1 REPAIR-6: forward-only state machine ═══
+
+  test('P0010.1 REPAIR-6: PATCH forward-only — rejected backward transition (acknowledged → delivered)', async () => {
+    // Move the first output to 'acknowledged' first.
+    const list = ((await (await fetch(`${base}/api/situations/${SIT}/outputs`)).json()) as { data: Array<{ outputId: string; status: string }> }).data;
+    const first = list[0]!;
+    await fetch(`${base}/api/situations/${SIT}/outputs/${first.outputId}`, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ status: 'acknowledged' }),
+    });
+    // Now try to roll back: acknowledged → delivered MUST be rejected.
+    const res = await fetch(`${base}/api/situations/${SIT}/outputs/${first.outputId}`, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ status: 'delivered' }),
+    });
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error?: string };
+    expect(body.error || '').toMatch(/forward-only|rollback/);
+    // And: the WorkItem status did NOT change.
+    const after = ((await (await fetch(`${base}/api/situations/${SIT}/outputs`)).json()) as { data: Array<{ outputId: string; status: string }> }).data;
+    const stillFirst = after.find((o) => o.outputId === first.outputId)!;
+    expect(stillFirst.status).toBe('acknowledged');
+  });
+
+  test('P0010.1 REPAIR-6: PATCH forward-only — rejected terminal rollback (closed → ready)', async () => {
+    // Create a fresh output, drive it all the way to 'closed' via the
+    // canonical skip-ahead path (ready → closed is forward).
+    const create = await fetch(`${base}/api/situations/${SIT}/outputs`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ type: 'analysis', content: 'REPAIR-6 rollback test' }),
+    });
+    const created = (await create.json()) as { data: { outputId: string } };
+    const oid = created.data.outputId;
+    await fetch(`${base}/api/situations/${SIT}/outputs/${oid}`, {
+      method: 'PATCH', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ status: 'closed' }),
+    });
+    // closed is terminal — any further PATCH MUST be rejected.
+    for (const target of ['ready', 'delivered', 'acknowledged']) {
+      const res = await fetch(`${base}/api/situations/${SIT}/outputs/${oid}`, {
+        method: 'PATCH', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ status: target }),
+      });
+      expect(res.status).toBe(400);
+    }
+    // Sanity: status is still 'closed' and closedAt is preserved.
+    const after = ((await (await fetch(`${base}/api/situations/${SIT}/outputs`)).json()) as { data: Array<{ outputId: string; status: string; closedAt?: string }> }).data;
+    const target = after.find((o) => o.outputId === oid)!;
+    expect(target.status).toBe('closed');
+    expect(target.closedAt).toBeDefined();
+  });
+
+  test('P0010.1 REPAIR-6: PATCH forward-only — same-status no-op is rejected (no re-stamping of acknowledgedAt/closedAt)', async () => {
+    // After the previous test, the 'closed' item is terminal. For
+    // non-terminal states, PATCHing the same status would re-stamp
+    // acknowledgedAt / closedAt — which is dishonest (a re-ack is
+    // not a new event). The handler must reject same-status PATCH.
+    const list = ((await (await fetch(`${base}/api/situations/${SIT}/outputs`)).json()) as { data: Array<{ outputId: string; status: string; acknowledgedAt?: string }> }).data;
+    const readyOrDelivered = list.find((o) => o.status === 'ready' || o.status === 'delivered' || o.status === 'acknowledged');
+    if (!readyOrDelivered) {
+      // No suitable target — skip silently (shouldn't happen in normal seed).
+      return;
+    }
+    const oid = readyOrDelivered.outputId;
+    const original = readyOrDelivered;
+    const res = await fetch(`${base}/api/situations/${SIT}/outputs/${oid}`, {
+      method: 'PATCH', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ status: original.status }),
+    });
+    expect(res.status).toBe(400);
+    // Sanity: timestamps are not changed.
+    const after = ((await (await fetch(`${base}/api/situations/${SIT}/outputs`)).json()) as { data: Array<{ outputId: string; status: string; acknowledgedAt?: string; closedAt?: string }> }).data;
+    const target = after.find((o) => o.outputId === oid)!;
+    expect(target.acknowledgedAt).toBe(original.acknowledgedAt);
+    expect(target.closedAt).toBeUndefined();
+  });
+
+  test('P0010.1 REPAIR-6: PATCH forward-only — skip-ahead is allowed (ready → acknowledged)', async () => {
+    // The previous REPAIR-5 PATCH transitions test already does
+    // ready → acknowledged, which is the skip-ahead path. Confirm
+    // it still works after the state-machine guard is in place.
+    const create = await fetch(`${base}/api/situations/${SIT}/outputs`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ type: 'recommendation', content: 'REPAIR-6 skip-ahead test' }),
+    });
+    const created = (await create.json()) as { data: { outputId: string } };
+    const oid = created.data.outputId;
+    // ready → acknowledged (skip 'delivered' step): must succeed.
+    const res = await fetch(`${base}/api/situations/${SIT}/outputs/${oid}`, {
+      method: 'PATCH', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ status: 'acknowledged' }),
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { data: { status: string; acknowledgedAt?: string } };
+    expect(body.data.status).toBe('acknowledged');
+    expect(body.data.acknowledgedAt).toBeDefined();
+  });
+
   test('GET outputs for a missing situation returns [] (not 404) so the UI does not break', async () => {
     const res = await fetch(`${base}/api/situations/sit_does_not_exist/outputs`);
     expect(res.status).toBe(200);
@@ -472,15 +572,85 @@ describe('P0010.1 Output / WorkItem API (integration)', () => {
     expect(prov.humanInterventions.length).toBe(2);
     expect(prov.humanInterventions[0].interventionId).toBe('h1');
     expect(prov.humanInterventions[1].interventionId).toBe('h2');
-    // Evidence: 2 from findings[0].evidenceRefs + 2 from knownEvidence.
+    // P0010.1 REPAIR-6: only findings[].evidenceRefs drives
+    // hasEvidence / evidenceLabels. `knownEvidence` is investigation
+    // text and may contain human guidance / knowledge rules; it MUST
+    // NOT be re-categorized as Evidence provenance. So the 2 entries
+    // from `knownEvidence` are NOT in evidenceLabels anymore.
     expect(prov.hasEvidence).toBe(true);
     expect(prov.evidenceLabels).toContain('ev-aaa');
     expect(prov.evidenceLabels).toContain('ev-bbb');
-    expect(prov.evidenceLabels).toContain('known-evidence-1');
-    expect(prov.evidenceLabels).toContain('known-evidence-2');
-    expect(prov.evidenceLabels.length).toBe(4);
+    expect(prov.evidenceLabels).not.toContain('known-evidence-1');
+    expect(prov.evidenceLabels).not.toContain('known-evidence-2');
+    expect(prov.evidenceLabels.length).toBe(2);
     // Knowledge: never present in this slice.
     expect(prov.hasKnowledge).toBe(false);
     expect(prov.knowledgeLabels).toEqual([]);
+  });
+
+  test('P0010.1 REPAIR-6: /api/outputs/:oid provenance is hasEvidence:false when ONLY knownEvidence is present (no evidenceRefs)', async () => {
+    // Seed a situation with `knownEvidence` text but no `findings[*].evidenceRefs`.
+    // The endpoint must NOT mark the Output as having Evidence — only
+    // human / knowledge / untyped text does not become `[证据]`.
+    const SIT_R6 = 'sit_outputs_repair6_known';
+    const now = '2026-08-23T08:00:00.000Z';
+    const body = {
+      contextId: 'ctx_' + SIT_R6,
+      situation: { situationId: SIT_R6, domain: 'ecommerce', type: 'anomaly_investigation', entity: { id: 'e1', type: 'shop' }, temporal: { observedAt: now }, description: 'x', tags: [] },
+      lifecycle: 'open', createdAt: now, updatedAt: now,
+      observations: [], evidenceIds: [], signalIds: [],
+      agentActivities: [], humanInterventions: [], actions: [], outcomes: [],
+      summary: { capabilitiesUsed: [], agentRuntimes: [], humanActors: [], totalEvidence: 0, totalSignals: 0 },
+      investigation: {
+        // No findings.evidenceRefs anywhere.
+        findings: [
+          { question: 'q1', answer: 'a1' /* no evidenceRefs */ },
+        ],
+        // Only knownEvidence text — could be anything; we cannot
+        // honestly classify it as Evidence, Knowledge, or Human.
+        knownEvidence: [
+          'Prior human guidance: 库存需先核验',
+          'knowledge/operations/SOP.md: 大促后波动',
+          'free text 运营笔记',
+        ],
+      },
+      outputs: [],
+    };
+    const { openDb: openDbR6 } = await import('#platform/storage/connection.js');
+    const dbR6 = openDbR6(TEMP_DB);
+    dbR6.prepare(
+      `INSERT INTO situations (situation_id, domain, type, entity_id, entity_type, entity_name, entity_platform,
+         observed_at, description, tags, lifecycle, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run(
+      SIT_R6, 'ecommerce', 'anomaly_investigation',
+      'jd_shop_repair6_known', 'shop', 'REPAIR6 测试店', 'jd',
+      now, 'REPAIR-6 knownEvidence test', JSON.stringify(['test']), 'open', now, now,
+    );
+    dbR6.prepare(
+      `INSERT INTO learning_contexts (context_id, situation_id, lifecycle, created_at, updated_at, body)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+    ).run(
+      'ctx_' + SIT_R6, SIT_R6, 'open', now, now, JSON.stringify(body),
+    );
+    dbR6.close();
+
+    const createRes = await fetch(`${base}/api/situations/${SIT_R6}/outputs`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ type: 'analysis', content: 'REPAIR-6 knownEvidence-only test' }),
+    });
+    const created = (await createRes.json()) as { data: { outputId: string } };
+    const res = await fetch(`${base}/api/outputs/${encodeURIComponent(created.data.outputId)}`);
+    const out = (await res.json()) as { data: any };
+    expect(res.status).toBe(200);
+
+    const prov = out.data.provenance;
+    // No real Evidence — knownEvidence is not a source.
+    expect(prov.hasEvidence).toBe(false);
+    expect(prov.evidenceLabels).toEqual([]);
+    // No Human — there are zero humanInterventions in this seed.
+    expect(prov.hasHuman).toBe(false);
+    // No Knowledge — always false in this slice.
+    expect(prov.hasKnowledge).toBe(false);
   });
 });

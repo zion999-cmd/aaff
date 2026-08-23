@@ -135,9 +135,28 @@ export const outputsRouter = (db: Db): Router => {
 
   // ── Patch (status transition) ──────────────────────────
   // Body: { status }
-  // Allowed transitions: ready → delivered → acknowledged → closed
-  // (each step can skip the intermediate; e.g. ready → closed is allowed
-  //  because the Operator may decide to close without acknowledging.)
+  //
+  // P0010.1 REPAIR-6: the WorkItemSchema's `status` enum IS the only
+  // state machine. PATCH must enforce forward-only transitions
+  // (skip-ahead allowed, rollback rejected). The canonical order is:
+  //
+  //   ready → delivered → acknowledged → closed
+  //
+  // Concretely:
+  //   ready        → delivered / acknowledged / closed  (any forward)
+  //   delivered    → acknowledged / closed            (any forward)
+  //   acknowledged → closed                            (only forward)
+  //   closed       → nothing                           (terminal)
+  //
+  // Rollback attempts (closed → ready, acknowledged → delivered,
+  // delivered → ready, etc.) are 400. `WorkItem.closed` does NOT
+  // close the Situation; the PATCH only mutates this single WorkItem.
+  const STATUS_ORDER: Readonly<Record<WorkItemStatus, number>> = Object.freeze({
+    ready: 0,
+    delivered: 1,
+    acknowledged: 2,
+    closed: 3,
+  });
   const PatchOutputBody = z.object({
     status: WorkItemStatusSchema,
   });
@@ -160,6 +179,23 @@ export const outputsRouter = (db: Db): Router => {
 
     const prev = outputs[idx];
     if (!prev) return fail(res, 404, 'Output not found.');
+
+    // P0010.1 REPAIR-6: forward-only transition guard. `closed` is
+    // terminal; anything else must not move backwards along the
+    // canonical order. Same-status PATCH is also a no-op rejection
+    // (it would set acknowledgedAt/closedAt again, which is dishonest
+    // — a re-acknowledgement is not a new event).
+    if (body.status === prev.status) {
+      return fail(res, 400, `Status is already '${prev.status}'. No transition needed.`);
+    }
+    if (STATUS_ORDER[body.status] < STATUS_ORDER[prev.status]) {
+      return fail(res, 400,
+        `Status rollback rejected: cannot move '${prev.status}' → '${body.status}'. ` +
+        `WorkItem transitions are forward-only along the canonical order ` +
+        `(ready → delivered → acknowledged → closed); rollback is not allowed.`,
+      );
+    }
+
     const next: WorkItem = { ...prev, status: body.status };
     if (body.status === 'acknowledged' && !prev.acknowledgedAt) {
       next.acknowledgedAt = nowIso();
@@ -251,6 +287,19 @@ export const outputsRouter = (db: Db): Router => {
       // Evidence, etc.). Without this, the UI would render 4 fixed
       // tags even when nothing is referenced — exactly the "fake
       // citation" the rules forbid.
+      //
+      // P0010.1 REPAIR-6: only `findings[].evidenceRefs[]` drives
+      // `hasEvidence` / `evidenceLabels[]`. The previous version
+      // merged `investigation.knownEvidence[]` into the same bucket,
+      // which is wrong: `knownEvidence` is free-text investigation
+      // notes and may contain human guidance, knowledge rules, or
+      // any other prose. Treating it as Evidence mis-categorizes the
+      // source. The honest answer is: if the text isn't actually a
+      // reference to a recorded Evidence artifact, do NOT tag it
+      // `[证据]`. We keep `knownEvidence` reachable via the
+      // canonical investigation surface (Layer 2 of the Situation
+      // detail / `/api/situations/:id` response) — but it does not
+      // become provenance here.
       const humanInterventions = Array.isArray(ctx.humanInterventions)
         ? (ctx.humanInterventions as Array<{ interventionId?: string; type?: string; timestamp?: string; summary?: string }>)
         : [];
@@ -258,8 +307,6 @@ export const outputsRouter = (db: Db): Router => {
         ? (investigation.findings as Array<{ evidenceRefs?: string[]; question?: string; answer?: string }>)
         : [];
       const evidenceRefs = findings.flatMap((f) => Array.isArray(f.evidenceRefs) ? f.evidenceRefs : []);
-      const knownEvidence = investigation && Array.isArray(investigation.knownEvidence)
-        ? (investigation.knownEvidence as string[]) : [];
 
       const provenance: {
         hasHuman: boolean;
@@ -276,8 +323,8 @@ export const outputsRouter = (db: Db): Router => {
           timestamp: h.timestamp || '',
           summary: h.summary || '',
         })),
-        hasEvidence: evidenceRefs.length > 0 || knownEvidence.length > 0,
-        evidenceLabels: [...evidenceRefs, ...knownEvidence].filter((s) => typeof s === 'string' && s.length > 0),
+        hasEvidence: evidenceRefs.length > 0,
+        evidenceLabels: evidenceRefs.filter((s) => typeof s === 'string' && s.length > 0),
         // Knowledge: there is no first-class record in this slice; the
         // only honest answer is "not present" — we never synthesize.
         hasKnowledge: false,

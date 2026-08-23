@@ -1,5 +1,65 @@
 # 技术决策记录 (ADR)
 
+## ADR-050: P0010.1 REPAIR-6 — Output Workspace 三处语义收紧
+
+- **日期**: 2026-08-23
+- **状态**: Accepted（35/35 定向测试 + 浏览器 smoke + 3 处最小收紧完成）
+- **来源**: 用户审完 `e270c7e`（REPAIR-5）后找到 3 个真实问题
+
+**核心原则**（用户原话，verbatim 保留）:
+> 修完这 3 个我认为代码层可以真正停下来。然后你给我最新截图，我们就完全从人的角度讨论 Output Workspace 到底哪里不好用，不再混工程 bug。
+
+**边界**（严格遵守）:
+- ❌ 不改 Trust schema（provenance 仍是 inline JSON）
+- ❌ 不改 delivery 设计（`delivered` 状态语义仍悬空；等讨论 Human Protocol 时再决定 delivered 的真正 authority）
+- ❌ 不接 transport
+- ❌ 不改 UI 产品结构
+- ❌ 不增加 schema 字段
+
+**决策**（3 处最小语义收紧）:
+
+1. **P0 Trust：`knownEvidence` 不再假冒 Evidence**。原 `outputs.ts` 把 `findings[].evidenceRefs` 和 `investigation.knownEvidence[]` 合并到 `evidenceLabels` 并联合驱动 `hasEvidence=true`。但 `knownEvidence` 是 free-text 调查笔记，可能含 "Prior human guidance…" / 知识规则 / 运营笔记，**与外部 Evidence 不是一类**。把 Knowledge / Human / untyped 文字错标成 Evidence 是更严重的 fake citation（用户原话"禁止猜 Knowledge/Human 类型"）。改成：
+   - `hasEvidence` 只由 `findings[].evidenceRefs.length > 0` 驱动
+   - `evidenceLabels` 只含 `findings[].evidenceRefs`（**不**含 `knownEvidence`）
+   - `knownEvidence` 仍在 canonical investigation 表面（`/api/situations/:id` response + Situation Detail Layer 2 "已确认" block）— 但不进入 provenance
+   - 新测试 `REPAIR-6: provenance is hasEvidence:false when ONLY knownEvidence is present` 显式覆盖该路径
+   - 同步更新已有 `canonical path` 测试：从 4 个 evidenceLabels 改为 2 个（去掉 2 个 known-evidence-* 字符串）
+
+2. **PATCH 状态机 forward-only 真正落地**。原 PATCH 只做 enum 校验（`WorkItemStatusSchema.parse(body)`），任何状态都能改任何状态。违反 schema 自己声明的"`status` enum 是唯一 state machine"。改成显式 forward-only 守卫：
+   - `STATUS_ORDER = Object.freeze({ ready: 0, delivered: 1, acknowledged: 2, closed: 3 })`
+   - `body.status === prev.status` → 400 `Status is already '${prev.status}'. No transition needed.`（防止 re-stamping `acknowledgedAt` / `closedAt` — 重新确认不是新事件）
+   - `STATUS_ORDER[body.status] < STATUS_ORDER[prev.status]` → 400 `Status rollback rejected: cannot move '${prev.status}' → '${body.status}'. WorkItem transitions are forward-only along the canonical order (ready → delivered → acknowledged → closed); rollback is not allowed.`
+   - skip-ahead forward 允许（`ready → acknowledged` / `ready → closed` 直接跳，因为后续状态 idx 严格 ≥ 前置）
+   - `closed` 是 terminal（任何 further PATCH 400）
+   - **WorkItem.closed 仍不影响 Situation lifecycle**（不变；P0010.1 baseline 已确立）
+   - 新测试 4 个：backward reject (`acknowledged → delivered`) / closed terminal (`closed → ready/delivered/acknowledged` 全 400) / same-status no-op / skip-ahead works (`ready → acknowledged` 200)
+
+3. **Label 单一事实源完全落地**。REPAIR-5 已经让 `output-labels.js` 镜像到 `window.WORK_ITEM_STATUS_LABEL` / `window.WORK_ITEM_TYPE_LABEL`，但 `app.js` 还残留 2 套本地常量：
+   - `OUTPUT_COLLECTION_STATUS_LABEL` / `OUTPUT_COLLECTION_TYPE_LABEL`（顶部）
+   - `OUTPUT_STATUS_LABEL` / `OUTPUT_TYPE_LABEL`（中间）
+   7 个使用点（Collection placeholder / Collection row / Detail type+status / Situation summary type+status）4 个直接用本地，3 个用 `window.WORK_ITEM_* || LOCAL` 兜底。**实际是 3 套显示常量**。改成：
+   - 删 4 个本地常量
+   - 顶部 `getOutputStatusLabel(s)` / `getOutputTypeLabel(t)` 2 个 helper，统一从 `window.WORK_ITEM_*` 读
+   - 7 个使用点全改 helper；defensive `|| {}` 兜底（如果 `output-labels.js` 加载失败返回 `{}`，不 crash；CI 必跑 `output-labels-sync.test.ts` 保证不漂移）
+
+**验收**:
+- `npx vitest run tests/integration/outputs-api.test.ts tests/contract/output-labels-sync.test.ts` — **35/35 ✅**（29 integration + 6 contract）
+- 全量 717/717 pass（1 flaky pre-existing: chat.contract.ts 5s timeout，与本刀无关）
+- 浏览器 Playwright smoke (`/tmp/verify_repair6.py`)：labels 暴露 ✅ / Collection 3 items 状态+类型正确 ✅ / Detail 状态表 6 行 honest ✅ / source tag `人工` 真实显示（demo 的 `evidenceRefs` 空时不假造 `证据`）✅ / PATCH skip-ahead `ready → closed` 200 ✅ / 0 console error ✅
+- typecheck 0 新增错误
+
+**未做（明确不属本刀）**:
+- `delivered` 状态语义（用户明示 "等讨论 Human Protocol 时再决定"）
+- Trust schema 化（provenance 仍 inline JSON；first-class `provenance` 表是 P0011+ scope）
+- Action/Approval / transport / 业务执行闭环
+
+**用户终态判断**（verbatim）:
+> 这三个修完，我认为**代码层可以真正停下来**。
+
+下一轮按用户指示：**从人类使用角度看 Output Workspace**。**新截图 + 不再混工程 bug**。
+
+---
+
 ## ADR-049: P0010.1 REPAIR-5 — Output Workspace 诚实性（ChatGPT 4 断点 + 2 小问题）
 
 - **日期**: 2026-08-22
