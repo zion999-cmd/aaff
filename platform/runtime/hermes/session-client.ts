@@ -2,7 +2,7 @@
 // P0008.3. Speaks Hermes' existing session protocol; does NOT reimplement session logic.
 //
 // Protocol (from Hermes source, tui_gateway/):
-//   connect        → ws://host:port/api/ws
+//   connect        → ws://host:port/api/ws?token=<_SESSION_TOKEN>
 //   session.create  {"jsonrpc":"2.0","method":"session.create","params":{cwd,profile,...},"id":N}
 //                   → {"result":{"session_id":"8-hex",...}}
 //   prompt.submit   {"jsonrpc":"2.0","method":"prompt.submit","params":{session_id,text},"id":N}
@@ -11,6 +11,8 @@
 // Turn lifecycle events: turn.start → message.start → message.delta* → message.complete
 //
 // Uses Node's built-in WHATWG WebSocket (no external dependency).
+
+import { resolveHermesSessionToken } from './token-resolver.js';
 
 // ---- Types ----
 
@@ -55,6 +57,21 @@ type PendingRequest = {
   reject: (err: Error) => void;
 };
 
+// Eagerly kick off auto-discovery at module load so the synchronous constructor
+// can read a populated `resolvedToken` snapshot. Resolution typically completes
+// in <50ms (one `lsof` + one `ps eww` / `cat /proc/...`); the first WS connect
+// always happens well after the constructor returns. If the resolver is still
+// in flight when the first connect() is called, the connect path falls through
+// to "Missing token" — the caller can retry a moment later.
+let resolvedToken: string | undefined;
+resolveHermesSessionToken()
+  .then((t) => {
+    resolvedToken = t;
+  })
+  .catch(() => {
+    resolvedToken = undefined;
+  });
+
 // ---- Client ----
 
 export class HermesSessionClient {
@@ -68,11 +85,14 @@ export class HermesSessionClient {
   constructor(options: HermesSessionClientOptions = {}) {
     const port = 9119;
     this.url = options.url ?? `ws://localhost:${port}/api/ws`;
-    // Hermes serve authenticates the /api/ws upgrade via `?token=<_SESSION_TOKEN>`,
-    // where _SESSION_TOKEN is the HERMES_DASHBOARD_SESSION_TOKEN env (or a random
-    // value when unset). agentFabric reads the SAME env var, so one operator-provided
-    // secret authenticates both sides. An explicit `token` option wins over the env.
-    this.token = options.token ?? process.env.HERMES_DASHBOARD_SESSION_TOKEN;
+    // Resolution priority:
+    //   1. Explicit `options.token` (caller-supplied, e.g. tests).
+    //   2. `HERMES_DASHBOARD_SESSION_TOKEN` in this process env (operator-pinned).
+    //   3. Auto-discovered from the running `hermes serve` process env (set at
+    //      module load via `resolveHermesSessionToken()`; cached for the
+    //      process lifetime). See `token-resolver.ts` for the cross-platform
+    //      discovery implementation.
+    this.token = options.token ?? process.env.HERMES_DASHBOARD_SESSION_TOKEN ?? resolvedToken;
   }
 
   /** Connect to Hermes serve /api/ws. Resolves when the socket opens. */
@@ -81,8 +101,11 @@ export class HermesSessionClient {
       if (!this.token) {
         reject(
           new Error(
-            'Missing Hermes dashboard session token: set HERMES_DASHBOARD_SESSION_TOKEN ' +
-              '(the same value passed to `hermes serve`) so the /api/ws client can authenticate.',
+            'Missing Hermes dashboard session token. Either (a) export ' +
+              'HERMES_DASHBOARD_SESSION_TOKEN in the agentFabric process env to match ' +
+              'the value used by `hermes serve`, or (b) start `hermes serve` (defaults ' +
+              'to port 9119) so the token can be auto-discovered from its process env. ' +
+              'See platform/runtime/hermes/token-resolver.ts for details.',
           ),
         );
         return;

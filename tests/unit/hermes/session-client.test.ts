@@ -2,6 +2,17 @@
 // Validates JSON-RPC framing: session.create / prompt.submit / event dispatch.
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+
+// Hoisted mock for the resolver so tests are deterministic regardless of whether
+// a real `hermes serve` is listening on 9119 in the test environment. The
+// resolver is also called eagerly at module-load — without this mock the cached
+// `resolvedToken` snapshot inside session-client.ts could pick up a live token
+// in some dev setups and silently break the "no token" test below.
+vi.mock('#platform/runtime/hermes/token-resolver.js', () => ({
+  resolveHermesSessionToken: () => Promise.resolve(undefined),
+  _resetTokenCache: () => undefined,
+}));
+
 import { HermesSessionClient } from '#platform/runtime/hermes/index.js';
 import type { HermesEvent } from '#platform/runtime/hermes/index.js';
 
@@ -158,5 +169,56 @@ describe('HermesSessionClient', () => {
     const frame = JSON.parse(ws.sent[0]!);
     ws.emitMessage({ jsonrpc: '2.0', id: frame.id, error: { code: 1, message: 'profile not found' } });
     await expect(createPromise).rejects.toThrow(/Hermes error/);
+  });
+});
+
+// Separate describe block to test the auto-discovery path. We must reset
+// modules and re-mock the resolver (vi.doMock) so a fresh session-client
+// module instance picks up the auto-discovered token via the eager
+// `resolvedToken` snapshot.
+describe('HermesSessionClient — auto-discovered token', () => {
+  beforeEach(() => {
+    MockWebSocket.instances = [];
+    vi.stubGlobal('WebSocket', MockWebSocket);
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    delete process.env.HERMES_DASHBOARD_SESSION_TOKEN;
+  });
+
+  it('uses the auto-discovered token when env is unset', async () => {
+    delete process.env.HERMES_DASHBOARD_SESSION_TOKEN;
+    vi.resetModules();
+    vi.doMock('#platform/runtime/hermes/token-resolver.js', () => ({
+      resolveHermesSessionToken: () => Promise.resolve('discovered-secret'),
+      _resetTokenCache: () => undefined,
+    }));
+    const { HermesSessionClient: Fresh } = await import('#platform/runtime/hermes/index.js');
+    // Yield to the microtask queue so the eager resolver promise resolves
+    // before the constructor reads `resolvedToken`.
+    await Promise.resolve();
+    const client = new Fresh();
+    const connectPromise = client.connect();
+    const ws = MockWebSocket.instances[0]!;
+    ws.emitOpen();
+    await connectPromise;
+    expect(ws.url).toBe('ws://localhost:9119/api/ws?token=discovered-secret');
+  });
+
+  it('explicit token option still wins over the auto-discovered value', async () => {
+    delete process.env.HERMES_DASHBOARD_SESSION_TOKEN;
+    vi.resetModules();
+    vi.doMock('#platform/runtime/hermes/token-resolver.js', () => ({
+      resolveHermesSessionToken: () => Promise.resolve('discovered-secret'),
+      _resetTokenCache: () => undefined,
+    }));
+    const { HermesSessionClient: Fresh } = await import('#platform/runtime/hermes/index.js');
+    await Promise.resolve();
+    const client = new Fresh({ token: 'option-wins' });
+    const connectPromise = client.connect();
+    const ws = MockWebSocket.instances[0]!;
+    ws.emitOpen();
+    await connectPromise;
+    expect(ws.url).toBe('ws://localhost:9119/api/ws?token=option-wins');
   });
 });

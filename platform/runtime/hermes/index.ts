@@ -11,6 +11,8 @@ export { createCapabilityBridge, resetCapabilityBridge } from './capability-brid
 export type { CapabilityBridge, CapabilityDiscoveryResult } from './capability-bridge.js';
 export { HermesSessionClient } from './session-client.js';
 export type { HermesEvent, HermesSessionClientOptions, CreateSessionParams, CreateSessionResult } from './session-client.js';
+export { resolveHermesSessionToken, _resetTokenCache } from './token-resolver.js';
+export type { ResolveOptions } from './token-resolver.js';
 
 const isTest = process.env.NODE_ENV === 'test' || process.env.VITEST === 'true';
 

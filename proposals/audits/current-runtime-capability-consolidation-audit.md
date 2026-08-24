@@ -25,7 +25,7 @@
 | 依赖 | 现状 | 谁负责 |
 |---|---|---|
 | Node 版本 | better-sqlite3 编译于 NODE_MODULE_VERSION 127（Node 22）；系统默认 Node 25.6.1（141）→ `ERR_DLOPEN_FAILED` 直接崩 | 开发者手动 `nvm use 22` |
-| Hermes serve | 需另开进程 `hermes serve`（端口 9119），token 需 `HERMES_DASHBOARD_SESSION_TOKEN` 两边一致 | 开发者手动启动 |
+| Hermes serve | 需另开进程 `hermes serve`（端口 9119），token 需 `HERMES_DASHBOARD_SESSION_TOKEN` 两边一致；或由 agentFabric 自动从 serve 进程 env 发现（`platform/runtime/hermes/token-resolver.ts`） | 开发者手动启动 |
 | Chrome CDP | 需 Chrome `--remote-debugging-port=9222` 常驻；Runtime 不启动它 | 开发者手动启动 |
 
 > 冷启动本身不是「一条命令」：需要 Node 22 + Hermes + Chrome-9222 三个外部前置全部就位。
