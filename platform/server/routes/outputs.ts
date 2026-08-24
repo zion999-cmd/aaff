@@ -42,6 +42,10 @@ import type { Database as Db } from 'better-sqlite3';
 import { z } from 'zod';
 import { nowIso } from '#shared/utils/time.js';
 import {
+  readLearningContextBody,
+  writeLearningContextBody,
+} from '#app/experience/learning-context-helpers.js';
+import {
   WorkItemSchema,
   WorkItemStatusSchema,
   type WorkItem,
@@ -55,29 +59,6 @@ const ok = (res: any, data: unknown, meta?: Record<string, unknown>) => {
 };
 const fail = (res: any, status: number, error: string) => {
   res.status(status).json({ success: false, error });
-};
-
-/** Read the LearningContext body, ensuring `outputs` is an array. */
-const readLearningContextBody = (db: Db, situationId: string): { row: { body: string }; ctx: Record<string, unknown> } | null => {
-  const row = db.prepare('SELECT body FROM learning_contexts WHERE situation_id = ?').get(situationId) as Record<string, unknown> | undefined;
-  if (!row) return null;
-  let ctx: Record<string, unknown>;
-  try {
-    ctx = JSON.parse(String(row.body ?? '{}'));
-  } catch {
-    return null;
-  }
-  if (!Array.isArray(ctx.outputs)) ctx.outputs = [];
-  return { row: { body: String(row.body) }, ctx };
-};
-
-const writeLearningContextBody = (db: Db, situationId: string, ctx: Record<string, unknown>): void => {
-  const now = nowIso();
-  db.prepare('UPDATE learning_contexts SET body = ?, updated_at = ? WHERE situation_id = ?').run(
-    JSON.stringify(ctx),
-    now,
-    situationId,
-  );
 };
 
 /** Generate a stable-looking id without bringing in uuid (matches the

@@ -32,6 +32,7 @@ import {
   storeInvestigationInLearningContext,
 } from '#app/experience/learning-context-producer.js';
 import { buildInvestigationPrompt, parseInvestigation, extractJsonObject } from '#app/runtime/investigation/index.js';
+import { materializeWorkItem } from '#app/runtime/loop/recommendation-to-output.js';
 
 // ---- Session registry (server-side) ----
 
@@ -286,7 +287,7 @@ export const runInvestigationTurn = async (
     }
   }
 
-  const completed: LearningContext['investigation'] = { ...parsed.investigation, status: 'completed' };
+  let completed: LearningContext['investigation'] = { ...parsed.investigation, status: 'completed' };
   storeInvestigationInLearningContext(db, situation, completed);
 
   // P0010.1 Slice 4: auto-generate the Recommendation from the Judgment (same
@@ -295,10 +296,21 @@ export const runInvestigationTurn = async (
     try {
       const rec = await runRecommendationTurn(client, sessionId, situation, completed);
       if (rec.ok && rec.recommendation) {
-        storeInvestigationInLearningContext(db, situation, { ...completed, recommendation: rec.recommendation });
+        completed = { ...completed, recommendation: rec.recommendation };
+        storeInvestigationInLearningContext(db, situation, completed);
       }
     } catch { /* recommendation is best-effort — never blocks the investigation */ }
   }
+
+  // P0010.2: materialize a WorkItem from the completed Recommendation so the
+  // operator sees the deliverable without manually opening the Investigation
+  // panel. Single call site — both the manual POST /api/situation/:id/
+  // investigate and the RuntimeLoop's `investigate` go through this path.
+  // Idempotent: re-running with the same content produces the same
+  // deterministic outputId, so a re-investigation is a no-op for WorkItems.
+  try {
+    materializeWorkItem(db, situation.situationId, completed);
+  } catch { /* WorkItem creation is best-effort — never blocks the investigation */ }
 
   return { ok: true, status: 'completed', investigation: completed };
 };

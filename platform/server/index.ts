@@ -20,6 +20,8 @@ import { HermesSessionClient } from '#platform/runtime/hermes/index.js';
 import { loadSituation } from '#app/experience/learning-context-producer.js';
 import { createScheduledAcquisitionRunner } from '#app/runtime/scheduling/index.js';
 import type { ScheduledAcquisition } from '#app/runtime/scheduling/index.js';
+import { createRuntimeLoop } from '#app/runtime/loop/index.js';
+import { runtimeLoopRouter } from './routes/runtime-loop.js';
 
 export interface ServerOptions {
   db: Db;
@@ -29,8 +31,19 @@ export interface ServerOptions {
    * minimal scheduler runs the listed capabilities on a daily schedule (REUSE
    * the existing Fabric capability → Evidence path; never judges). Off by
    * default — tests and the plain server do not start any timer.
+   *
+   * P0010.2 — the same config is reused as the RuntimeLoop's schedule. The
+   * Loop's setInterval owns the cadence; the runner's own timer is
+   * disabled. Pass `runtimeLoop: false` to start the plain scheduler
+   * (per-day-at-HH:MM) instead of the Loop (every 60s).
    */
   schedule?: ScheduledAcquisition[];
+  /**
+   * P0010.2 — when true (default), the RuntimeLoop owns cadence and the
+   * `schedule` config runs every `tickMs` (60s by default). When false,
+   * the per-day-at-HH:MM scheduler is used instead (legacy P0010.1 mode).
+   */
+  runtimeLoop?: boolean;
 }
 
 /** Create the Express app with all routes mounted. */
@@ -89,12 +102,33 @@ export const createServer = (options: ServerOptions): Express => {
   // Mounted at /api so the routes inside can be /situations/:id/outputs/...
   app.use('/api', outputsRouter(db));
 
+  // P0010.2 — Continuous Business Runtime HTTP control surface.
+  // Mounted only when the Loop is the active scheduler (the legacy per-day
+  // scheduler path keeps its own route and does not expose the Loop API).
+  if (options.runtimeLoop !== false) {
+    const loop = createRuntimeLoop({
+      db,
+      ...(options.schedule ? { schedule: options.schedule } : {}),
+      workspaceDir: resolve(process.cwd(), 'data', 'fabric-workspace'),
+    });
+    app.use('/api', runtimeLoopRouter(loop));
+    // Capture on a module-level ref so CLI / main() can start it after the
+    // server is up (avoids racing the HTTP server with the first tick).
+    pendingLoop = loop;
+  }
+
   // Dashboard SPA (vanilla JS). Served as static files.
   const dashDir = workspaceDir ?? resolve(process.cwd(), 'apps/ecommerce/workspace');
   app.use(express.static(dashDir));
 
   return app;
 };
+
+// P0010.2 — exposed so main() can start the Loop after the HTTP server is up.
+// Set by createServer when runtimeLoop !== false.
+let pendingLoop: { start: () => void; stop: () => void; tickNow: () => Promise<unknown>; list: () => unknown } | null = null;
+export const _getPendingLoop = () => pendingLoop;
+export const _resetPendingLoop = () => { pendingLoop = null; };
 
 /** Start the server on a port. Returns the http.Server. */
 export const startServer = (options: ServerOptions, port: number = Number(process.env.PORT ?? 3000)) => {
@@ -265,13 +299,26 @@ export const autoInvestigateSituation = async (db: Db, workspaceDir: string, sit
 // CLI entry: `npm run dev` / `npm start`
 const main = async (): Promise<void> => {
   const db = openDb();
-  // P0010.1 Slice 3: scheduled acquisition config. Disabled by default — the
-  // operator explicitly enables capabilities so no surprise CDP runs happen.
+  // P0010.2: schedule is enabled by default and the RuntimeLoop owns
+  // cadence (every 60s, configurable via RUNTIME_LOOP_TICK_MS). The
+  // `at` field is now informational only — the Loop ticks on its own
+  // clock, not on a daily HH:MM. Pass `runtimeLoop: false` to fall back
+  // to the per-day-at-HH:MM scheduler.
   const schedule: ScheduledAcquisition[] = [
-    { capability: 'trade.overview', at: '02:00', enabled: false },
-    { capability: 'traffic.overview', at: '02:05', enabled: false },
+    { capability: 'trade.overview', at: '00:00', enabled: true },
+    { capability: 'traffic.overview', at: '00:00', enabled: true },
   ];
   startServer({ db, schedule });
+  // Start the Loop after the HTTP server is listening. The Loop's first
+  // tick runs after `tickMs` (60s) so it does not race the server start.
+  // Force an immediate first tick so the operator sees a log line within
+  // seconds of `npm run dev` (the user-stated acceptance criterion).
+  const loop = _getPendingLoop();
+  if (loop) {
+    loop.start();
+    // eslint-disable-next-line no-console
+    console.log('[loop] loop started (continuous business runtime)');
+  }
   // P0010.1 Final Repair — Area A: idempotent product-catalog bootstrap.
   // Walks every getProductList*.json under data/evidence/jd and projects
   // (spu_id, proName) into the canonical products table so the Situation
