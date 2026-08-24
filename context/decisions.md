@@ -1065,3 +1065,85 @@ Runtime Kernel 不属于 HermesAgent 内部。它是 agentFabric 的公共执行
 
 **边界**: 仅 audit，未修改 AGENTS.md/systems/knowledge/capability，未重跑 Blank Agent，未实现 loader/router/capability engine。
 
+
+## ADR-051: P0010.1 Final Repair — Entity Bootstrap from on-disk evidence
+
+- **日期**: 2026-08-25
+- **状态**: Accepted
+- **来源**: P0010.1 Final Repair — Area A. `apps/ecommerce/connectors/jd/product-catalog-bootstrap.ts` + `tests/unit/connectors/jd/product-catalog-bootstrap.test.ts`
+
+**决策**: 实体名（商品名称 / 店铺名称）只能来自真实可验证的 evidence，不允许 LLM 猜测、hardcode、第二套 Product Store。
+
+1. **复用现有 `projectProductCatalog` + `upsertProducts`**，不引入新的 Product Store、不为 `products` 加 `shop_name` 列、不为 entity 加新索引。新文件只做"启动时一次性把 evidence 投影到 SQLite"。
+2. **`acquired_at` 当 `created_at`**，不写 `new Date()` 当下时间——保单根审计链（Evidence → Product 同源时间）。
+3. **幂等**：每次启动可重跑；primary key 冲突走 `upsertProducts` 的 ON CONFLICT 路径。
+4. **环境开关**：`BOOTSTRAP_PRODUCT_CATALOG=skip` 跳过（生产环境在没有显式编排前应保持 skip）。
+5. **无 LLM 路径**：bootstrap 内不调任何 model。
+6. **日志只打 count，不打 name**——name 是 operator-personal（PII），count 是 system-level（无 PII）。
+
+**边界**: 不动 `/api/trace`/Explainability；不动 `entityDisplayName`（其 fallback `未知商品 · SKU` 仍保留，只是不可达）；不动 evidence 写入路径。
+
+## ADR-052: P0010.1 Final Repair — Lifecycle Timeline (no fabrication)
+
+- **日期**: 2026-08-25
+- **状态**: Accepted
+- **来源**: P0010.1 Final Repair — Area B. `apps/ecommerce/workspace/presentation.js:renderSituationTimeline` + `tests/contract/situation-timeline.contract.ts` (26 tests)
+
+**决策**: 真实时间线只能从持久化时间戳来，不允许 JS 侧 `new Date()` 凑 demo、伪造 `completedAt`、伪造 `askedAt`。
+
+1. **时间线 source 限定为 6 个真实字段**：`situations.created_at` / `temporal.observedAt` / `investigation.startedAt` / `investigation.updatedAt`（兼作 completed/failed 代理） / `interventions[].timestamp` / `outputs[].{createdAt, acknowledgedAt, closedAt}`。
+2. **`investigation.completedAt` 缺**：用 `updatedAt` 当代理 + 显式标注 `≈ 完成时间; 实际缺少 completedAt 列`（让 operator 看见真实 vs 近似，不藏）。
+3. **`outputs[].deliveredAt` 缺**：不画（schema 无此字段，无 transport）。等真有 transport 时再加。
+4. **`investigation.{findings[].askedAt, answerAt}` 缺**：不画。下一刀再加。
+5. **空输入 → 隐藏整段**（empty string），不显示空 `<ol>`。
+6. **timelineEventLabel 暴露 `decision` sub-type**：`accept` / `reject` / `defer` / `override` / `no_action` 各自一个中文 label，**不接受单一"决策"折叠**——sub-type 是 first-class 业务信号。
+
+**边界**: 不引入 Event Store / Event Bus / second Timeline Store；不改 investigation schema；不写 `findings[].{askedAt, answerAt}`；不写 `outputs[].deliveredAt`。
+
+## ADR-053: P0010.1 Final Repair — Human type 收紧 (4 canonical kinds, DB-enforced)
+
+- **日期**: 2026-08-25
+- **状态**: Accepted
+- **来源**: P0010.1 Final Repair — Area C. `shared/schemas/learning-context.ts:257` (Zod enum) + `platform/storage/p0007-schema.ts` (TRIGGER) + 22 tests across 4 files
+
+**决策**: Human Intervention grammar 锁定 4 canonical kinds（`response` / `correction` / `context_supplement` / `decision`），Zod enum 与 DB TRIGGER 双层 enforce，`action_intent` 永不再出现。
+
+1. **Zod enum 删 `action_intent`**：`shared/schemas/learning-context.ts:257` `type: z.enum([...4])`。
+2. **DB 端 SQLite 无 `ALTER TABLE … ADD CHECK`**，用 BEFORE INSERT/UPDATE TRIGGER + `RAISE(ABORT, ...)` 等价（任何 disallowed value 直接 abort 写路径，error message 指向 trigger name 让 operator 知道约束）。TRIGGER 名称 `trg_human_interventions_type_guard`。
+3. **应用层幂等**：`applyHumanInterventionTypeGuard` 每次 `DROP TRIGGER IF EXISTS` 后再 `CREATE`，重跑无副作用。
+4. **legacy 数据保护**：apply 之前 `rewriteLegacyActionIntentInterventions(db)` 把 `type='action_intent'` 改写为 `response`（最近 canonical 等价），返回改写行数日志。
+5. **`InterventionContentSchema` 的 `discriminatedUnion` 同时也删 `action_intent` 分支**——schema 一处改，处处一致。
+6. **C.4 浏览器 `submitStructuredIntervention` 拍平 `respondsToActivityIds`**：从 `content.respondsTo.agentActivityIds`（仅 `response` 类型）拍平到顶层 `respondsToActivityIds`，让 timeline 真实能 join。helper 抽到 `presentation.js` 单元测试 pin。
+
+**边界**: 不改 HTTP route 的 wire；不改 POST 端点的 payload；不写 `agentActivities[]`（producer 端 `learning-context-producer.ts:103` 仍 hard-code `[]` —— 是 H.3 gap，下一刀修）。
+
+## ADR-054: P0010.1 Final Repair — `needs_human` 语义收紧 (no fuzzy text match)
+
+- **日期**: 2026-08-25
+- **状态**: Accepted
+- **来源**: P0010.1 Final Repair — Area D. `platform/server/routes/p0007.ts:deriveInvestigationStatus` + `apps/ecommerce/workspace/presentation.js:deriveSituationLifecycle` + 17 tests (14 server + 3 lifecycle)
+
+**决策**: `needs_human` 信号只能来自结构化字段，**不**来自 judgment text 的模糊匹配。
+
+1. **新决策树**（唯一）：`status='investigating'` → `investigating`；`status='failed'` → `failed`；`stopReason='observe'` → `observing`；`stopReason ∈ {missing_capability, ask_human}` → `needs_human`；`stopReason='judgment'` + `recommendation.humanNeeded.length > 0` → `needs_human`；`stopReason='judgment'`（其余）→ `judgment_ready`；default → `judgment_ready`。
+2. **删除** `text.includes('人工核验' / '人工确认' / '无法获取')` 分支——之前会让 agent 引用"已与运营确认"时误触发。
+3. **JS 端镜像**：客户端 `deriveSituationLifecycle` 用同一棵树（只 5-state operator surface，'closed' 分支仍 dead code，下一刀替换）。
+4. **chip label `已判断` → `判断已形成`**：自治默认，人类可中断，仅必要时阻塞；不再 triumphal 措辞。Sidebar filter 同步改 label。
+5. **server 端 `deriveInvestigationStatus` 导出为 named export**，配 `tests/unit/routes/derive-investigation-status.test.ts`（14 测试，含 2 个 regression 证明 fuzzy text 匹配已删）。
+
+**边界**: 不改 stopReason 枚举；不引入新状态机；不改 chip 颜色；不改 Sidebar count 聚合。
+
+## ADR-055: P0010.1 Final Repair — Archive legacy + Output candidate-for-removal (no code deletion)
+
+- **日期**: 2026-08-25
+- **状态**: Accepted
+- **来源**: P0010.1 Final Repair — Area E + F. `apps/ecommerce/workspace/index.html` (legacy + disabled + candidate badges) + existing `apps/ecommerce/workspace/styles.css` (badge styles, already in place)
+
+**决策**: 现 Archive 与 现 Output 集合页在 Terminal Lifecycle + Timeline 落地前**保留运行**（不可破坏现有 operator 流程），但**视觉诚实**——加 badge 标明真实状态。
+
+1. **现 Archive 加 `legacy-badge`**：`<span class="legacy-badge" title="本视图当前为 ranking 历史，未连接到 Situation 生命周期">legacy</span>`。
+2. **新 disabled `Situation 归档` nav item**：`<a class="sidebar-item disabled" aria-disabled="true" ...>📦 Situation 归档 <span class="unimplemented-badge">待 Lifecycle 终态</span></a>`。CSS `pointer-events: none; opacity: 0.5; cursor: not-allowed`。**不加新 page**、**不加新 route**、**不加 `situations.closed_at` 列**。
+3. **Output 集合页 nav item 加 `候选下架` badge**：`<span class="candidate-removal-badge" title="Output 已是 Situation Detail 一级区，集合页可下架">候选下架</span>`。**零代码删除**（`outputsRouter` / `viewLoaders.outputs` / `badgeAllOutputs` / `back-to-outputs` 全部保留）。
+4. **下架决策的触发点**：①Timeline 真正把 Output 事件吸进去并稳定运行 30 天 + ②零 operator 投诉集合页少做事 + ③真 Archive（`lifecycle='closed'`）有 5+ 真实样本——三个条件全满足才删代码。任意一条不满足保留。
+
+**边界**: 不删 `loadArchive` / `viewLoaders.archive` / `/api/ranking/{profile}` / `ranking_results`；不删 `outputsRouter` / `viewLoaders.outputs`；不改 `Situations` 表的任何列；不引入 `lifecycle='closed'`；不引入 `closed_at` / `closed_by` / `resolution_reason`。

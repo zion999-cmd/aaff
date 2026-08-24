@@ -248,8 +248,13 @@ export const HumanInterventionSchema = z.object({
     id: z.string(),
     role: z.string(),
   }),
-  /** Grammar type + type-specific content */
-  type: z.enum(['response', 'correction', 'context_supplement', 'decision', 'action_intent']),
+  /** Grammar type + type-specific content.
+   *  P0010.1 Final Repair — Area C.1: `action_intent` is removed. ADR-047
+   *  declared the canonical operator surface to be the 4 high-level kinds
+   *  (response / correction / context_supplement / decision), with `decision`
+   *  sub-typed by `content.decision` ∈ accept | reject | defer | override |
+   *  no_action. The DB CHECK constraint enforces the same set. */
+  type: z.enum(['response', 'correction', 'context_supplement', 'decision']),
   content: z.record(z.string(), z.unknown()).default({}),
   /** When the intervention occurred */
   timestamp: IsoDateString,

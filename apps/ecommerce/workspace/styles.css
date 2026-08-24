@@ -593,6 +593,30 @@ ul, ol { list-style: none; }
 /* ── Unimplemented badge ────────────────────────────────── */
 .unimplemented-badge { font-size: 0.66rem; padding: 2px 10px; border-radius: 10px; font-weight: 600; background: #fef2f2; color: #dc2626; margin-left: 10px; vertical-align: middle; }
 
+/* ── P0010.1 Final Repair: Sidebar Status Badges ────────── */
+/* legacy: this view's data shape doesn't match its label. */
+.legacy-badge { font-size: 0.6rem; padding: 1px 6px; border-radius: 6px; font-weight: 700; background: #f1f5f9; color: #64748b; margin-left: 8px; letter-spacing: 0.04em; text-transform: uppercase; }
+/* candidate-for-removal: this surface is being folded into another. */
+.candidate-removal-badge { font-size: 0.6rem; padding: 1px 6px; border-radius: 6px; font-weight: 700; background: #fef3c7; color: #92400e; margin-left: 8px; letter-spacing: 0.04em; }
+/* disabled: a future-slot nav item that is not yet implemented. */
+.sidebar-item.disabled { pointer-events: none; opacity: 0.5; cursor: not-allowed; }
+
+/* ── P0010.1 Final Repair: Situation Timeline ────────────── */
+.situation-timeline-section { margin: 20px 0; padding: 14px 16px; background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius-lg); }
+.situation-timeline { list-style: none; padding: 0 0 0 16px; margin: 0; position: relative; }
+.situation-timeline::before { content: ''; position: absolute; left: 4px; top: 4px; bottom: 4px; width: 2px; background: var(--border); }
+.timeline-event { position: relative; padding: 6px 0 6px 16px; font-size: 0.78rem; line-height: 1.5; }
+.timeline-event::before { content: ''; position: absolute; left: -16px; top: 11px; width: 8px; height: 8px; border-radius: 50%; background: var(--border); }
+.timeline-event[data-actor="agent"]::before { background: var(--primary); }
+.timeline-event[data-actor="human"]::before { background: #f59e0b; }
+.timeline-event[data-actor="system"]::before { background: #6b7280; }
+.timeline-time { color: var(--muted); font-family: var(--font-mono, 'IBM Plex Mono', monospace); font-size: 0.7rem; margin-right: 8px; }
+.timeline-actor { display: inline-block; min-width: 44px; font-weight: 600; font-size: 0.7rem; padding: 0 6px; border-radius: 6px; background: var(--bg-strong); margin-right: 8px; }
+.timeline-event[data-actor="agent"] .timeline-actor { background: rgba(59, 130, 246, 0.12); color: var(--primary); }
+.timeline-event[data-actor="human"] .timeline-actor { background: rgba(245, 158, 11, 0.12); color: #b45309; }
+.timeline-event[data-actor="system"] .timeline-actor { background: rgba(107, 114, 128, 0.12); color: #4b5563; }
+.timeline-summary { color: var(--text); }
+
 /* ── Situation Chat ─────────────────────────────────────── */
 .situation-chat { padding: 12px 16px; background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius-lg); }
 .situation-chat details summary { color: var(--text); }

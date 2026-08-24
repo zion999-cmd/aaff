@@ -24,6 +24,12 @@ import {
   deriveObservationCommitment,
   getSourcePopoverData,
   renderSourcePopoverHtml,
+  // P0010.1 Final Repair — Area B: vertical timeline renderer.
+  renderSituationTimeline,
+  timelineEventLabel,
+  // P0010.1 Final Repair — Area C.4: intervention-link helpers.
+  deriveLatestAgentActivityId,
+  flattenRespondsToActivityIds,
 } from './presentation.js';
 
 const toastNode = document.getElementById('toast');
@@ -1135,7 +1141,10 @@ async function loadSituationFeed(filter) {
       } else if (inv.status === 'needs_human') {
         statusChip = '<span class="agent-status-chip needs-human">需人工核验</span>';
       } else {
-        statusChip = '<span class="agent-status-chip judgment-ready">已判断</span>';
+        // P0010.1 Final Repair — Area D: "判断已形成" is informational, not
+        // triumphal. Autonomous by default — human interruptible, blocking
+        // only when necessary. The chip should not read as "case closed".
+        statusChip = '<span class="agent-status-chip judgment-ready">判断已形成</span>';
       }
       var judgmentLine = inv && inv.judgment ? '<div class="situation-card-judgment">Agent 判断: ' + escHtml(inv.judgment.slice(0, 70)) + '</div>' : '';
       // P0010.1: strip a leading entity-id from the description so the card
@@ -1329,6 +1338,15 @@ async function loadSituationDetail(situationId) {
     html += renderOutputsSection(initialOutputs, situationId);
     html += '</div>';
 
+    // P0010.1 Final Repair — Area B: vertical lifecycle timeline. Pure renderer
+    // over the already-loaded /api/situations/:id data; no extra HTTP call.
+    // Renders BEFORE the Lifecycle card so the operator sees the chronological
+    // shape of the situation as a primary surface. Returns "" when no events,
+    // which is the correct "no timeline yet" state for a fresh situation.
+    if (typeof renderSituationTimeline === 'function') {
+      html += renderSituationTimeline(raw);
+    }
+
     // P0010.1 REPAIR: 5-state Lifecycle + Observation Commitment hosts.
     // Populated in the second pass after the investigation loads.
     html += '<div id="situationLifecycleHost_' + escHtml(situationId) + '"></div>';
@@ -1372,11 +1390,14 @@ async function loadSituationDetail(situationId) {
       // is intentionally NOT shown in business mode; dev mode reveals it via
       // the title attribute (handled in renderSourceTag).
       interventions.forEach(function(i, idx) {
-        var typeLabel = i.type === 'correction' ? '判断有误' : i.type === 'context_supplement' ? '补充情况' :
-                        i.type === 'decision' ? '决策' : i.type === 'action_intent' ? '准备处理' : '认同判断';
+        // P0010.1 Final Repair — Area C.3: use the typed decision sub-label
+        // (accept / reject / defer / override / no_action) instead of the
+        // collapsed "决策" string. Falls back to the type itself for unknown
+        // types — never to the dead 'action_intent' branch.
+        var typeLabel = timelineEventLabel(i.type, i.content || {});
         html += '<div class="intervention-record">' +
           renderSourceTag('human', idx + 1) +
-          '<span class="intervention-record-type">' + typeLabel + '</span>' +
+          '<span class="intervention-record-type">' + escHtml(typeLabel) + '</span>' +
           '<span class="intervention-record-summary">' + escHtml(i.summary || '') + '</span>' +
           '<span class="intervention-record-time">' + (i.timestamp || i.createdAt || '').slice(0, 16) + '</span>' +
         '</div>';
@@ -1461,6 +1482,7 @@ async function loadSituationDetail(situationId) {
     }
     if (invData && invData.knownEvidence) knownEvidence.push(invData.knownEvidence);
     state.situationContext = {
+      situationId: situationId,
       evidenceStrings: evidenceStrings,
       knownEvidence: knownEvidence,
       interventions: interventions,
@@ -2278,6 +2300,19 @@ function handleIntervention(situationId, optionIndex) {
     text = text.trim();
   }
   var content = window.buildInterventionContent(option, text);
+  // P0010.1 Final Repair — Area C.4: pre-populate
+  // `content.respondsTo.agentActivityIds` from the most recent agent activity
+  // we know about for this situation. Today the only stable agent activity we
+  // have is the investigation itself (its `startedAt` timestamp is unique per
+  // situation). The timeline will show the link even before the producer
+  // emits real `agentActivities[]` rows.
+  if (option.grammarType === 'response') {
+    var agentActivityId = deriveLatestAgentActivityId(state.situationContext);
+    if (agentActivityId) {
+      content.respondsTo = content.respondsTo || { agentActivityIds: [], signalIds: [], observationIds: [] };
+      content.respondsTo.agentActivityIds = [agentActivityId];
+    }
+  }
   var summary = window.buildInterventionSummary(option, text);
   submitStructuredIntervention(situationId, option.grammarType, summary, content);
 }
@@ -2285,6 +2320,12 @@ function handleIntervention(situationId, optionIndex) {
 // Submit a structured intervention → POST → re-read → re-render.
 async function submitStructuredIntervention(situationId, type, summary, content) {
   try {
+    // P0010.1 Final Repair — Area C.4: flatten the structured
+    // `content.respondsTo.agentActivityIds` into the top-level
+    // `respondsToActivityIds` field so the timeline + future Event Bus
+    // consumers can join interventions back to the agent activity that
+    // produced them. The pure helper is in presentation.js (and unit-tested).
+    var respondsToActivityIds = flattenRespondsToActivityIds(type, content);
     var payload = {
       interventionId: 'int_' + Date.now(),
       situationId: situationId,
@@ -2293,6 +2334,7 @@ async function submitStructuredIntervention(situationId, type, summary, content)
       content: content,
       summary: summary,
       timestamp: new Date().toISOString(),
+      respondsToActivityIds: respondsToActivityIds,
     };
     await apiPost('/api/situations/' + situationId + '/interventions', payload);
     // Re-read — don't fake state

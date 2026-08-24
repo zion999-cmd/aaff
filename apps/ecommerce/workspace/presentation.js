@@ -176,12 +176,10 @@ export function hasPriorValidCognition(investigation) {
  *   - 'investigating'  inv.status='investigating'. The Agent is running.
  *                      "调查中" — distinct from "watching" (which means
  *                      the Agent is done but the case is still alive).
- *   - 'waiting_human'  The Agent's stopReason or judgment explicitly asks
- *                      the human to act (ask_human / missing_capability,
- *                      or the judgment/understanding contains
- *                      人工核验/人工确认/无法获取, or the recommendation's
- *                      humanNeeded is non-empty AND the operator has not
- *                      yet decided). "等待人工".
+ *   - 'waiting_human'  The Agent's stopReason or recommendation explicitly
+ *                      asks the human to act (ask_human / missing_capability,
+ *                      OR stopReason='judgment' AND the recommendation's
+ *                      humanNeeded is non-empty). "等待人工".
  *   - 'watching'       The Agent has finished a real investigation (either
  *                      stopReason='observe' OR completed-judgment without
  *                      a decision) OR the latest attempt failed but prior
@@ -225,12 +223,18 @@ export function deriveSituationLifecycle(
 
   // needs_human check (priority over watching). This is a Human-side
   // requirement: the Agent is asking the operator to act.
+  // P0010.1 Final Repair — Area D: tightened to read only structured fields
+  // (stopReason + recommendation.humanNeeded[]). The previous version
+  // matched "人工核验" / "人工确认" / "无法获取" in the judgment text, which
+  // was a fuzzy heuristic and mis-triggered on passing mentions.
   var stop = investigation.stopReason || '';
   if (stop === 'missing_capability' || stop === 'ask_human') return 'waiting_human';
-  var text = ((investigation.judgment || '') + ' ' + (investigation.currentUnderstanding || '')).toLowerCase();
-  if (text.indexOf('人工核验') >= 0) return 'waiting_human';
-  if (text.indexOf('人工确认') >= 0) return 'waiting_human';
-  if (text.indexOf('无法获取') >= 0) return 'waiting_human';
+  if (stop === 'judgment') {
+    var rec = investigation.recommendation;
+    if (rec && Array.isArray(rec.humanNeeded) && rec.humanNeeded.length > 0) {
+      return 'waiting_human';
+    }
+  }
 
   // Observation: the Agent's recommendation is "继续观察".
   if (stop === 'observe') return 'watching';
@@ -493,5 +497,276 @@ function escHtml(s) {
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;')
     .replace(/'/g, '&#39;');
+}
+
+// ---------------------------------------------------------------------------
+// P0010.1 Final Repair — Area B: vertical Situation Timeline.
+//
+// Pure functions over the `/api/situations/:id` response. Every event in
+// the rendered timeline comes from a REAL persisted timestamp — no fabricated
+// `completedAt` / `deliveredAt` / `askedAt`. Rows that proxy a real-but-weak
+// field (e.g. `updatedAt` for an "Investigation completed" event) carry a
+// small `≈` annotation in the summary so the operator can see exactly which
+// fields are approximate.
+//
+// This module does NOT add a Timeline Store / Event Bus. It only projects
+// existing data: situations.createdAt, human_interventions.created_at,
+// outputs[].createdAt/acknowledgedAt/closedAt, and the investigation marker
+// fields. Anything not in the input is left out — no defaults, no LLM.
+// ---------------------------------------------------------------------------
+
+/**
+ * Map a HumanIntervention to a Chinese business label.
+ * The `decision` sub-type is exposed (accept/reject/defer/override/no_action)
+ * so the timeline can distinguish between "采用建议" and "稍后处理" — currently
+ * collapsed to a single "决策" label in `app.js:1376`.
+ */
+export function timelineEventLabel(type, content) {
+  if (type === 'decision') {
+    var d = content && content.decision;
+    if (d === 'accept') return '已采用建议';
+    if (d === 'reject') return '不采用';
+    if (d === 'defer') return '稍后处理';
+    if (d === 'override') return '已重写判断';
+    if (d === 'no_action') return '无操作';
+    return '决策';
+  }
+  if (type === 'response') return '认同判断';
+  if (type === 'correction') return '纠正事实';
+  if (type === 'context_supplement') return '补充背景';
+  return type || '事件';
+}
+
+/** Map a Chinese label for an event actor (rendered in the timeline row). */
+function actorLabel(actor) {
+  if (actor === 'agent') return 'Agent';
+  if (actor === 'human') return '运营';
+  if (actor === 'system') return '系统';
+  return actor || '';
+}
+
+/** Format an ISO timestamp for display in the timeline row. */
+function formatLocalTime(iso) {
+  if (!iso) return '';
+  // Slice(0, 16) gives "YYYY-MM-DDTHH:mm". Replace the T with a space for the operator UI.
+  return String(iso).slice(0, 16).replace('T', ' ');
+}
+
+/** Push an event only if its timestamp is present. Skips silently on missing data. */
+function pushIfTimed(events, ev) {
+  if (ev && ev.t) events.push(ev);
+}
+
+/**
+ * Render the Situation timeline. Returns the HTML string for `<ol class="situation-timeline">…</ol>`,
+ * or an empty string if there are no events (so the section is hidden entirely).
+ */
+export function renderSituationTimeline(detail) {
+  if (!detail) return '';
+  var events = [];
+  // 1. Situation created
+  pushIfTimed(events, {
+    t: detail.createdAt,
+    actor: 'agent',
+    type: 'situation.created',
+    summary: '发现 Situation',
+  });
+  // 2. Observation window
+  if (detail.temporal && detail.temporal.observedAt) {
+    var window =
+      '观察窗口 ' +
+      (detail.temporal.windowStart || detail.temporal.observedAt) +
+      ' → ' +
+      (detail.temporal.windowEnd || detail.temporal.observedAt);
+    pushIfTimed(events, {
+      t: detail.temporal.observedAt,
+      actor: 'system',
+      type: 'situation.observed',
+      summary: window,
+    });
+  }
+  // 3. Investigation lifecycle — only if learningContext.investigation is present
+  var lc = detail.learningContext;
+  var inv = lc && lc.investigation;
+  if (inv) {
+    if (inv.startedAt) {
+      pushIfTimed(events, {
+        t: inv.startedAt,
+        actor: 'agent',
+        type: 'investigation.started',
+        summary: '开始调查',
+      });
+    }
+    if (inv.status === 'completed' && inv.updatedAt) {
+      pushIfTimed(events, {
+        t: inv.updatedAt,
+        actor: 'agent',
+        type: 'investigation.completed',
+        summary: '调查完成 (≈ 完成时间; 实际缺少 completedAt 列)',
+      });
+    }
+    if (inv.status === 'failed' && inv.updatedAt) {
+      pushIfTimed(events, {
+        t: inv.updatedAt,
+        actor: 'agent',
+        type: 'investigation.failed',
+        summary: '调查失败' + (inv.error ? ': ' + inv.error : ''),
+      });
+    }
+    // 4. Stop reason — no separate timestamp, so it's an annotation on the most recent agent event.
+    if (inv.stopReason) {
+      var stopLabel =
+        inv.stopReason === 'judgment'
+          ? '形成判断'
+          : inv.stopReason === 'observe'
+            ? '持续观察'
+            : inv.stopReason === 'missing_capability'
+              ? '能力边界'
+              : inv.stopReason === 'ask_human'
+                ? '需要人工'
+                : inv.stopReason;
+      // Anchor the stop-reason event to the latest of (startedAt, updatedAt, observedAt) so it
+      // sorts after the events it depends on but before the next human action.
+      var stopT = inv.updatedAt || inv.startedAt || (detail.temporal && detail.temporal.observedAt);
+      pushIfTimed(events, {
+        t: stopT,
+        actor: 'agent',
+        type: 'investigation.stopped',
+        summary: '停止原因: ' + stopLabel,
+      });
+    }
+  }
+  // 5. Human interventions
+  var interventions = Array.isArray(detail.interventions) ? detail.interventions : [];
+  for (var i = 0; i < interventions.length; i++) {
+    var ii = interventions[i];
+    pushIfTimed(events, {
+      t: ii.timestamp || ii.createdAt,
+      actor: 'human',
+      type: 'intervention.' + (ii.type || 'event'),
+      summary: timelineEventLabel(ii.type, ii.content) + (ii.summary ? ' — ' + ii.summary : ''),
+    });
+  }
+  // 6. Outputs (created/acknowledged/closed — no `deliveredAt` field, so skip delivered)
+  var outputs = Array.isArray(detail.outputs) ? detail.outputs : [];
+  for (var o = 0; o < outputs.length; o++) {
+    var out = outputs[o];
+    var typeLabel = out.type === 'recommendation' ? '建议' : out.type === 'analysis' ? '分析' : out.type === 'report' ? '报告' : out.type === 'work_item' ? '工作项' : '交付物';
+    pushIfTimed(events, {
+      t: out.createdAt,
+      actor: 'agent',
+      type: 'output.created',
+      summary: typeLabel + ' 已生成',
+    });
+    pushIfTimed(events, {
+      t: out.acknowledgedAt,
+      actor: 'human',
+      type: 'output.acknowledged',
+      summary: typeLabel + ' 已确认',
+    });
+    pushIfTimed(events, {
+      t: out.closedAt,
+      actor: 'human',
+      type: 'output.closed',
+      summary: typeLabel + ' 已关闭',
+    });
+  }
+  if (events.length === 0) return '';
+  // Sort by timestamp ascending; events with identical timestamps stay in source order.
+  events.sort(function (a, b) {
+    return String(a.t).localeCompare(String(b.t));
+  });
+  var items = events
+    .map(function (e) {
+      return (
+        '<li class="timeline-event" data-event-type="' +
+        escHtml(e.type) +
+        '" data-actor="' +
+        escHtml(e.actor) +
+        '">' +
+        '<time class="timeline-time" datetime="' +
+        escHtml(e.t) +
+        '">' +
+        escHtml(formatLocalTime(e.t)) +
+        '</time>' +
+        '<span class="timeline-actor">' +
+        escHtml(actorLabel(e.actor)) +
+        '</span>' +
+        '<span class="timeline-summary">' +
+        escHtml(e.summary) +
+        '</span>' +
+        '</li>'
+      );
+    })
+    .join('');
+  return (
+    '<div class="situation-timeline-section">' +
+    '<h3 class="situation-layer-title">⏱ 生命周期时间线</h3>' +
+    '<p class="muted" style="font-size:0.74rem;margin:0 0 8px 0">每个事件都来自持久化的时间戳；不伪造。</p>' +
+    '<ol class="situation-timeline">' +
+    items +
+    '</ol>' +
+    '</div>'
+  );
+}
+
+// ---- P0010.1 Final Repair — Area C.4 helpers ----
+//
+// Pure functions that pin the behavior of:
+//   1. deriveLatestAgentActivityId(situationContext)
+//        — return the id of the most recent agent activity for a situation
+//   2. flattenRespondsToActivityIds(type, content)
+//        — project the structured `content.respondsTo.agentActivityIds` into
+//          the top-level `respondsToActivityIds` field on the POST payload
+//
+// These were previously inlined in app.js and never had a unit test. Today the
+// only stable agent activity we have is the investigation itself (its
+// `startedAt` timestamp is unique per situation). The producer-side
+// `agentActivities[]` is still hard-coded to `[]` (see
+// `learning-context-producer.ts:103`) — that gap is reported in the next-slice
+// blockers in context/handoff.md, not fixed in this round.
+
+/**
+ * @param {{
+ *   situationId?: string,
+ *   invData?: { startedAt?: string | null } | null,
+ *   agentActivities?: Array<{ activityId?: string, timestamp?: string }>
+ * }} situationContext
+ * @returns {string | null}
+ */
+export function deriveLatestAgentActivityId(situationContext) {
+  if (!situationContext) return null;
+  // Prefer an explicit agentActivities[] projection when the producer
+  // eventually emits it. Today this list is empty, so we fall back to the
+  // investigation's startedAt.
+  var list = Array.isArray(situationContext.agentActivities)
+    ? situationContext.agentActivities
+    : [];
+  for (var i = list.length - 1; i >= 0; i--) {
+    var a = list[i];
+    if (a && typeof a.activityId === 'string' && a.activityId.length > 0) {
+      return a.activityId;
+    }
+  }
+  var inv = situationContext.invData;
+  if (inv && typeof inv.startedAt === 'string' && inv.startedAt.length > 0) {
+    return inv.startedAt;
+  }
+  return null;
+}
+
+/**
+ * @param {string} type — the HumanIntervention.type (one of the 4 canonical kinds)
+ * @param {{ respondsTo?: { agentActivityIds?: string[] } } | null | undefined} content
+ * @returns {string[]}
+ */
+export function flattenRespondsToActivityIds(type, content) {
+  if (type !== 'response') return [];
+  if (!content || !content.respondsTo) return [];
+  var ids = content.respondsTo.agentActivityIds;
+  if (!Array.isArray(ids)) return [];
+  return ids.filter(function (x) {
+    return typeof x === 'string' && x.length > 0;
+  });
 }
 

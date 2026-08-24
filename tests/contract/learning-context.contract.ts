@@ -217,9 +217,13 @@ describe('LearningContext — real JD evidence validation', () => {
   });
 });
 
-describe('HumanIntervention — 5-type Grammar (P0007.2)', () => {
-  it('accepts all 5 intervention types', () => {
-    const grammarTypes = ['response', 'correction', 'context_supplement', 'decision', 'action_intent'] as const;
+describe('HumanIntervention — 4-type Grammar (P0007.2 + P0010.1 Final Repair Area C)', () => {
+  it('accepts all 4 intervention types', () => {
+    // P0010.1 Final Repair — Area C.1: `action_intent` was removed in ADR-047.
+    // The canonical operator surface is the 4 high-level kinds, with
+    // `decision` sub-typed by `content.decision` ∈ accept | reject | defer
+    // | override | no_action. The DB trigger enforces the same set.
+    const grammarTypes = ['response', 'correction', 'context_supplement', 'decision'] as const;
     grammarTypes.forEach(type => {
       const intervention = {
         interventionId: `int_${type}`,
@@ -231,6 +235,21 @@ describe('HumanIntervention — 5-type Grammar (P0007.2)', () => {
       };
       expect(() => HumanInterventionSchema.parse(intervention)).not.toThrow();
     });
+  });
+
+  it('REPAIR invariant: rejects `action_intent` (removed in ADR-047)', () => {
+    // P0010.1 Final Repair — Area C.1 + C.2: `action_intent` is no longer a
+    // valid intervention type. The Zod enum drops it; the DB trigger
+    // enforces the same set.
+    const intervention = {
+      interventionId: 'int_legacy',
+      situationId: 'sit_test',
+      actor: { id: 'u1', role: 'operator' },
+      type: 'action_intent',
+      timestamp: '2026-08-12T00:00:00Z',
+      summary: 'Test action_intent (legacy)',
+    };
+    expect(() => HumanInterventionSchema.parse(intervention)).toThrow(/action_intent/);
   });
 
   it('rejects invalid type — Grammar is enforced, unknown values fail validation', () => {

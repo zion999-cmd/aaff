@@ -17,18 +17,45 @@ const fail = (res: any, status: number, error: string) => {
 };
 
 /**
- * P0010.1: derive the business status of a Situation from its persisted
- * Investigation state (product semantics, NOT a new state machine). Pure — no LLM.
+ * P0010.1 Final Repair — Area D: derive the business status of a Situation
+ * from its persisted Investigation state. Pure — no LLM, no fuzzy text
+ * match. The decision tree is the single source of truth (mirrored by the
+ * server unit test in `tests/unit/routes/derive-investigation-status.test.ts`).
+ *
  *   pending         → no investigation yet (auto-recovery will pick it up)
  *   investigating   → a turn is in progress (status marker persisted before run)
  *   failed          → last turn timed out/failed (recoverable — no silent loss)
  *   observing       → stopReason = observe
- *   needs_human     → missing_capability / ask_human, or the Agent surfaced 人工核验
- *   judgment_ready  → stopReason = judgment (or any other completed stop)
+ *   needs_human     → stopReason ∈ {missing_capability, ask_human}
+ *                     OR stopReason = judgment AND
+ *                        recommendation.humanNeeded[] is non-empty
+ *   judgment_ready  → stopReason = judgment (with empty or absent humanNeeded)
+ *
+ * Note: the prior version of this function flipped status to `needs_human`
+ * whenever the agent's prose mentioned "人工核验" / "人工确认" / "无法获取" as
+ * passing text. That was a heuristic, not a contract — it mis-triggered on
+ * cases where the agent was acknowledging past human input, and missed the
+ * real blocking signal: a populated `recommendation.humanNeeded[]`. This
+ * version only reads structured fields.
  */
-type SituationInvestigationStatus = 'pending' | 'investigating' | 'failed' | 'observing' | 'needs_human' | 'judgment_ready';
-const deriveInvestigationStatus = (
-  inv: { status?: string; stopReason?: string; judgment?: string; currentUnderstanding?: string } | null,
+export type SituationInvestigationStatus =
+  | 'pending'
+  | 'investigating'
+  | 'failed'
+  | 'observing'
+  | 'needs_human'
+  | 'judgment_ready';
+
+type InvestigationLike = {
+  status?: string;
+  stopReason?: string;
+  judgment?: string;
+  currentUnderstanding?: string;
+  recommendation?: { humanNeeded?: unknown } | null;
+} | null;
+
+export const deriveInvestigationStatus = (
+  inv: InvestigationLike,
 ): SituationInvestigationStatus => {
   if (!inv) return 'pending';
   if (inv.status === 'investigating') return 'investigating';
@@ -36,8 +63,13 @@ const deriveInvestigationStatus = (
   const stop = inv.stopReason ?? '';
   if (stop === 'observe') return 'observing';
   if (stop === 'missing_capability' || stop === 'ask_human') return 'needs_human';
-  const text = ((inv.judgment ?? '') + (inv.currentUnderstanding ?? '')).toLowerCase();
-  if (text.includes('人工核验') || text.includes('人工确认') || text.includes('无法获取')) return 'needs_human';
+  if (stop === 'judgment') {
+    const rec = inv.recommendation;
+    if (rec && Array.isArray(rec.humanNeeded) && rec.humanNeeded.length > 0) {
+      return 'needs_human';
+    }
+    return 'judgment_ready';
+  }
   return 'judgment_ready';
 };
 

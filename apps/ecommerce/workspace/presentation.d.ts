@@ -79,3 +79,48 @@ export function getSourcePopoverData(
 ): SourcePopover | null;
 
 export function renderSourcePopoverHtml(data: SourcePopover | null): string;
+
+// ---- P0010.1 Final Repair — Area B additions ----
+
+/**
+ * Map a HumanIntervention to a Chinese business label.
+ * `decision` sub-type (accept / reject / defer / override / no_action) is
+ * exposed here so the timeline can distinguish them — currently collapsed
+ * to a single "决策" label in `app.js:1376`.
+ */
+export function timelineEventLabel(
+  type: string | null | undefined,
+  content: { decision?: string } | null | undefined,
+): string;
+
+/**
+ * Render a vertical Situation timeline as an HTML string. Pure function over
+ * the `/api/situations/:id` response — no DOM, no fetch, no LLM. Every event
+ * comes from a real persisted timestamp. Empty input → empty string.
+ */
+export function renderSituationTimeline(detail: any): string;
+
+// ---- P0010.1 Final Repair — Area C.4 declarations ----
+
+/**
+ * Best-effort: return the id of the most recent agent activity for the given
+ * situation context. Today this is the investigation's `startedAt` (unique
+ * per situation). Returns null if nothing is known.
+ */
+export function deriveLatestAgentActivityId(
+  situationContext: {
+    situationId?: string;
+    invData?: { startedAt?: string | null } | null;
+    agentActivities?: Array<{ activityId?: string; timestamp?: string }>;
+  } | null | undefined,
+): string | null;
+
+/**
+ * Project the structured `content.respondsTo.agentActivityIds` array onto
+ * the top-level `respondsToActivityIds` field. Only meaningful for
+ * `type === 'response'`; other types always return `[]`.
+ */
+export function flattenRespondsToActivityIds(
+  type: string,
+  content: { respondsTo?: { agentActivityIds?: unknown[] } } | null | undefined,
+): string[];

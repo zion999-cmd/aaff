@@ -39,7 +39,7 @@
           <a href="#" class="sidebar-item" data-view="situations" data-filter="investigating"><span class="sidebar-icon">⏳</span><span>调查中</span><span class="sidebar-badge" id="badgeInvestigatingSituations">--</span></a>
           <a href="#" class="sidebar-item" data-view="situations" data-filter="observing"><span class="sidebar-icon">👀</span><span>观察中</span><span class="sidebar-badge" id="badgeObservingSituations">--</span></a>
           <a href="#" class="sidebar-item" data-view="situations" data-filter="needs_human"><span class="sidebar-icon">⚠</span><span>需人工</span><span class="sidebar-badge" id="badgeNeedsHumanSituations">--</span></a>
-          <a href="#" class="sidebar-item" data-view="situations" data-filter="judgment_ready"><span class="sidebar-icon">✓</span><span>已判断</span><span class="sidebar-badge" id="badgeJudgmentSituations">--</span></a>
+          <a href="#" class="sidebar-item" data-view="situations" data-filter="judgment_ready"><span class="sidebar-icon">✓</span><span>判断已形成</span><span class="sidebar-badge" id="badgeJudgmentSituations">--</span></a>
         </div>
         <div class="sidebar-divider"></div>
         <!-- 经营观察 — renamed, preserved business views -->
@@ -47,7 +47,14 @@
           <div class="sidebar-section-label">经营观察</div>
           <a href="#" class="sidebar-item" data-view="product"><span class="sidebar-icon product-icon">&#127991;</span><span>商品</span></a>
           <a href="#" class="sidebar-item" data-view="trend"><span class="sidebar-icon trend-icon">&#128200;</span><span>趋势</span></a>
-          <a href="#" class="sidebar-item" data-view="archive"><span class="sidebar-icon archive-icon">&#128451;</span><span>历史归档</span></a>
+          <a href="#" class="sidebar-item" data-view="archive"><span class="sidebar-icon archive-icon">&#128451;</span><span>历史归档</span><span class="legacy-badge" title="本视图当前为 ranking 历史，未连接到 Situation 生命周期">legacy</span></a>
+          <!-- P0010.1 Final Repair — Area E.2: reserved future-slot for the
+               "real" Archive (Situation 归档) that is wired to a terminal
+               lifecycle event. Today there is no such event (no
+               situations.closed_at column, no Resolution Engine), so this
+               item is disabled. Click does nothing. See
+               context/handoff.md for the next-slice blocker. -->
+          <a href="#" class="sidebar-item disabled" aria-disabled="true" title="等待 Situation lifecycle 终态协议落地（closed_at / Resolution Engine）"><span class="sidebar-icon">📦</span><span>Situation 归档</span><span class="unimplemented-badge">待 Lifecycle 终态</span></a>
         </div>
         <div class="sidebar-divider"></div>
         <!-- 系统/高级 — downgraded -->
@@ -67,7 +74,7 @@
                Read-only. Groups all WorkItems across all situations by
                status (全部 / 待交付 / 已交付 / 已确认 / 已关闭). Does NOT
                change status on page open. -->
-          <a href="#" class="sidebar-item" data-view="outputs"><span class="sidebar-icon">📤</span><span>工作输出</span><span class="sidebar-badge" id="badgeAllOutputs">--</span></a>
+          <a href="#" class="sidebar-item" data-view="outputs"><span class="sidebar-icon">📤</span><span>工作输出</span><span class="sidebar-badge" id="badgeAllOutputs">--</span><span class="candidate-removal-badge" title="Output 已是 Situation Detail 一级区，集合页可下架">候选下架</span></a>
         </div>
         <div class="sidebar-divider"></div>
         <!-- Legacy — hidden (Memory is Runtime-owned, removed from nav) -->

@@ -263,7 +263,7 @@ export const autoInvestigateSituation = async (db: Db, workspaceDir: string, sit
 };
 
 // CLI entry: `npm run dev` / `npm start`
-const main = (): void => {
+const main = async (): Promise<void> => {
   const db = openDb();
   // P0010.1 Slice 3: scheduled acquisition config. Disabled by default — the
   // operator explicitly enables capabilities so no surprise CDP runs happen.
@@ -272,6 +272,23 @@ const main = (): void => {
     { capability: 'traffic.overview', at: '02:05', enabled: false },
   ];
   startServer({ db, schedule });
+  // P0010.1 Final Repair — Area A: idempotent product-catalog bootstrap.
+  // Walks every getProductList*.json under data/evidence/jd and projects
+  // (spu_id, proName) into the canonical products table so the Situation
+  // cards display real product names (not "未知商品 · SKU <id>"). Skippable
+  // via BOOTSTRAP_PRODUCT_CATALOG=skip. Failures are logged, never thrown.
+  try {
+    const { bootstrapProductCatalog } = await import(
+      '#app/connectors/jd/product-catalog-bootstrap.js'
+    );
+    await bootstrapProductCatalog(db);
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.warn(
+      '[bootstrap] product-catalog bootstrap failed:',
+      err instanceof Error ? err.message : String(err),
+    );
+  }
   // Supplement missing data in the background (non-blocking).
   void backfillRecentData(db);
 };

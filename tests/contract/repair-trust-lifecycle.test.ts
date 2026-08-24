@@ -74,9 +74,35 @@ describe('deriveSituationLifecycle — 5-state operator-facing lifecycle', () =>
     ).toBe('waiting_human');
   });
 
-  test('judgment text mentions 人工核验 → waiting_human', () => {
+  test('P0010.1 Final Repair — Area D: judgment text mentions 人工核验 → NOT waiting_human (no fuzzy text match)', () => {
+    // The previous version of deriveSituationLifecycle flipped to
+    // 'waiting_human' whenever the agent's prose mentioned 人工核验 / 人工确认
+    // / 无法获取. That was a heuristic, not a contract — it mis-triggered
+    // on cases where the agent was acknowledging past human input. The
+    // tightened derivation only reads structured fields
+    // (stopReason + recommendation.humanNeeded[]).
     expect(
       deriveSituationLifecycle({ status: 'completed', judgment: '需要人工核验客服排班' }, 0, false),
+    ).toBe('watching');
+  });
+
+  test('P0010.1 Final Repair — Area D: stopReason=judgment + humanNeeded=[] → watching', () => {
+    expect(
+      deriveSituationLifecycle(
+        { status: 'completed', stopReason: 'judgment', recommendation: { humanNeeded: [] } },
+        0,
+        false,
+      ),
+    ).toBe('watching');
+  });
+
+  test('P0010.1 Final Repair — Area D: stopReason=judgment + humanNeeded=[item] → waiting_human', () => {
+    expect(
+      deriveSituationLifecycle(
+        { status: 'completed', stopReason: 'judgment', recommendation: { humanNeeded: ['confirm supplier'] } },
+        0,
+        false,
+      ),
     ).toBe('waiting_human');
   });
 
