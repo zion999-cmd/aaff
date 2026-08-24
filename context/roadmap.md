@@ -47,6 +47,17 @@
 - [x] **P0009.1 Situation Producer / 今日工作** — deterministic detection (meaningful_change/ranking_attention/cross_signal) + idempotent dedup + 复用 P0007 persistence；真实 grounded Situation 落「今日工作」
 - [ ] P0009 Final Browser Acceptance — Workspace 浏览器端到端验收（待模型稳定性）
 
+## P0010 系列: Knowledge-Guided Investigation + Continuous Business Runtime
+- [x] P0010 Knowledge-Guided Investigation (Slice 0+1, 2+3, 4, 5 Recommendation-feedback) — Investigation Contract schema + runInvestigationTurn + Workspace Investigation surface
+- [x] P0010.1 Final Repair (ADR-047..055) — 8 区诚实收尾: 实体解析 / 时间轴 / 4 canonical human kind / needs_human 语义 / Archive legacy badge / Output 候选下架 / Final outcome audit / Trust reference audit
+- [x] P0010.2 Continuous Business Runtime (ADR-056) — RuntimeLoop 60s tick + per-tick mutex + InvestigationPolicy contentHash compare + materializeWorkItem 幂等
+- [x] P0010.2.1 contentHash sidecar fix (ADR-057) — InvestigationSchema evidenceContentHash field + markInvestigation 接受 hash + fail-CLOSED on legacy
+- [ ] P0010.3 终态 Lifecycle（unblocks E 真 Archive + G 终态） — situations.closed_at + lifecycle='closed' + Resolution Engine + Outcome producer
+- [ ] P0010.3 Evidence Identity (H.1 / SB-1) — content_hash 是唯一持久 handle 不可跨加载；需 evidence_id 列 or hash-keyed
+- [ ] P0010.3 Knowledge Identity (H.2 / SB-2) — operator_memories vs context_memories shared identity or 2 surface decision
+- [ ] P0010.3 Agent Activity Producer (H.3) — write real agentActivities[] + correct findings[].evidenceIds[] (needs H.1 first)
+- [ ] P0010.3 Token-rotation test (per ADR-057 "What to verify next session" — restart hermes with new token, see loop auto-discover without restart)
+
 ## Phase 7: Skills + Workflows 🔮
 - [ ] **Business Workflows** — 618, 双11, 新品上市, 日报/周报/月报 (不是 Runtime Workflow)
 

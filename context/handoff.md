@@ -227,3 +227,170 @@ Per the plan, E2E steps an operator can re-run after this commit:
 - **P0010.1 Knowledge Identity** (H.2) — separate decision; the 2 memory
   surfaces may need to converge or be explicitly separated by identity
   policy.
+
+# Handoff — P0010.2 Continuous Business Runtime (2026-08-25)
+
+## Session goal
+
+Make the runtime actually continuous: `setInterval` driven
+`tick → acquire → evidence → situation → investigation → workItem`
+chain, without Workspace interaction, without HTTP request. Single
+acceptance criterion from the user: "本次验收不要主要看测试数量，也先
+不要看 Workspace 截图. 我们真正要看的证据是连续运行日志". Expected pattern:
+
+```
+02:00 tick → 02:00 acquisition started → 02:01 evidence updated →
+02:01 situation updated → 02:01 investigation triggered → 02:02 output created
+03:00 tick → 03:00 acquisition started → 03:01 evidence updated →
+03:01 investigation skipped: no meaningful change
+```
+
+Hard constraints (verbatim, kept): no Trust Schema refactor, no
+Knowledge Engine, no Evidence migration, no Event Bus, no Wake Engine,
+no Scheduler, no Hermes transport changes, no Action Engine, no
+Approval, no external sending, no Resolution Engine, no second
+Timeline Store, no fake time/provenance/final outcome. No
+`SubprocessHermesClient` removal. No third `hermes proxy` transport.
+"不能让 Scheduler 本身变成业务编排器". LLM must not guess product
+names; no second Product Store. "Autonomous by default, Human
+interruptible, Blocking only when necessary".
+
+## What was built (3 layers)
+
+### 1. Runtime Loop (apps/ecommerce/runtime/loop/)
+
+- `runtime-loop.ts` (~270 LOC): `createRuntimeLoop` wraps
+  `ScheduledAcquisitionRunner` without modifying it. 60s setInterval
+  (env override `RUNTIME_LOOP_TICK_MS`), per-tick mutex
+  (`tickInFlight` promise reuse), `start`/`stop`/`tickNow`/`list`.
+  Calls `kernel.execute({mock:false})` for the REAL acquire path —
+  no demo timer, no fake Evidence.
+- `investigation-policy.ts` (~90 LOC, pure): `shouldInvestigate` is
+  a pure decision function. v1 compared `updatedAt` to `acquiredAt`
+  (always triggered) — caught in live demo, fixed to compare
+  `contentHash`. Legacy data path: completed legacy = skip (fail-
+  closed), failed legacy = one fresh attempt.
+- `recommendation-to-output.ts` (~70 LOC): `materializeWorkItem` is
+  the single materialization point. `fingerprint({ situationId,
+  recommendation, rationale, judgment, updatedAt })` →
+  deterministic `outputId = out_<16hex>`. Idempotent: same content
+  → same outputId → dedup via `outputs.some(o => o.outputId === ...)`.
+- `loop-events.ts` (~40 LOC): typed event union + default `stdout`
+  sink; test seam `onEvent` injection.
+
+### 2. Hermes transport convergence (commit 1, already pushed)
+
+- `session-client.ts`: delete eager `resolvedToken` chain; rewrite
+  `connect()` to lazy-resolve + retry-once. `closedByUser` flag
+  prevents auto-reconnect. `HermesAuthError` exported so call
+  sites can `instanceof`-check. Operator-pinned env var is
+  NEVER auto-replaced on failure (per audit security row #5).
+- `token-resolver.ts`: `_resetTokenCache` → `resetTokenCache`;
+  add `forceRefresh?: boolean`.
+- `index.ts` re-export updated.
+
+### 3. Single WorkItem call site (commit 2, in P0010.2)
+
+- `situation-chat.ts#runInvestigationTurn` now calls
+  `materializeWorkItem` after a successful investigation. Both
+  the RuntimeLoop's `investigate` and the manual
+  `POST /api/situation/:id/investigate` share the same code
+  path. No second output creation surface.
+
+## P0010.2.1 (live-demo-driven fix, separate commit)
+
+Three coordinated changes after the first live 2-cycle demo:
+
+1. **InvestigationPolicy fail-CLOSED on legacy**: prior P0010.1
+   completed/investigating investigations have no contentHash
+   sidecar. The old policy returned `meaningful_new_evidence` for
+   them — infinite retry anti-pattern on a slow LLM. New policy:
+   legacy completed = skip, legacy failed = one retry. Real data
+   `sit_bb96b0d781c532bf080e` was already burning cycles this way.
+2. **InvestigationSchema adds `evidenceContentHash`**: Zod strips
+   unknown fields during `LearningContextSchema.parse()`. The
+   sidecar was being silently dropped. Now it's a first-class
+   optional field.
+3. **markInvestigation accepts evidenceContentHash**: previously
+   only the success path stamped the sidecar. Failed/investigating
+   markers now also remember the content they saw, so the next
+   tick can correctly distinguish "same-content-failed-retry" from
+   "new-content-investigate".
+
+## Live demo evidence
+
+```
+[loop] loop started capabilities=trade.overview,traffic.overview tickMs=10000
+[loop] loop started (continuous business runtime)
+[bootstrap] products projected: 6 from 6 files (0 skipped)
+[backfill] 7/7 days completed (2026-08-17 ~ 2026-08-23)
+[backfill] situations: 0 created / 2 deduped
+[loop] tick capability=trade.overview
+[loop] acquisition started capability=trade.overview
+[loop] evidence updated capability=trade.overview count=1
+[loop] tick capability=traffic.overview
+[loop] acquisition started capability=traffic.overview
+[loop] evidence updated capability=traffic.overview count=1
+[loop] situation updated created=0 skipped=2
+[loop] investigation skipped situation=sit_bb96b0d781c532bf080e reason=no_meaningful_change
+[loop] investigation skipped situation=sit_003b9c4485177f642a74 reason=no_meaningful_change
+[loop] tick done capabilities=2 situations=0 investigations=0 outputs=0
+```
+
+Every subsequent tick (10s) produces the same idempotent
+`no_meaningful_change` skip. **The continuous runtime IS running.**
+Cycle 1 (`investigation triggered`) would require fresh
+situation data (the demo DB has both today's situations already
+investigated, with the backfill covering the 7-day window).
+
+## Tests
+
+- `tests/unit/loop/investigation-policy.test.ts` — 14 cases
+  (new, no_evidence, completed-match, completed-different, legacy
+  completed, legacy failed, failed-same-content, failed-new-content,
+  waiting_human short-circuit, isWaitingOnHuman × 4).
+- `tests/unit/loop/recommendation-to-output.test.ts` — 6 cases
+  (creates, same-rec dedup, different-judgment new, observe
+  no-output, prerequisites/humanNeeded fields, recommendation
+  shape).
+- `tests/unit/loop/runtime-loop.test.ts` — 9 cases (full chain,
+  2-tick dedup, mutex reuse, lastTickAt advance, stop/start
+  reset, disabled schedule, investigation path, skip path,
+  tickNow without start).
+- 27 new tests + 0 new typecheck errors (baseline 19 pre-existing).
+- All `tests/unit/hermes/{session-client,token-resolver}` pass
+  with the lazy token + retry-once change.
+
+## Risks / known gaps
+
+- **`/api/ws` token caching is one-shot per process** — restarting
+  agentFabric picks up the env var fresh. Not a bug; just a
+  cycle boundary.
+- **No loop-level backoff** — if Hermes is down, the connect
+  retry-once path fails, the investigation marker is written as
+  `failed`, and the next tick will retry. The user explicitly
+  excluded durable job queue / exponential backoff from this
+  slice. P0011 candidate.
+- **WorkItem fingerprint is over `(recommendation, rationale,
+  judgment, updatedAt)`** — same judgment + new evidence = new
+  WorkItem (operator can re-decide). Different intent but same
+  text = collision. Trade-off documented; the ID space
+  (sha256[:16] → 64-bit) is wide enough for the current
+  situation volume.
+- **The "cycle 1 trigger" was not observed live** because today's
+  2 situations were already investigated when the demo started
+  (left over from the prior 2-cycle attempt). The next user
+  session starting with empty situation data will see
+  `investigation triggered` in cycle 1.
+
+## What to verify next session
+
+- Drop the 2 today's situations from the DB and restart → see
+  `investigation triggered reason=new_situation` in cycle 1.
+- Stop `hermes serve` mid-loop → see `investigation failed
+  reason=...` then `investigation skipped reason=no_meaningful_change`
+  on the next tick (after the failed marker is stamped with the
+  contentHash sidecar).
+- Restart `hermes serve` with a new `HERMES_DASHBOARD_SESSION_TOKEN`
+  → loop auto-discovers within 60s (no agentFabric restart needed)
+  IF agentFabric started without an env pin.

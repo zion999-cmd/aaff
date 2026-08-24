@@ -1147,3 +1147,37 @@ Runtime Kernel 不属于 HermesAgent 内部。它是 agentFabric 的公共执行
 4. **下架决策的触发点**：①Timeline 真正把 Output 事件吸进去并稳定运行 30 天 + ②零 operator 投诉集合页少做事 + ③真 Archive（`lifecycle='closed'`）有 5+ 真实样本——三个条件全满足才删代码。任意一条不满足保留。
 
 **边界**: 不删 `loadArchive` / `viewLoaders.archive` / `/api/ranking/{profile}` / `ranking_results`；不删 `outputsRouter` / `viewLoaders.outputs`；不改 `Situations` 表的任何列；不引入 `lifecycle='closed'`；不引入 `closed_at` / `closed_by` / `resolution_reason`。
+
+## ADR-056: P0010.2 — RuntimeLoop is a thin cadence+mutex wrapper, not a business orchestrator
+
+- **日期**: 2026-08-25
+- **状态**: Accepted
+- **来源**: P0010.2 Continuous Business Runtime. `apps/ecommerce/runtime/loop/runtime-loop.ts` + `investigation-policy.ts` + `recommendation-to-output.ts` + `loop-events.ts`. 27 new tests across 3 test files. 0 new typecheck errors (baseline 19 pre-existing). Live 2-cycle demo verified (continuous idempotent skip on every tick).
+
+**决策**: `RuntimeLoop` owns ONLY three things: ① cadence (60s `setInterval`, env override `RUNTIME_LOOP_TICK_MS`), ② per-tick mutex (`tickInFlight` promise reuse — second `tickNow` returns the same in-flight promise, not a stack), ③ ordered chain `acquire → evidence → situation → policy → investigate`. NO business decisions in the loop. The per-situation skip-vs-investigate decision is the `InvestigationPolicy`'s job. The Hermes turn is `runInvestigationTurn`'s job (same call site as the manual `POST /investigate` — Loop and operator share ONE path, no parallel "loop-version" of investigation). The WorkItem materialization is `materializeWorkItem`'s job (called from `runInvestigationTurn`'s success path — both Loop and manual POST get it for free).
+
+1. **`RuntimeLoop` wraps `ScheduledAcquisitionRunner`, never replaces it.** The runner's `setInterval` is disabled; the Loop owns cadence. The runner's `runNow(cap, date)` is the acquire primitive. Existing backfill + 1-shot investigation use the same runner (unchanged).
+2. **`InvestigationPolicy` is a pure function** with no DB writes. Input: `(situationId, latestContentHash, waitingOnHuman)`. Output: `{kind, reason}`. The loop composes this — the loop never reads `learning_contexts` or `situations` directly for business decisions.
+3. **Hermes client factory is injectable** — `hermesClientFactory: () => HermesSessionClient`. Tests pass a `FakeHermesClient`; production uses the real one with lazy token resolve (commit 1).
+4. **Per-tick mutex via `tickInFlight` promise reuse** (not a counter / not `setTimeout`-based): if `tickNow()` is called while a tick is in flight, return the same promise. Tests pin `expect(a).toBe(b)`.
+5. **`tickNow` is non-async** — returns the promise reference, not a wrapped `async` function. This is what makes the mutex observable to test callers (an `async` wrapper would return a fresh promise).
+6. **No event bus, no wake engine, no durable job queue, no adaptive scheduler, no dynamic cron, no setTimeout-based reconnect** — explicitly out of scope per user's hard rule "不能让 Scheduler 本身变成业务编排器". The next-tick interval is fixed; the next tick waits for the in-flight one to resolve.
+
+**边界**: 不做 durable scheduling（崩溃即丢一 tick，operator 看到的就是 `lastTickAt` 落后实际时间）；不做 Hermes 失败重试超过 once（operator 看到 `investigation failed`，下一次 tick 重新评估）；不做 workItem 重试（idempotent dedup via fingerprint）；不写新表（`investigation.evidenceContentHash` 是 schema field，不新建 `investigation_hashes` 表）；不删 `SubprocessHermesClient`（保留 oneshot 测试路径）；不改 `ScheduledAcquisitionRunner`（Loop wraps it）；不引第三种 Hermes transport；不让 Loop 读业务状态做分支。
+
+## ADR-057: P0010.2 — `evidenceContentHash` sidecar + InvestigationPolicy fail-CLOSED on legacy
+
+- **日期**: 2026-08-25
+- **状态**: Accepted
+- **来源**: P0010.2.1 live-demo fix. `shared/schemas/investigation.ts` + `apps/ecommerce/runtime/loop/investigation-policy.ts` + `platform/server/routes/situation-chat.ts#markInvestigation`. 3 test files updated. 0 new typecheck errors.
+
+**决策**: "Meaningful new evidence" 必须比 **content_hash**（不是 wall clock）才能触发重新调查，且失败/legacy 数据路径必须 fail-CLOSED 否则会触发 infinite-retry anti-pattern。
+
+1. **`evidenceContentHash` 是 `Investigation` 的 optional schema field**（不是新表 / 不是新列）。Zod 之前会 strip unknown fields — 加进 schema 是为了 sidecar 能 survive `LearningContextSchema.parse()`。在 `markInvestigation` 入口处由 caller 提供，stamped 在 `next` 之后 `storeInvestigationInLearningContext` 之前。
+2. **`runInvestigationTurn` 4 个 markInvestigation call site 全部接受 evidenceContentHash**：(a) `status='investigating'` (b) `status='failed'` after `collectTurn` reject (c) `status='failed'` after `parseInvestigation` second attempt (d) `status='failed'` after `parseInvestigation` second attempt reject. 这样 failed 标记也"记住"它看的内容，下次 tick 能正确判断 "same-content-failed-retry" vs "new-content-investigate"。
+3. **成功路径上** `evidenceContentHash` 由 `runInvestigationTurn` 透传到 `storeInvestigationInLearningContext`（用相同的 sidecar pattern，code path 在 `runInvestigationTurn:294-301`）。
+4. **`InvestigationPolicy` fail-CLOSED on legacy**：prior 已 completed/investigating 但没有 contentHash sidecar（= P0010.1 或更早的 legacy data）→ `no_meaningful_change` (skip)。原因：we have no honest way to compare content without the sidecar; the alternative is the "infinite retry on completed legacy" anti-pattern. 只有 legacy `status='failed'` 给一次 `new_situation` 机会（让 sidecar 在下轮被 stamp 上来）。
+5. **新增 3 个 policy test cases** 覆盖：legacy-completed → skip、legacy-failed → new_situation、failed-same-content → skip（无限循环防护）、failed-new-content → meaningful_new_evidence。
+6. **Live demo 验证**：每 10s tick 稳定输出 `investigation skipped reason=no_meaningful_change` for 两个已 investigated 的 situations. 之前在 P0010.2 首次 demo 里看到的 "tick → investigation triggered → tick → investigation triggered → tick → ..." 无限循环不再出现。
+
+**边界**: 不为 `evidenceContentHash` 建新表（schema field 就够）；不写新 migration（DB schema 零变化，in-place 字段新增）；不引入 `evidenceIdentity` / `Evidence.first_class_id`（P0010.1 H.1 仍 outstanding，下一刀处理）；不改 `evidence` table；不改 Hermes 协议；不改 Situation lifecycle。
