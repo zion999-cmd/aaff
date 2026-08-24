@@ -129,5 +129,16 @@ export const InvestigationSchema = z.object({
   startedAt: z.string().optional(),
   createdAt: z.string().optional(),
   updatedAt: z.string().optional(),
+  /**
+   * P0010.2 — content hash of the evidence that triggered this investigation.
+   * Stamped on BOTH completed and failed markers so the next tick can detect
+   * "same content as last attempt" (skip) vs "new content arrived" (retry).
+   * The Loop's InvestigationPolicy uses this to avoid re-running a known
+   * broken turn on the same evidence (the "infinite retry on a slow LLM"
+   * anti-pattern). Stored as a sidecar field rather than a top-level
+   * schema field on the Learning Context because the Investigation's
+   * contract is content-agnostic — this is a P0010.2 runtime marker, not
+   * part of the Investigation's domain shape. */
+  evidenceContentHash: z.string().optional(),
 });
 export type Investigation = z.infer<typeof InvestigationSchema>;

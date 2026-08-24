@@ -159,7 +159,15 @@ export interface InvestigationTurnResult {
 export const markInvestigation = (
   db: Db,
   situation: Situation,
-  marker: { status: 'pending' | 'investigating' | 'failed' | 'completed'; error?: string },
+  marker: {
+    status: 'pending' | 'investigating' | 'failed' | 'completed';
+    error?: string;
+    /** P0010.2 — content hash of the evidence that triggered this turn.
+     *  Stamped on the marker so a failed attempt also "remembers" the
+     *  content it was looking at; the next tick can then decide to skip
+     *  (same content) vs retry (new content) without guessing. */
+    evidenceContentHash?: string;
+  },
 ): void => {
   const now = nowIso();
   const existing = loadInvestigationFromLearningContext(db, situation.situationId);
@@ -194,6 +202,13 @@ export const markInvestigation = (
       startedAt: now,
       updatedAt: now,
     });
+  }
+  // P0010.2: stamp the contentHash sidecar on the marker so the next
+  // tick can recognize "same content as the last attempt" — including
+  // failed attempts. Without this, a slow LLM that always times out
+  // would re-trigger investigation every tick forever.
+  if (marker.evidenceContentHash) {
+    (next as Record<string, unknown>).evidenceContentHash = marker.evidenceContentHash;
   }
 
   storeInvestigationInLearningContext(db, situation, next);
@@ -251,7 +266,10 @@ export const runInvestigationTurn = async (
    *  "no meaningful change" without re-comparing the whole evidence set. */
   evidenceContentHash?: string,
 ): Promise<InvestigationTurnResult> => {
-  markInvestigation(db, situation, { status: 'investigating' });
+  markInvestigation(db, situation, {
+    status: 'investigating',
+    ...(evidenceContentHash ? { evidenceContentHash } : {}),
+  });
 
   const ctx = loadLearningContext(db, situation.situationId);
   const prompt = buildInvestigationPrompt(situation, ctx);
@@ -263,7 +281,11 @@ export const runInvestigationTurn = async (
     reply = await replyPromise;
   } catch (err) {
     const message = err instanceof Error ? err.message : 'Investigation failed';
-    markInvestigation(db, situation, { status: 'failed', error: message });
+    markInvestigation(db, situation, {
+      status: 'failed',
+      error: message,
+      ...(evidenceContentHash ? { evidenceContentHash } : {}),
+    });
     return { ok: false, status: 'failed', error: message };
   }
 
@@ -280,13 +302,21 @@ export const runInvestigationTurn = async (
       const reply2 = await reply2Promise;
       const parsed2 = parseInvestigation(reply2, situation.situationId);
       if (!parsed2.ok) {
-        markInvestigation(db, situation, { status: 'failed', error: parsed2.error });
+        markInvestigation(db, situation, {
+          status: 'failed',
+          error: parsed2.error,
+          ...(evidenceContentHash ? { evidenceContentHash } : {}),
+        });
         return { ok: false, status: 'failed', error: parsed2.error, rawReply: (reply + '\n---\n' + reply2).slice(0, 2000) };
       }
       parsed = parsed2;
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Investigation failed';
-      markInvestigation(db, situation, { status: 'failed', error: message });
+      markInvestigation(db, situation, {
+        status: 'failed',
+        error: message,
+        ...(evidenceContentHash ? { evidenceContentHash } : {}),
+      });
       return { ok: false, status: 'failed', error: message };
     }
   }

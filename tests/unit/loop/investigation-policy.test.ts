@@ -156,9 +156,13 @@ describe('createInvestigationPolicy', () => {
     expect(decision).toEqual({ kind: 'investigate', reason: 'meaningful_new_evidence' });
   });
 
-  test('returns meaningful_new_evidence when prior has no evidenceContentHash marker (legacy investigation)', () => {
-    // Older investigations (P0010.1) did not stamp the contentHash sidecar.
-    // The policy must fail-open → re-investigate (don't silently skip).
+  test('returns no_meaningful_change when prior is completed legacy (no content marker)', () => {
+    // Older completed investigations (P0010.1) did not stamp the
+    // contentHash sidecar. The continuous-runtime default is to skip
+    // — we have no honest way to compare content, and the alternative
+    // is the "infinite retry" anti-pattern on already-investigated
+    // situations. New evidence (different content_hash) gets
+    // re-investigated normally via a fresh situation creation.
     insertLearningContext(db, SIT, buildContextBody({
       investigation: {
         status: 'completed',
@@ -172,16 +176,55 @@ describe('createInvestigationPolicy', () => {
       situationId: SIT,
       latestContentHash: 'hash-latest',
     });
-    expect(decision).toEqual({ kind: 'investigate', reason: 'meaningful_new_evidence' });
+    expect(decision).toEqual({ kind: 'skip', reason: 'no_meaningful_change' });
   });
 
-  test('returns new_situation when prior status is failed (retry the attempt)', () => {
+  test('returns no_meaningful_change when prior failed on the SAME content (do not loop on a slow LLM)', () => {
+    // The prior attempt failed but its recorded contentHash equals the
+    // current latestContentHash — re-running the same broken turn on
+    // the same evidence is the "infinite retry" anti-pattern. Skip.
     insertLearningContext(db, SIT, buildContextBody({
       investigation: {
         status: 'failed',
         error: 'previous turn timed out',
         updatedAt: '2026-08-25T12:00:00.000Z',
-        evidenceContentHash: 'hash-old',
+        evidenceContentHash: 'hash-same',
+      },
+    }));
+    const decision = policy.shouldInvestigate({
+      situationId: SIT,
+      latestContentHash: 'hash-same',
+    });
+    expect(decision).toEqual({ kind: 'skip', reason: 'no_meaningful_change' });
+  });
+
+  test('returns meaningful_new_evidence when prior failed but new evidence arrived', () => {
+    // The prior attempt failed on hash-A. The latest evidence is hash-B.
+    // A new attempt with fresh content is worth trying.
+    insertLearningContext(db, SIT, buildContextBody({
+      investigation: {
+        status: 'failed',
+        error: 'previous turn timed out',
+        updatedAt: '2026-08-25T12:00:00.000Z',
+        evidenceContentHash: 'hash-A',
+      },
+    }));
+    const decision = policy.shouldInvestigate({
+      situationId: SIT,
+      latestContentHash: 'hash-B',
+    });
+    expect(decision).toEqual({ kind: 'investigate', reason: 'meaningful_new_evidence' });
+  });
+
+  test('returns new_situation when prior is failed legacy (no content marker)', () => {
+    // Older failed investigations (P0010.1) have no contentHash sidecar.
+    // Best-effort: treat as a fresh attempt.
+    insertLearningContext(db, SIT, buildContextBody({
+      investigation: {
+        status: 'failed',
+        error: 'legacy failure',
+        updatedAt: '2026-08-25T12:00:00.000Z',
+        // no evidenceContentHash
       },
     }));
     const decision = policy.shouldInvestigate({

@@ -46,10 +46,12 @@ export interface InvestigationPolicy {
  *   1. `latestContentHash === null` → `no_evidence` (nothing to investigate).
  *   2. `ctx.waitingOnHuman`         → `waiting_human` (operator said "later").
  *   3. No prior investigation       → `new_situation` → investigate.
- *   4. Prior exists, status='failed' → `new_situation` (treat as a fresh attempt).
- *   5. Prior exists, status='completed' or 'investigating':
- *      a. Prior's recorded contentHash !== latestContentHash → `meaningful_new_evidence`.
- *      b. else → `no_meaningful_change`.
+ *   4. Prior exists (any status) and has a contentHash sidecar:
+ *      a. Prior's recorded contentHash === latestContentHash → `no_meaningful_change`.
+ *      b. Prior's recorded contentHash !== latestContentHash → `meaningful_new_evidence`.
+ *   5. Prior exists with no contentHash sidecar (legacy P0010.1 / pre-P0010.2):
+ *      a. Prior.status='failed' → `new_situation` (give the investigation one fresh try so the sidecar gets stamped on success/failure).
+ *      b. Prior.status='completed' or 'investigating' → `no_meaningful_change` (we have no honest way to detect new evidence; defaulting to skip avoids the "infinite retry" anti-pattern on completed legacy situations).
  */
 export const createInvestigationPolicy = (db: Db): InvestigationPolicy => {
   return {
@@ -68,14 +70,22 @@ export const createInvestigationPolicy = (db: Db): InvestigationPolicy => {
       if (!prior) {
         return { kind: 'investigate', reason: 'new_situation' };
       }
+      // Prior exists. If a contentHash sidecar is on file, that is the
+      // single source of truth for "is the underlying metric new?".
+      const priorHash = readPriorContentHash(prior);
+      if (priorHash !== null) {
+        return priorHash === ctx.latestContentHash
+          ? { kind: 'skip', reason: 'no_meaningful_change' }
+          : { kind: 'investigate', reason: 'meaningful_new_evidence' };
+      }
+      // Legacy investigation (no sidecar). Completed/investigating
+      // legacy data is treated as "no meaningful change" — we cannot
+      // honestly compare content, and the safer default for a
+      // continuous runtime is to skip rather than loop. Only failed
+      // legacy gets a fresh attempt so the sidecar gets stamped and
+      // future ticks can compare properly.
       if (prior.status === 'failed') {
         return { kind: 'investigate', reason: 'new_situation' };
-      }
-      // Prior exists and is completed / investigating — compare the
-      // *content* the prior saw vs the content we have now.
-      const priorHash = readPriorContentHash(prior);
-      if (priorHash === null || priorHash !== ctx.latestContentHash) {
-        return { kind: 'investigate', reason: 'meaningful_new_evidence' };
       }
       return { kind: 'skip', reason: 'no_meaningful_change' };
     },
