@@ -4,29 +4,32 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 // Hoisted mock for the resolver so tests are deterministic regardless of whether
-// a real `hermes serve` is listening on 9119 in the test environment. The
-// resolver is also called eagerly at module-load — without this mock the cached
-// `resolvedToken` snapshot inside session-client.ts could pick up a live token
-// in some dev setups and silently break the "no token" test below.
+// a real `hermes serve` is listening on 9119 in the test environment.
+// P0010.2: resolution is now LAZY (inside connect()), so we do NOT need
+// `vi.resetModules()` / `vi.doMock()` to drive the auto-discover path.
 vi.mock('#platform/runtime/hermes/token-resolver.js', () => ({
-  resolveHermesSessionToken: () => Promise.resolve(undefined),
-  _resetTokenCache: () => undefined,
+  resolveHermesSessionToken: vi.fn().mockResolvedValue(undefined),
+  resetTokenCache: () => undefined,
 }));
 
 import { HermesSessionClient } from '#platform/runtime/hermes/index.js';
 import type { HermesEvent } from '#platform/runtime/hermes/index.js';
+import { resolveHermesSessionToken } from '#platform/runtime/hermes/token-resolver.js';
+
+const resolveTokenMock = vi.mocked(resolveHermesSessionToken);
 
 // ---- Mock WebSocket ----
 
 class MockWebSocket {
   static OPEN = 1;
+  static CLOSED = 3;
   static instances: MockWebSocket[] = [];
   sent: string[] = [];
   readyState = 0; // CONNECTING
   onopen: (() => void) | null = null;
   onerror: ((e: unknown) => void) | null = null;
   onmessage: ((msg: { data: string }) => void) | null = null;
-  onclose: (() => void) | null = null;
+  onclose: ((ev?: { code?: number }) => void) | null = null;
 
   constructor(public url: string) {
     MockWebSocket.instances.push(this);
@@ -41,10 +44,37 @@ class MockWebSocket {
   }
 
   // Test helpers
-  emitOpen(): void { this.readyState = 1; this.onopen?.(); }
+  emitOpen(): void {
+    this.readyState = 1;
+    this.onopen?.();
+  }
+  emitError(message: string): void {
+    this.onerror?.(new Error(message));
+  }
+  emitCloseBeforeOpen(code = 4001): void {
+    this.readyState = 3;
+    this.onclose?.({ code });
+  }
   emitMessage(obj: unknown): void {
     this.onmessage?.({ data: typeof obj === 'string' ? obj : JSON.stringify(obj) });
   }
+}
+
+/**
+ * P0010.2: connect() is fully async — token resolution happens inside it.
+ * To inspect MockWebSocket.instances, callers must yield to the microtask
+ * queue so the WebSocket constructor runs. This helper drives connect() to
+ * that point and returns both the in-flight WebSocket and the original
+ * promise so tests can await its resolution/rejection.
+ */
+async function beginConnect(client: HermesSessionClient): Promise<{ ws: MockWebSocket; connectPromise: Promise<void> }> {
+  const connectPromise = client.connect();
+  // 2 microtask flushes: 1) resolveToken() settles 2) tryOnce starts and
+  // calls `new WebSocket(...)` synchronously.
+  await Promise.resolve();
+  await Promise.resolve();
+  const ws = MockWebSocket.instances[MockWebSocket.instances.length - 1]!;
+  return { ws, connectPromise };
 }
 
 // ---- Tests ----
@@ -55,6 +85,8 @@ describe('HermesSessionClient', () => {
     vi.stubGlobal('WebSocket', MockWebSocket);
     // Default: a token is available via env (matches a correctly-configured deploy).
     process.env.HERMES_DASHBOARD_SESSION_TOKEN = 'test-secret';
+    resolveTokenMock.mockReset();
+    resolveTokenMock.mockResolvedValue(undefined);
   });
   afterEach(() => {
     vi.unstubAllGlobals();
@@ -64,6 +96,8 @@ describe('HermesSessionClient', () => {
   it('connect opens a WebSocket to /api/ws and appends ?token=', async () => {
     const client = new HermesSessionClient({ url: 'ws://localhost:9119/api/ws', token: 'explicit-secret' });
     const connectPromise = client.connect();
+    await Promise.resolve();
+    await Promise.resolve();
     const ws = MockWebSocket.instances[0]!;
     ws.emitOpen();
     await connectPromise;
@@ -73,43 +107,52 @@ describe('HermesSessionClient', () => {
   it('reads the token from HERMES_DASHBOARD_SESSION_TOKEN env when none passed', async () => {
     process.env.HERMES_DASHBOARD_SESSION_TOKEN = 'env-secret';
     const client = new HermesSessionClient();
-    const connectPromise = client.connect();
-    const ws = MockWebSocket.instances[0]!;
+    const { ws } = await beginConnect(client);
     ws.emitOpen();
-    await connectPromise;
+    await Promise.resolve();
     expect(ws.url).toBe('ws://localhost:9119/api/ws?token=env-secret');
+    // The resolver should NOT be called when env is set.
+    expect(resolveTokenMock).not.toHaveBeenCalled();
   });
 
   it('explicit token option wins over the env var', async () => {
     process.env.HERMES_DASHBOARD_SESSION_TOKEN = 'env-secret';
     const client = new HermesSessionClient({ token: 'option-secret' });
-    const connectPromise = client.connect();
-    const ws = MockWebSocket.instances[0]!;
+    const { ws } = await beginConnect(client);
     ws.emitOpen();
-    await connectPromise;
+    await Promise.resolve();
     expect(ws.url).toBe('ws://localhost:9119/api/ws?token=option-secret');
+    expect(resolveTokenMock).not.toHaveBeenCalled();
   });
 
   it('fails explicitly when no token is available', async () => {
     delete process.env.HERMES_DASHBOARD_SESSION_TOKEN;
+    resolveTokenMock.mockResolvedValue(undefined);
     const client = new HermesSessionClient();
     await expect(client.connect()).rejects.toThrow(/Missing Hermes dashboard session token/);
   });
 
   it('rejects connect() when the server rejects the credential (onerror)', async () => {
     const client = new HermesSessionClient({ token: 'wrong-secret' });
-    const connectPromise = client.connect();
-    const ws = MockWebSocket.instances[0]!;
-    ws.onerror?.(new Error('WebSocket handshake rejected'));
-    await expect(connectPromise).rejects.toThrow(/WebSocket error/);
+    const { ws, connectPromise } = await beginConnect(client);
+    ws.emitError('WebSocket handshake rejected');
+    // Wait for the retry path to construct a second WebSocket.
+    await vi.waitFor(() => {
+      expect(MockWebSocket.instances).toHaveLength(2);
+    });
+    const second = MockWebSocket.instances[1]!;
+    second.emitError('WebSocket handshake rejected (retry)');
+    await expect(connectPromise).rejects.toThrow(/Hermes connect failed twice/);
+    // The WS URL is the same for both attempts because the token is the same.
+    expect(MockWebSocket.instances[0]!.url).toBe('ws://localhost:9119/api/ws?token=wrong-secret');
+    expect(MockWebSocket.instances[1]!.url).toBe('ws://localhost:9119/api/ws?token=wrong-secret');
   });
 
   it('createSession sends a valid session.create JSON-RPC frame', async () => {
     const client = new HermesSessionClient();
-    const connectPromise = client.connect();
-    const ws = MockWebSocket.instances[0]!;
+    const { ws } = await beginConnect(client);
     ws.emitOpen();
-    await connectPromise;
+    await Promise.resolve();
 
     const createPromise = client.createSession({ cwd: '/tmp/fabric-ws', profile: 'jd' });
     const frame = JSON.parse(ws.sent[0]!);
@@ -127,10 +170,9 @@ describe('HermesSessionClient', () => {
 
   it('submitPrompt sends a valid prompt.submit frame', async () => {
     const client = new HermesSessionClient();
-    const connectPromise = client.connect();
-    const ws = MockWebSocket.instances[0]!;
+    const { ws } = await beginConnect(client);
     ws.emitOpen();
-    await connectPromise;
+    await Promise.resolve();
 
     const submitPromise = client.submitPrompt('abc12345', '流量为什么下降？');
     const frame = JSON.parse(ws.sent[0]!);
@@ -144,10 +186,9 @@ describe('HermesSessionClient', () => {
 
   it('dispatches streamed events to onEvent handlers', async () => {
     const client = new HermesSessionClient();
-    const connectPromise = client.connect();
-    const ws = MockWebSocket.instances[0]!;
+    const { ws } = await beginConnect(client);
     ws.emitOpen();
-    await connectPromise;
+    await Promise.resolve();
 
     const events: HermesEvent[] = [];
     client.onEvent((e) => events.push(e));
@@ -160,10 +201,9 @@ describe('HermesSessionClient', () => {
 
   it('rejects createSession when server returns an error', async () => {
     const client = new HermesSessionClient();
-    const connectPromise = client.connect();
-    const ws = MockWebSocket.instances[0]!;
+    const { ws } = await beginConnect(client);
     ws.emitOpen();
-    await connectPromise;
+    await Promise.resolve();
 
     const createPromise = client.createSession({ cwd: '/tmp' });
     const frame = JSON.parse(ws.sent[0]!);
@@ -172,14 +212,14 @@ describe('HermesSessionClient', () => {
   });
 });
 
-// Separate describe block to test the auto-discovery path. We must reset
-// modules and re-mock the resolver (vi.doMock) so a fresh session-client
-// module instance picks up the auto-discovered token via the eager
-// `resolvedToken` snapshot.
+// Separate describe block to test the auto-discovery path. P0010.2: resolution
+// is now lazy, so we just mock the resolver and call connect() — no
+// vi.resetModules / vi.doMock dance required.
 describe('HermesSessionClient — auto-discovered token', () => {
   beforeEach(() => {
     MockWebSocket.instances = [];
     vi.stubGlobal('WebSocket', MockWebSocket);
+    resolveTokenMock.mockReset();
   });
   afterEach(() => {
     vi.unstubAllGlobals();
@@ -188,37 +228,25 @@ describe('HermesSessionClient — auto-discovered token', () => {
 
   it('uses the auto-discovered token when env is unset', async () => {
     delete process.env.HERMES_DASHBOARD_SESSION_TOKEN;
-    vi.resetModules();
-    vi.doMock('#platform/runtime/hermes/token-resolver.js', () => ({
-      resolveHermesSessionToken: () => Promise.resolve('discovered-secret'),
-      _resetTokenCache: () => undefined,
-    }));
-    const { HermesSessionClient: Fresh } = await import('#platform/runtime/hermes/index.js');
-    // Yield to the microtask queue so the eager resolver promise resolves
-    // before the constructor reads `resolvedToken`.
-    await Promise.resolve();
-    const client = new Fresh();
-    const connectPromise = client.connect();
-    const ws = MockWebSocket.instances[0]!;
+    resolveTokenMock.mockResolvedValue('discovered-secret');
+    const client = new HermesSessionClient();
+    // beginConnect: after 2 microtask flushes, tryOnce has run.
+    const { ws } = await beginConnect(client);
+    expect(resolveTokenMock).toHaveBeenCalledTimes(1);
     ws.emitOpen();
-    await connectPromise;
+    await Promise.resolve();
     expect(ws.url).toBe('ws://localhost:9119/api/ws?token=discovered-secret');
   });
 
   it('explicit token option still wins over the auto-discovered value', async () => {
     delete process.env.HERMES_DASHBOARD_SESSION_TOKEN;
-    vi.resetModules();
-    vi.doMock('#platform/runtime/hermes/token-resolver.js', () => ({
-      resolveHermesSessionToken: () => Promise.resolve('discovered-secret'),
-      _resetTokenCache: () => undefined,
-    }));
-    const { HermesSessionClient: Fresh } = await import('#platform/runtime/hermes/index.js');
-    await Promise.resolve();
-    const client = new Fresh({ token: 'option-wins' });
-    const connectPromise = client.connect();
-    const ws = MockWebSocket.instances[0]!;
+    resolveTokenMock.mockResolvedValue('discovered-secret');
+    const client = new HermesSessionClient({ token: 'option-wins' });
+    const { ws } = await beginConnect(client);
+    // Resolver should not be touched because callerToken is set.
+    expect(resolveTokenMock).not.toHaveBeenCalled();
     ws.emitOpen();
-    await connectPromise;
+    await Promise.resolve();
     expect(ws.url).toBe('ws://localhost:9119/api/ws?token=option-wins');
   });
 });

@@ -22,7 +22,7 @@ vi.mock('node:fs/promises', () => ({
 }));
 
 // Imports below rely on the mocks above being in place.
-import { resolveHermesSessionToken, _resetTokenCache } from '#platform/runtime/hermes/token-resolver.js';
+import { resolveHermesSessionToken, resetTokenCache } from '#platform/runtime/hermes/token-resolver.js';
 
 const ENV_KEY = 'HERMES_DASHBOARD_SESSION_TOKEN';
 
@@ -120,7 +120,7 @@ describe('resolveHermesSessionToken', () => {
     originalEnv = process.env[ENV_KEY];
     delete process.env[ENV_KEY];
     originalPlatform = process.platform;
-    _resetTokenCache();
+    resetTokenCache();
   });
 
   afterEach(() => {
@@ -238,18 +238,52 @@ describe('resolveHermesSessionToken', () => {
     expect(result).toBe('serve-secret');
   });
 
-  it('_resetTokenCache forces a re-resolution', async () => {
+  it('resetTokenCache forces a re-resolution', async () => {
     Object.defineProperty(process, 'platform', { value: 'darwin', configurable: true });
     mockLsofPid('111');
     mockDarwinPsEnv({ [ENV_KEY]: 'first' });
     const first = await resolveHermesSessionToken();
     expect(first).toBe('first');
 
-    _resetTokenCache();
+    resetTokenCache();
     mockLsofPid('222');
     mockDarwinPsEnv({ [ENV_KEY]: 'second' });
     const second = await resolveHermesSessionToken();
     expect(second).toBe('second');
+  });
+
+  it('forceRefresh:true skips the per-port cache and re-shells-out', async () => {
+    Object.defineProperty(process, 'platform', { value: 'darwin', configurable: true });
+    mockLsofPid('777');
+    mockDarwinPsEnv({ [ENV_KEY]: 'cached-secret' });
+    const first = await resolveHermesSessionToken();
+    expect(first).toBe('cached-secret');
+    expect(execFileMock).toHaveBeenCalledTimes(2);
+
+    // Without forceRefresh the cache is used; no additional mocks would be needed.
+    const second = await resolveHermesSessionToken();
+    expect(second).toBe('cached-secret');
+    expect(execFileMock).toHaveBeenCalledTimes(2);
+
+    // With forceRefresh the resolver re-shells-out and overwrites the cache.
+    mockLsofPid('888');
+    mockDarwinPsEnv({ [ENV_KEY]: 'fresh-secret' });
+    const third = await resolveHermesSessionToken({ forceRefresh: true });
+    expect(third).toBe('fresh-secret');
+    expect(execFileMock).toHaveBeenCalledTimes(4); // +lsof +ps for the refresh
+
+    // Cache should now hold the refreshed value.
+    const fourth = await resolveHermesSessionToken();
+    expect(fourth).toBe('fresh-secret');
+    expect(execFileMock).toHaveBeenCalledTimes(4); // no new shells
+  });
+
+  it('forceRefresh:true has no effect on the env-pinned branch', async () => {
+    process.env[ENV_KEY] = 'env-secret';
+    const result = await resolveHermesSessionToken({ forceRefresh: true });
+    expect(result).toBe('env-secret');
+    expect(execFileMock).not.toHaveBeenCalled();
+    expect(readFileMock).not.toHaveBeenCalled();
   });
 
   it('parses Darwin ps env across multiple key=value tokens after the command path', async () => {

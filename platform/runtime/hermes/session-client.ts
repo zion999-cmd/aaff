@@ -10,9 +10,21 @@
 //
 // Turn lifecycle events: turn.start → message.start → message.delta* → message.complete
 //
+// Token lifecycle (P0010.2):
+//   Resolution is LAZY — happens inside connect(), not at module load. This makes
+//   the client survive `hermes serve` late-start, restart, and token rotation
+//   without requiring an agentFabric restart.
+//
+//   1. Connect-time first attempt: callerToken ?? env-var ?? auto-discover.
+//   2. If the first attempt fails (handshake rejected, timeout, close before open),
+//      the client retries exactly once with a freshly re-discovered token
+//      (skipping the cache). The env-var branch is never auto-replaced: an
+//      operator-pinned token is a deliberate choice and the operator must
+//      re-export to rotate it.
+//
 // Uses Node's built-in WHATWG WebSocket (no external dependency).
 
-import { resolveHermesSessionToken } from './token-resolver.js';
+import { resetTokenCache, resolveHermesSessionToken } from './token-resolver.js';
 
 // ---- Types ----
 
@@ -30,10 +42,13 @@ export interface HermesEvent {
 export interface HermesSessionClientOptions {
   /** Hermes serve host/port (default localhost:9119) */
   url?: string;
-  /** Hermes dashboard session token. Authenticates the /api/ws upgrade via
-   *  `?token=`. Falls back to the HERMES_DASHBOARD_SESSION_TOKEN env var. */
+  /**
+   * Hermes dashboard session token. Authenticates the /api/ws upgrade via
+   * `?token=`. Takes priority over the env var and over auto-discovery.
+   * If omitted, the env var and then auto-discovery are used.
+   */
   token?: string;
-  /** Connection timeout ms */
+  /** Connection timeout ms. Defaults to 10_000. */
   connectTimeoutMs?: number;
 }
 
@@ -57,20 +72,21 @@ type PendingRequest = {
   reject: (err: Error) => void;
 };
 
-// Eagerly kick off auto-discovery at module load so the synchronous constructor
-// can read a populated `resolvedToken` snapshot. Resolution typically completes
-// in <50ms (one `lsof` + one `ps eww` / `cat /proc/...`); the first WS connect
-// always happens well after the constructor returns. If the resolver is still
-// in flight when the first connect() is called, the connect path falls through
-// to "Missing token" — the caller can retry a moment later.
-let resolvedToken: string | undefined;
-resolveHermesSessionToken()
-  .then((t) => {
-    resolvedToken = t;
-  })
-  .catch(() => {
-    resolvedToken = undefined;
-  });
+/**
+ * Thrown when a connect-time authentication failure indicates the token is
+ * stale or wrong (handshake rejected, server close before open, or auto-retry
+ * also failed). Carries no token value — messages must NEVER include the
+ * actual token.
+ */
+export class HermesAuthError extends Error {
+  override readonly name = 'HermesAuthError';
+  constructor(
+    readonly reason: 'connect_failed' | 'connect_closed' | 'connect_timeout' | 'retry_exhausted' | 'missing_token',
+    message: string,
+  ) {
+    super(message);
+  }
+}
 
 // ---- Client ----
 
@@ -80,57 +96,119 @@ export class HermesSessionClient {
   private readonly pending = new Map<number, PendingRequest>();
   private readonly eventHandlers = new Set<EventHandler>();
   private readonly url: string;
-  private readonly token: string | undefined;
+  private readonly callerToken: string | undefined;
+  private readonly connectTimeoutMs: number;
+  /** Set by close(); the connect path inspects this to decide whether a
+   *  mid-connect onclose should trigger the retry-once path. */
+  private closedByUser = false;
 
   constructor(options: HermesSessionClientOptions = {}) {
     const port = 9119;
     this.url = options.url ?? `ws://localhost:${port}/api/ws`;
-    // Resolution priority:
-    //   1. Explicit `options.token` (caller-supplied, e.g. tests).
-    //   2. `HERMES_DASHBOARD_SESSION_TOKEN` in this process env (operator-pinned).
-    //   3. Auto-discovered from the running `hermes serve` process env (set at
-    //      module load via `resolveHermesSessionToken()`; cached for the
-    //      process lifetime). See `token-resolver.ts` for the cross-platform
-    //      discovery implementation.
-    this.token = options.token ?? process.env.HERMES_DASHBOARD_SESSION_TOKEN ?? resolvedToken;
+    this.callerToken = options.token;
+    this.connectTimeoutMs = options.connectTimeoutMs ?? 10_000;
   }
 
-  /** Connect to Hermes serve /api/ws. Resolves when the socket opens. */
-  connect(): Promise<void> {
-    return new Promise((resolve, reject) => {
-      if (!this.token) {
-        reject(
-          new Error(
-            'Missing Hermes dashboard session token. Either (a) export ' +
-              'HERMES_DASHBOARD_SESSION_TOKEN in the agentFabric process env to match ' +
-              'the value used by `hermes serve`, or (b) start `hermes serve` (defaults ' +
-              'to port 9119) so the token can be auto-discovered from its process env. ' +
-              'See platform/runtime/hermes/token-resolver.ts for details.',
-          ),
-        );
-        return;
+  /**
+   * Connect to Hermes serve /api/ws. Resolves when the socket opens.
+   *
+   * Token resolution happens here, lazily:
+   *   1. Resolve a candidate token (callerToken > env > auto-discover).
+   *   2. tryOnce(token). If it fails, reset the auto-discover cache and try
+   *      a fresh candidate — but only if the failure wasn't a deliberate
+   *      close() and the prior token was NOT callerToken/env-pinned
+   *      (operator-pinned tokens are never auto-replaced).
+   */
+  async connect(): Promise<void> {
+    this.closedByUser = false;
+    const resolveToken = (): Promise<string | undefined> => {
+      if (this.callerToken) return Promise.resolve(this.callerToken);
+      if (process.env.HERMES_DASHBOARD_SESSION_TOKEN) {
+        return Promise.resolve(process.env.HERMES_DASHBOARD_SESSION_TOKEN);
       }
-      const wsUrl = `${this.url}?token=${encodeURIComponent(this.token)}`;
+      return resolveHermesSessionToken({ url: this.url });
+    };
+
+    const token = await resolveToken();
+    if (!token) throw this.missingTokenError();
+
+    const firstErr = await this.tryOnce(token).catch((err: unknown) => err);
+    if (!(firstErr instanceof Error)) return; // first tryOnce resolved
+
+    if (this.closedByUser) throw firstErr;
+
+    // Determine whether the failing token came from auto-discovery. If it
+    // did, clear the cache so the retry re-shells-out to the running serve
+    // (handles `hermes serve` restarts and token rotation).
+    // Operator-pinned tokens (callerToken or env var) are NEVER auto-replaced.
+    const tokenIsAutoDiscovered =
+      !this.callerToken && !process.env.HERMES_DASHBOARD_SESSION_TOKEN;
+    if (tokenIsAutoDiscovered) resetTokenCache();
+
+    const fresh = await resolveToken();
+    if (!fresh) {
+      throw new Error(
+        `Hermes connect failed (${firstErr.message}); auto-re-resolve also returned no token. ` +
+          `If HERMES_DASHBOARD_SESSION_TOKEN is set in the agentFabric env, refresh it to match the ` +
+          `value in the running 'hermes serve' process; otherwise verify 'hermes serve' is up ` +
+          `on ${this.url}.`,
+      );
+    }
+
+    const secondErr = await this.tryOnce(fresh).catch((err: unknown) => err);
+    if (!(secondErr instanceof Error)) return;
+
+    throw new Error(
+      `Hermes connect failed twice. First: ${firstErr.message}. ` +
+        `Second (after token refresh): ${secondErr.message}. ` +
+        `Verify 'hermes serve' is up on ${this.url} and the token in its env matches.`,
+    );
+  }
+
+  /**
+   * One WebSocket handshake attempt with the given token. Resolves on
+   * `onopen`, rejects on `onerror` / `onclose` before open / timeout.
+   */
+  private tryOnce(token: string): Promise<void> {
+    return new Promise<void>((resolve, reject) => {
+      const wsUrl = `${this.url}?token=${encodeURIComponent(token)}`;
       const ws = new WebSocket(wsUrl);
       this.ws = ws;
 
-      ws.onopen = () => resolve();
-      ws.onerror = (e) => reject(new Error(`WebSocket error connecting to ${this.url}: ${String(e)}`));
-      ws.onmessage = (msg) => this.handleMessage(msg);
-      ws.onclose = () => {
-        // Fail any pending requests on close.
-        for (const [, p] of this.pending) {
-          p.reject(new Error('Hermes connection closed'));
+      const timer = setTimeout(() => {
+        try {
+          ws.close();
+        } catch {
+          // ignore: ws may already be closed by the server
         }
-        this.pending.clear();
+        reject(new HermesAuthError('connect_timeout', `connect timeout after ${this.connectTimeoutMs}ms`));
+      }, this.connectTimeoutMs);
+
+      const settle = (err?: HermesAuthError): void => {
+        clearTimeout(timer);
+        if (err) reject(err);
+        else resolve();
       };
+      ws.onopen = () => settle();
+      ws.onerror = (e) =>
+        settle(new HermesAuthError('connect_failed', `WebSocket error connecting to ${this.url}: ${String(e)}`));
+      ws.onclose = (ev) => {
+        if (ws.readyState === WebSocket.CLOSED || ws.readyState === WebSocket.CLOSING) {
+          settle(new HermesAuthError('connect_closed', `WebSocket closed before open (code=${ev.code})`));
+        }
+        // If the socket opened and then later closed, the open handler has
+        // already settled with resolve(); ignore.
+      };
+      ws.onmessage = (msg) => this.handleMessage(msg);
     });
   }
 
   /** Subscribe to streamed events (message.delta, message.complete, tool.*, etc.). */
   onEvent(handler: EventHandler): () => void {
     this.eventHandlers.add(handler);
-    return () => this.eventHandlers.delete(handler);
+    return () => {
+      this.eventHandlers.delete(handler);
+    };
   }
 
   /** Create a session. Returns the 8-hex session_id. */
@@ -164,10 +242,24 @@ export class HermesSessionClient {
     await this.request('session.resume', { session_id: sessionId });
   }
 
-  /** Close the connection. */
+  /** Close the connection. Marks the client as user-closed so a subsequent
+   *  reconnect attempt (or an in-flight connect()) won't trigger the
+   *  retry-once path. */
   close(): void {
+    this.closedByUser = true;
     this.ws?.close();
     this.ws = null;
+  }
+
+  private missingTokenError(): HermesAuthError {
+    return new HermesAuthError(
+      'missing_token',
+      'Missing Hermes dashboard session token. Either (a) export ' +
+        'HERMES_DASHBOARD_SESSION_TOKEN in the agentFabric process env to match ' +
+        'the value used by `hermes serve`, or (b) start `hermes serve` (defaults ' +
+        'to port 9119) so the token can be auto-discovered from its process env. ' +
+        'See platform/runtime/hermes/token-resolver.ts for details.',
+    );
   }
 
   // ---- Internals ----

@@ -25,6 +25,13 @@ const execFileAsync = promisify(execFile);
 export interface ResolveOptions {
   /** URL of the form `ws://host:port/api/ws` — port is extracted for process lookup. */
   url?: string;
+  /**
+   * Force a fresh auto-discovery even if a cached entry exists for this port.
+   * Used by the session client's connect-time retry-once path. Has no effect
+   * on the env-var branch (env-pinned tokens are never cached by this module
+   * and never auto-replaced — that's an operator-controlled decision).
+   */
+  forceRefresh?: boolean;
 }
 
 const SUBPROCESS_TIMEOUT_MS = 5_000;
@@ -41,20 +48,22 @@ let cache: CacheEntry | null = null;
  * is available.
  *
  * Side effect: result is cached per port for the lifetime of the module.
+ * Pass `forceRefresh: true` to skip the cache and re-shell-out; the freshly
+ * discovered value is then written back to the cache.
  */
 export async function resolveHermesSessionToken(
   options: ResolveOptions = {},
 ): Promise<string | undefined> {
   const port = parsePort(options.url) ?? 9119;
 
-  // (1) Operator-pinned env var wins.
+  // (1) Operator-pinned env var wins. Never cached, never auto-refreshed.
   const fromEnv = process.env.HERMES_DASHBOARD_SESSION_TOKEN;
   if (fromEnv && fromEnv.length > 0) {
     return fromEnv;
   }
 
   // (2) Auto-discover from the running hermes serve.
-  if (cache && cache.port === port) {
+  if (!options.forceRefresh && cache && cache.port === port) {
     return cache.token;
   }
   const discovered = await discoverFromRunningServe(port);
@@ -62,8 +71,15 @@ export async function resolveHermesSessionToken(
   return discovered;
 }
 
-/** For tests and explicit override: clear the per-port cache. */
-export function _resetTokenCache(): void {
+/**
+ * Clear the per-port cache so the next `resolveHermesSessionToken` call
+ * re-discovers from the running serve. Exported (no leading underscore) so
+ * the session-client's connect-time retry path can call it.
+ *
+ * This module is process-singleton. Tests that exercise cache behaviour
+ * should call this in `beforeEach` and `afterEach`.
+ */
+export function resetTokenCache(): void {
   cache = null;
 }
 

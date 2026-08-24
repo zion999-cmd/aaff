@@ -9,9 +9,9 @@ export * from './types.js';
 export { HermesRuntimeAdapter } from './adapter.js';
 export { createCapabilityBridge, resetCapabilityBridge } from './capability-bridge.js';
 export type { CapabilityBridge, CapabilityDiscoveryResult } from './capability-bridge.js';
-export { HermesSessionClient } from './session-client.js';
+export { HermesSessionClient, HermesAuthError } from './session-client.js';
 export type { HermesEvent, HermesSessionClientOptions, CreateSessionParams, CreateSessionResult } from './session-client.js';
-export { resolveHermesSessionToken, _resetTokenCache } from './token-resolver.js';
+export { resolveHermesSessionToken, resetTokenCache } from './token-resolver.js';
 export type { ResolveOptions } from './token-resolver.js';
 
 const isTest = process.env.NODE_ENV === 'test' || process.env.VITEST === 'true';
