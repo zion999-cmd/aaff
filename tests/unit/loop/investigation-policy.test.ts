@@ -93,10 +93,10 @@ describe('createInvestigationPolicy', () => {
     db.close();
   });
 
-  test('returns no_evidence when latestEvidenceAt is null', () => {
+  test('returns no_evidence when latestContentHash is null', () => {
     const decision = policy.shouldInvestigate({
       situationId: SIT,
-      latestEvidenceAt: null,
+      latestContentHash: null,
     });
     expect(decision).toEqual({ kind: 'skip', reason: 'no_evidence' });
   });
@@ -104,7 +104,7 @@ describe('createInvestigationPolicy', () => {
   test('returns no_situation when situationId is empty', () => {
     const decision = policy.shouldInvestigate({
       situationId: '',
-      latestEvidenceAt: NOW,
+      latestContentHash: 'hash-123',
     });
     expect(decision).toEqual({ kind: 'skip', reason: 'no_situation' });
   });
@@ -113,42 +113,64 @@ describe('createInvestigationPolicy', () => {
     // No learning context row → loadInvestigationFromLearningContext returns null.
     const decision = policy.shouldInvestigate({
       situationId: SIT,
-      latestEvidenceAt: NOW,
+      latestContentHash: 'hash-new',
     });
     expect(decision).toEqual({ kind: 'investigate', reason: 'new_situation' });
   });
 
-  test('returns no_meaningful_change when evidenceAt is older than prior.updatedAt', () => {
-    // Prior completed investigation at NOW; evidence timestamp is BEFORE that.
-    const priorUpdatedAt = '2026-08-25T12:00:00.000Z';
+  test('returns no_meaningful_change when prior.evidenceContentHash === latestContentHash', () => {
+    // Prior completed investigation has the SAME content hash as the latest
+    // evidence → the underlying metric did not move → no re-investigation.
     insertLearningContext(db, SIT, buildContextBody({
       investigation: {
         status: 'completed',
         judgment: 'existing judgment',
         stopReason: 'judgment',
-        updatedAt: priorUpdatedAt,
+        updatedAt: '2026-08-25T12:00:00.000Z',
+        evidenceContentHash: 'hash-same',
       },
     }));
     const decision = policy.shouldInvestigate({
       situationId: SIT,
-      latestEvidenceAt: '2026-08-25T06:00:00.000Z',
+      latestContentHash: 'hash-same',
     });
     expect(decision).toEqual({ kind: 'skip', reason: 'no_meaningful_change' });
   });
 
-  test('returns meaningful_new_evidence when evidenceAt is strictly newer than prior.updatedAt', () => {
-    const priorUpdatedAt = '2026-08-25T06:00:00.000Z';
+  test('returns meaningful_new_evidence when prior.evidenceContentHash !== latestContentHash', () => {
+    // The prior recorded hash-A; the latest evidence is hash-B. The metric
+    // moved → re-investigate.
     insertLearningContext(db, SIT, buildContextBody({
       investigation: {
         status: 'completed',
         judgment: 'existing judgment',
         stopReason: 'judgment',
-        updatedAt: priorUpdatedAt,
+        updatedAt: '2026-08-25T12:00:00.000Z',
+        evidenceContentHash: 'hash-A',
       },
     }));
     const decision = policy.shouldInvestigate({
       situationId: SIT,
-      latestEvidenceAt: '2026-08-25T12:00:00.000Z',
+      latestContentHash: 'hash-B',
+    });
+    expect(decision).toEqual({ kind: 'investigate', reason: 'meaningful_new_evidence' });
+  });
+
+  test('returns meaningful_new_evidence when prior has no evidenceContentHash marker (legacy investigation)', () => {
+    // Older investigations (P0010.1) did not stamp the contentHash sidecar.
+    // The policy must fail-open → re-investigate (don't silently skip).
+    insertLearningContext(db, SIT, buildContextBody({
+      investigation: {
+        status: 'completed',
+        judgment: 'legacy investigation',
+        stopReason: 'judgment',
+        updatedAt: '2026-08-25T12:00:00.000Z',
+        // no evidenceContentHash field
+      },
+    }));
+    const decision = policy.shouldInvestigate({
+      situationId: SIT,
+      latestContentHash: 'hash-latest',
     });
     expect(decision).toEqual({ kind: 'investigate', reason: 'meaningful_new_evidence' });
   });
@@ -159,11 +181,12 @@ describe('createInvestigationPolicy', () => {
         status: 'failed',
         error: 'previous turn timed out',
         updatedAt: '2026-08-25T12:00:00.000Z',
+        evidenceContentHash: 'hash-old',
       },
     }));
     const decision = policy.shouldInvestigate({
       situationId: SIT,
-      latestEvidenceAt: '2026-08-25T06:00:00.000Z', // older — should still retry
+      latestContentHash: 'hash-latest',
     });
     expect(decision).toEqual({ kind: 'investigate', reason: 'new_situation' });
   });
@@ -173,7 +196,7 @@ describe('createInvestigationPolicy', () => {
     // waitingOnHuman short-circuits.
     const decision = policy.shouldInvestigate({
       situationId: SIT,
-      latestEvidenceAt: NOW,
+      latestContentHash: 'hash-latest',
       waitingOnHuman: true,
     });
     expect(decision).toEqual({ kind: 'skip', reason: 'waiting_human' });

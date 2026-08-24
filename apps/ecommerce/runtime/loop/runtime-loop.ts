@@ -44,6 +44,7 @@ import {
 } from '#app/runtime/scheduling/index.js';
 import { runSituationProducer, type SituationRunResult } from '#app/runtime/situation/index.js';
 import { loadSituation } from '#app/experience/learning-context-producer.js';
+import { listEvidence } from '#app/connectors/evidence/store.js';
 import {
   createInvestigationPolicy,
   isWaitingOnHuman,
@@ -173,7 +174,7 @@ export const createRuntimeLoop = (options: RuntimeLoopOptions): RuntimeLoop => {
     }
   };
 
-  const investigate = async (situationId: string, reason: 'new_situation' | 'meaningful_new_evidence'): Promise<void> => {
+  const investigate = async (situationId: string, reason: 'new_situation' | 'meaningful_new_evidence', latestContentHash: string | null): Promise<void> => {
     logger.emit({ kind: 'investigation_triggered', situationId, reason });
     const situation = loadSituation(db, situationId);
     if (!situation) {
@@ -187,7 +188,13 @@ export const createRuntimeLoop = (options: RuntimeLoopOptions): RuntimeLoop => {
       await client.connect();
       const created = await client.createSession({ cwd: workspaceDir, profile: 'default' });
       hermesSessionId = created.sessionId;
-      const result: InvestigationTurnResult = await runInvestigationTurn(client, hermesSessionId, db, situation);
+      const result: InvestigationTurnResult = await runInvestigationTurn(
+        client,
+        hermesSessionId,
+        db,
+        situation,
+        latestContentHash ?? undefined,
+      );
       if (!result.ok) {
         logger.emit({
           kind: 'investigation_failed',
@@ -249,19 +256,26 @@ export const createRuntimeLoop = (options: RuntimeLoopOptions): RuntimeLoop => {
     const candidateIds = new Set<string>(situationResult.createdIds);
     // Also re-evaluate existing open situations (the producer is idempotent
     // on createdIds, but a re-tick may want to re-investigate a situation
-    // whose evidence moved since the last turn).
+    // whose evidence content moved since the last turn).
     for (const s of situationResult.situations) {
       candidateIds.add(s.situationId);
     }
 
+    // The policy compares CONTENT_HASH, not wall clock. Compute the max
+    // content_hash over the latest evidence records (across platforms /
+    // data types / shops — the worst-case "any new evidence is meaningful"
+    // assumption is what the user wants: re-investigation only fires when
+    // the underlying metric actually moved, not when a re-acquisition wrote
+    // a new `acquired_at` to disk).
+    const latestContentHash = readLatestContentHash();
     for (const situationId of candidateIds) {
       const decision = policy.shouldInvestigate({
         situationId,
-        latestEvidenceAt: startedAt,
+        latestContentHash,
         waitingOnHuman: isWaitingOnHuman(db, situationId),
       });
       if (isPolicyInvestigate(decision)) {
-        await investigate(situationId, decision.reason);
+        await investigate(situationId, decision.reason, latestContentHash);
         investigationsTriggered++;
       } else {
         logger.emit({ kind: 'investigation_skipped', situationId, reason: decision.reason });
@@ -297,6 +311,26 @@ export const createRuntimeLoop = (options: RuntimeLoopOptions): RuntimeLoop => {
       outputs: outputsCreated,
     });
     return summary;
+  };
+
+  // Read the latest evidence record (sorted by acquired_at desc) and return
+  // its content_hash. The list is sorted by file path / acquired_at, so the
+  // first record is the most recent. Bounded to 200 records to keep the
+  // scan cheap.
+  const readLatestContentHash = (): string | null => {
+    try {
+      const records = listEvidence({ limit: 200 });
+      if (records.length === 0) return null;
+      // Sort by acquired_at desc — EvidenceRecord.metadata is a flat object.
+      const sorted = [...records].sort((a, b) => {
+        const aAt = String(a.metadata.acquired_at);
+        const bAt = String(b.metadata.acquired_at);
+        return aAt < bAt ? 1 : aAt > bAt ? -1 : 0;
+      });
+      return sorted[0]?.metadata.content_hash ?? null;
+    } catch {
+      return null;
+    }
   };
 
   return {

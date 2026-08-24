@@ -6,11 +6,12 @@
 //   Policy:  what to do with each newly observed situation
 //   (RuntimeKernel: how to get data — unchanged, reused as-is)
 //
-// "Meaningful new evidence" is intentionally narrow: it is `max evidence
-// timestamp` strictly greater than the most recent investigation.updatedAt
-// for the situation. Re-investigations only fire when the world has actually
-// changed since the last completed turn. This is the "no wasteful
-// investigation" guarantee in the user's spec.
+// "Meaningful new evidence" is intentionally narrow: the most recent evidence
+// content_hash for the situation's window is strictly different from the
+// content_hash that was in effect at the most recent completed investigation.
+// Re-investigations only fire when the underlying metric actually moved —
+// not just when a re-acquisition wrote a new `acquired_at` to disk. This is
+// the "no wasteful investigation" guarantee in the user's spec.
 
 import type { Database as Db } from 'better-sqlite3';
 import { loadInvestigationFromLearningContext } from '#app/experience/learning-context-producer.js';
@@ -25,9 +26,11 @@ export type PolicyDecision =
 export interface PolicyContext {
   /** The situation id under consideration. */
   situationId: string;
-  /** The most recent evidence timestamp for the situation's window, or
-   *  null if no evidence is on file. */
-  latestEvidenceAt: string | null;
+  /** The content_hash of the most recent evidence for the situation's
+   *  window, or null if no evidence is on file. Comparing the *content*
+   *  (not the save timestamp) is what makes the "no meaningful change"
+   *  decision stable across re-acquisitions of the same data. */
+  latestContentHash: string | null;
   /** Set of human intervention fingerprints that should pause the loop
    *  (today: any `decision: defer` intervention). */
   waitingOnHuman?: boolean;
@@ -40,12 +43,12 @@ export interface InvestigationPolicy {
 /**
  * Default investigation policy. Decision tree (in order):
  *
- *   1. `latestEvidenceAt === null` → `no_evidence` (nothing to investigate).
- *   2. `ctx.waitingOnHuman`        → `waiting_human` (operator said "later").
- *   3. No prior investigation      → `new_situation` → investigate.
+ *   1. `latestContentHash === null` → `no_evidence` (nothing to investigate).
+ *   2. `ctx.waitingOnHuman`         → `waiting_human` (operator said "later").
+ *   3. No prior investigation       → `new_situation` → investigate.
  *   4. Prior exists, status='failed' → `new_situation` (treat as a fresh attempt).
  *   5. Prior exists, status='completed' or 'investigating':
- *      a. `latestEvidenceAt > prior.updatedAt` → `meaningful_new_evidence`.
+ *      a. Prior's recorded contentHash !== latestContentHash → `meaningful_new_evidence`.
  *      b. else → `no_meaningful_change`.
  */
 export const createInvestigationPolicy = (db: Db): InvestigationPolicy => {
@@ -54,7 +57,7 @@ export const createInvestigationPolicy = (db: Db): InvestigationPolicy => {
       if (!ctx.situationId) {
         return { kind: 'skip', reason: 'no_situation' };
       }
-      if (!ctx.latestEvidenceAt) {
+      if (!ctx.latestContentHash) {
         return { kind: 'skip', reason: 'no_evidence' };
       }
       if (ctx.waitingOnHuman) {
@@ -68,14 +71,26 @@ export const createInvestigationPolicy = (db: Db): InvestigationPolicy => {
       if (prior.status === 'failed') {
         return { kind: 'investigate', reason: 'new_situation' };
       }
-      // prior exists and is completed / investigating — compare evidence
-      // timestamp to the prior's updatedAt.
-      if (prior.updatedAt && ctx.latestEvidenceAt > prior.updatedAt) {
+      // Prior exists and is completed / investigating — compare the
+      // *content* the prior saw vs the content we have now.
+      const priorHash = readPriorContentHash(prior);
+      if (priorHash === null || priorHash !== ctx.latestContentHash) {
         return { kind: 'investigate', reason: 'meaningful_new_evidence' };
       }
       return { kind: 'skip', reason: 'no_meaningful_change' };
     },
   };
+};
+
+/** The Investigation schema is intentionally content-agnostic — it does not
+ *  store the evidence contentHash. The Loop writes a sidecar marker on the
+ *  investigation (an optional `evidenceContentHash` field) so the next tick
+ *  can detect "same data as last time". This function reads that field with
+ *  a defensive cast so older investigations (no marker) re-investigate by
+ *  default — fail-open, not fail-closed. */
+const readPriorContentHash = (prior: Record<string, unknown>): string | null => {
+  const value = (prior as { evidenceContentHash?: unknown }).evidenceContentHash;
+  return typeof value === 'string' && value.length > 0 ? value : null;
 };
 
 /**

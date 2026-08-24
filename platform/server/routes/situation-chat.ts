@@ -246,6 +246,10 @@ export const runInvestigationTurn = async (
   sessionId: string,
   db: Db,
   situation: Situation,
+  /** P0010.2 — the contentHash of the evidence that triggered this turn.
+   *  Persisted on the Investigation record so the next tick can detect
+   *  "no meaningful change" without re-comparing the whole evidence set. */
+  evidenceContentHash?: string,
 ): Promise<InvestigationTurnResult> => {
   markInvestigation(db, situation, { status: 'investigating' });
 
@@ -288,6 +292,13 @@ export const runInvestigationTurn = async (
   }
 
   let completed: LearningContext['investigation'] = { ...parsed.investigation, status: 'completed' };
+  if (evidenceContentHash) {
+    // Stamp the sidecar marker. The schema doesn't model this field, so
+    // we attach it as a defensive cast — the InvestigationPolicy reads
+    // it back with the same pattern. fail-open: a missing marker means
+    // "no prior content snapshot" → re-investigate.
+    (completed as Record<string, unknown>).evidenceContentHash = evidenceContentHash;
+  }
   storeInvestigationInLearningContext(db, situation, completed);
 
   // P0010.1 Slice 4: auto-generate the Recommendation from the Judgment (same
@@ -518,7 +529,7 @@ export const situationChatRouter = (options: SituationChatOptions): Router => {
         sessions.set(situationId, active);
       }
 
-      const result = await runInvestigationTurn(active.client, active.hermesSessionId, options.db, situation);
+      const result = await runInvestigationTurn(active.client, active.hermesSessionId, options.db, situation, undefined);
       if (!result.ok) {
         // runInvestigationTurn persists a 'failed' marker (no silent loss) and
         // returns status='failed' for timeouts/errors. Surface it honestly.
