@@ -493,6 +493,35 @@ export const situationChatRouter = (options: SituationChatOptions): Router => {
       res.status(400).json({ success: false, error: 'No completed investigation to recommend from' });
       return;
     }
+    // P0010.2 closure micro-repair — the /recommend precondition is now
+    // strict on the LATEST attempt's status, not just on the existence
+    // of the investigation record.
+    //
+    // Why this is required (paired with the UI gate in
+    // apps/ecommerce/workspace/app.js:2172-2235):
+    //   `markInvestigation` does a minimum-merge on a failed attempt,
+    //   preserving the prior valid `judgment` / `currentUnderstanding`
+    //   (this is the recovery contract — the next successful turn
+    //   inherits them). So a row whose LATEST attempt is `status:
+    //   'failed'` can still carry a non-null `judgment`. The previous
+    //   `!existing`-only check accepted such rows and let
+    //   `runRecommendationTurn` generate a fresh recommendation from
+    //   stale evidence.
+    //
+    // `markInvestigation`'s minimum-merge is intentionally OUT OF
+    // SCOPE for this slice — we make the consumers strict instead. The
+    // prior valid cognition is still shown in the UI as historical
+    // context (with a "最新调查未完成" hint); it is just NOT eligible
+    // for fresh recommendation generation until the next successful
+    // turn lands.
+    if (existing.status !== 'completed') {
+      res.status(400).json({
+        success: false,
+        error: `Cannot generate recommendation: latest investigation status is "${existing.status ?? 'unknown'}" (must be "completed"). The prior valid judgment is preserved as historical context only — wait for the next successful investigation turn before requesting a new recommendation.`,
+        currentStatus: existing.status ?? 'unknown',
+      });
+      return;
+    }
 
     try {
       let active = sessions.get(situationId);

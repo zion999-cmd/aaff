@@ -2170,8 +2170,58 @@ function renderCurrentUnderstanding(container, inv) {
   if (boundary) html += block('能力边界', '<p style="margin:0;font-size:0.82rem;color:var(--danger)">⚠ ' + escHtml(boundary) + '</p>');
 
   // 7) 建议 (Recommendation) — P0010.1: produced ONLY from Judgment.
-  const rec = inv.recommendation;
-  if (rec) {
+  //
+  // P0010.2 closure (ADR-061 follow-up) — the "建议" affordance is gated
+  // on BOTH `!inv.recommendation` AND `inv.status === 'completed'`.
+  //
+  // Why the status check is required:
+  //   `markInvestigation` does a minimum-merge on a failed attempt: the
+  //   row keeps the prior valid `judgment` / `currentUnderstanding` /
+  //   `findings` (this is the recovery contract — the next successful
+  //   turn inherits them). So a row whose LATEST attempt is `status:
+  //   'failed'` can still carry a non-null `judgment`, which used to
+  //   make the `if (rec)`-only gate render the "已完成调查 / 生成建议"
+  //   affordance. Clicking it then called `/recommend`, which accepted
+  //   the call and fed the stale judgment into `runRecommendationTurn`.
+  //
+  // The micro-repair makes both consumers (this UI gate + the route's
+  // precondition) strictly require `status === 'completed'`. The prior
+  // valid cognition is still shown in the Understanding surface (with
+  // a "最新调查未完成" hint) — only the button is suppressed.
+  if (inv.status !== 'completed') {
+    // Latest attempt is not a completed investigation. Show the prior
+    // valid cognition (if any) and an honest state hint, but do NOT
+    // offer a "生成建议" action — the recommendation surface only
+    // refreshes on a NEW successful investigation turn.
+    if (rec) {
+      // Stale recommendation: render the body (so the operator can see
+      // what was previously recommended) but mark it as historical.
+      const list = (items) => items.length ? '<ul style="margin:2px 0;padding-left:16px;font-size:0.78rem">' + items.map(function (i) { return '<li style="margin:1px 0">' + escHtml(scrubCapabilityIdsInProse(i)) + '</li>'; }).join('') + '</ul>' : '';
+      let recHtml = '<p style="margin:0;font-size:0.82rem;white-space:pre-wrap"><strong>' + escHtml(scrubCapabilityIdsInProse(rec.recommendation)) + '</strong></p>';
+      if (rec.rationale) recHtml += '<div class="muted" style="font-size:0.75rem;margin-top:2px">依据: ' + escHtml(scrubCapabilityIdsInProse(rec.rationale)) + '</div>';
+      if (rec.expectedOutcome) recHtml += '<div class="muted" style="margin-top:2px;font-size:0.75rem">预期: ' + escHtml(scrubCapabilityIdsInProse(rec.expectedOutcome)) + '</div>';
+      if (rec.risks && rec.risks.length) recHtml += '<div class="muted" style="font-size:0.75rem;margin-top:2px">风险:</div>' + list(rec.risks);
+      if (rec.prerequisites && rec.prerequisites.length) recHtml += '<div class="muted" style="font-size:0.75rem;margin-top:2px">前提:</div>' + list(rec.prerequisites);
+      if (rec.humanNeeded && rec.humanNeeded.length) recHtml += '<div class="muted" style="font-size:0.75rem;margin-top:2px;color:var(--warning)">需人工:</div>' + list(rec.humanNeeded);
+      html += block('建议', recHtml +
+        '<div class="muted" style="font-size:0.72rem;margin-top:4px">⚠ 这是上一份调查（已失败）的建议，不是基于当前证据生成的。当前调查完成后才会刷新。</div>'
+      );
+    } else {
+      // No prior recommendation, latest attempt not completed. Do NOT
+      // render the misleading "Agent 已完成调查" copy and do NOT
+      // offer the "生成建议" button. The honest state is: the
+      // investigation is in flight, failed, or otherwise not yet
+      // completed — the operator must wait for the next successful
+      // turn to surface a new recommendation.
+      const statusHint = inv.status === 'failed'
+        ? '当前调查失败。请等待 Runtime 调度下一轮调查，调查完成后才能生成建议。'
+        : inv.status === 'investigating'
+          ? '当前调查进行中。调查完成后才能生成建议。'
+          : '当前调查尚未完成。调查完成后才能生成建议。';
+      html += block('建议', '<div class="muted" style="font-size:0.75rem">' + escHtml(statusHint) + '</div>');
+    }
+  } else if (rec) {
+    // Completed + has a recommendation: render the recommendation body.
     const list = (items) => items.length ? '<ul style="margin:2px 0;padding-left:16px;font-size:0.78rem">' + items.map(function (i) { return '<li style="margin:1px 0">' + escHtml(scrubCapabilityIdsInProse(i)) + '</li>'; }).join('') + '</ul>' : '';
     let recHtml = '<p style="margin:0;font-size:0.82rem;white-space:pre-wrap"><strong>' + escHtml(scrubCapabilityIdsInProse(rec.recommendation)) + '</strong></p>';
     if (rec.rationale) recHtml += '<div class="muted" style="font-size:0.75rem;margin-top:2px">依据: ' + escHtml(scrubCapabilityIdsInProse(rec.rationale)) + '</div>';
@@ -2181,6 +2231,7 @@ function renderCurrentUnderstanding(container, inv) {
     if (rec.humanNeeded && rec.humanNeeded.length) recHtml += '<div class="muted" style="font-size:0.75rem;margin-top:2px;color:var(--warning)">需人工:</div>' + list(rec.humanNeeded);
     html += block('建议', recHtml);
   } else {
+    // Completed + no recommendation: legitimate "已完成调查 / 可生成建议".
     html += block('建议',
       '<div class="muted" style="font-size:0.75rem;margin-bottom:4px">Agent 已完成调查，可基于当前判断生成处理建议。</div>' +
       '<button class="btn btn-primary" style="font-size:0.72rem;padding:4px 10px" onclick="generateRecommendation(' + JSON.stringify(inv.situationId) + ')">💡 生成建议</button>'
