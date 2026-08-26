@@ -627,12 +627,19 @@ export function renderSituationTimeline(detail) {
                 : inv.stopReason;
       // Anchor the stop-reason event to the latest of (startedAt, updatedAt, observedAt) so it
       // sorts after the events it depends on but before the next human action.
-      var stopT = inv.updatedAt || inv.startedAt || (detail.temporal && detail.temporal.observedAt);
+      // P0010.2.3 (ADR-059 audit G-1) — same honesty rule as the "completed" event above:
+      // when the timestamp came from a proxy (inv.updatedAt || inv.startedAt) rather
+      // than a dedicated `stoppedAt` column, surface the same `≈` annotation. When
+      // truly missing, fall back to "时间未记录" rather than fabricating a wall-clock.
+      var rawStopT = inv.updatedAt || inv.startedAt || (detail.temporal && detail.temporal.observedAt);
+      var isStopTProxy = !!(inv.updatedAt || inv.startedAt); // a real proxy column exists
+      var stopSummary = '停止原因: ' + stopLabel
+        + (rawStopT ? (isStopTProxy ? ' (≈ 停止时间; 实际缺少 stoppedAt 列)' : '') : ' (时间未记录)');
       pushIfTimed(events, {
-        t: stopT,
+        t: rawStopT,
         actor: 'agent',
         type: 'investigation.stopped',
-        summary: '停止原因: ' + stopLabel,
+        summary: stopSummary,
       });
     }
   }

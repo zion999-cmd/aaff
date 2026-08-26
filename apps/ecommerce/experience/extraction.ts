@@ -104,6 +104,14 @@ export interface ExtractMemoriesInput {
 /**
  * Extract validated ContextMemory records from reject reviews.
  * Gate: >= MIN_SUPPORT reject events of the same reason_category AND support_rate >= MIN_SUPPORT_RATE.
+ *
+ * P0010.2.3 (ADR-059 audit J-1) — REMOVE CANDIDATE.
+ * Production zero-call: only the contract test at
+ * `tests/contract/memory-facade.contract.ts` and the in-memory wrapper
+ * `MemoryFacade.extract` (itself unused) call this. Out of scope for this
+ * slice to delete (per user spec — no Knowledge Identity redesign, no
+ * Memory Architecture refactor). Do not use in new code; the canonical
+ * write side is `recordInterventionInLearningContext`.
  */
 export const extractMemories = (input: ExtractMemoriesInput): ContextMemory[] => {
   const { reviews, agentId, now = new Date() } = input;

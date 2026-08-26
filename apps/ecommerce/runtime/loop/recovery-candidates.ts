@@ -237,6 +237,33 @@ export const listRecoverableCandidates = (
 };
 
 /**
+ * P0010.2.3 (ADR-059 audit D-2) — count situations currently in
+ * `blocked_runtime_failure` state (the threshold-crossing tick fired the
+ * `investigation_blocked` event and the operator has not yet POSTed
+ * /clear-block). One COUNT query against the learning_contexts JSON;
+ * cheap and additive (no schema change).
+ *
+ * Definition matches the policy's blocked_runtime_failure decision:
+ *   investigation.status = 'failed'
+ *   AND investigation.consecutiveFailures >= threshold
+ *   AND investigation.blockedEmittedAt IS NOT NULL
+ *
+ * The blockedEmittedAt sidecar (P0010.2.2 R4 fix) is the canonical
+ * "this threshold-crossing tick already fired the event" marker; the
+ * recovery scan honors it, and so does this count.
+ */
+export const countBlockedSituations = (db: Db, threshold: number = DEFAULT_MAX_FAILURES): number => {
+  const row = db.prepare(
+    `SELECT COUNT(*) AS n
+     FROM learning_contexts
+     WHERE json_extract(body, '$.investigation.status') = 'failed'
+       AND json_extract(body, '$.investigation.blockedEmittedAt') IS NOT NULL
+       AND CAST(json_extract(body, '$.investigation.consecutiveFailures') AS INTEGER) >= ?`,
+  ).get(threshold) as { n: number } | undefined;
+  return row?.n ?? 0;
+};
+
+/**
  * Read the canonical consecutive-failure counter from the Investigation
  * marker. P0010.2.2 — the Loop's investigate() function stamps this
  * field on the marker on every failure and resets it on every success

@@ -154,7 +154,16 @@
         <div id="view-trend" class="view-container"><div class="view-title-row"><h2 class="view-title" data-i18n="trend.title">趋势观察</h2><span class="muted" data-i18n="trend.subtitle">信号变化与排名漂移时间轴</span></div><div id="trendContent" class="muted placeholder">加载中...</div></div>
         <div id="view-archive" class="view-container"><div class="view-title-row"><h2 class="view-title" data-i18n="archive.title">历史归档</h2><select id="archiveProfileSelect" class="input select" style="font-size:0.8rem;"><option value="operator_mode" data-i18n="profile.operator">运营推荐</option><option value="growth_discovery" data-i18n="profile.growth">增长发现</option><option value="sales_leaderboard" data-i18n="profile.sales">销售排行</option></select></div><div id="archiveTimeline"></div></div>
         <div id="view-memory" class="view-container"><div class="view-title-row"><h2 class="view-title" data-i18n="memory.title">Memory 成长</h2><span class="unimplemented-badge">未实现 (Legacy)</span><span class="muted" data-i18n="memory.subtitle">Memory 属于 Runtime ownership，不再由 agentFabric 管理</span></div><div id="memoryContent" class="muted placeholder">Memory 成长已标记为 Legacy。Memory/Skill 的生成属于 HermesAgent Runtime 的职责，不属于 agentFabric。</div></div>
-        <div id="view-runtime" class="view-container"><div class="view-title-row"><h2 class="view-title">⚡ Runtime 执行</h2><span class="muted">数据采集执行历史与详情</span></div><div class="runtime-actions" style="margin-bottom:16px"><button id="runtimeCollectBtn" class="btn btn-primary" style="margin-right:8px">&#128260; 采集数据 (Mock)</button><span id="runtimeCollectStatus" class="muted" style="margin-left:8px"></span></div>
+        <div id="view-runtime" class="view-container"><div class="view-title-row"><h2 class="view-title">⚡ Runtime 执行</h2><span class="muted">数据采集执行历史与详情</span></div>
+          <!-- P0010.2.3 (ADR-059 audit D-1) — Loop state surface.
+               Reads GET /api/runtime/loop and renders running/lastTickAt/tickCount/blockedCount.
+               blockedCount drives the loopBlockedBadge so operators see blocked
+               situations without opening the URL. -->
+          <div class="runtime-loop-status" id="loopStatus" style="background:var(--card-bg);border-radius:8px;padding:12px 16px;margin-bottom:12px;font-size:0.82rem;line-height:1.6">
+            <span class="muted">Loading loop state...</span>
+          </div>
+          <span id="loopBlockedBadge" class="badge" style="display:none;background:#fee2e2;color:#991b1b;padding:2px 8px;border-radius:4px;margin-left:8px;font-size:0.72rem"></span>
+          <div class="runtime-actions" style="margin-bottom:16px"><button id="runtimeCollectBtn" class="btn btn-primary" style="margin-right:8px">&#128260; 采集数据 (Mock)</button><span id="runtimeCollectStatus" class="muted" style="margin-left:8px"></span></div>
 
           <div class="replay-panel" style="background:var(--card-bg);border-radius:8px;padding:12px 16px;margin-bottom:16px">
             <h3 style="font-size:0.85rem;margin-bottom:8px">&#128260; Historical Replay</h3>

@@ -934,7 +934,52 @@ async function loadArchive() {
 document.getElementById('archiveProfileSelect')?.addEventListener('change', loadArchive);
 
 	// ═══ Runtime Execution ════════════════════════════════════
+	// P0010.2.3 (ADR-059 audit D-2) — Loop state surface.
+	// Reads GET /api/runtime/loop and renders running/lastTickAt/tickCount/blockedCount.
+	// blockedCount drives the loopBlockedBadge so operators see blocked
+	// situations without opening the URL. Renders honest "unknown" placeholders
+	// when fields are missing (no fabrication). Errors render an honest
+	// "[loop] state unavailable" string — never throw silently.
+	async function loadLoopStatus() {
+	  const el = document.getElementById('loopStatus');
+	  const badge = document.getElementById('loopBlockedBadge');
+	  if (!el) return;
+	  try {
+	    const resp = await apiGet('/api/runtime/loop');
+	    const state = resp && (resp.data ?? resp);
+	    if (!state) {
+	      el.innerHTML = '<span class="muted">[loop] state unavailable</span>';
+	      return;
+	    }
+	    const running = state.running === true ? '✓ 运行中' : (state.running === false ? '✗ 已停止' : '? 未知');
+	    const lastTick = state.lastTickAt
+	      ? new Date(state.lastTickAt).toLocaleString()
+	      : '时间未记录';
+	    const tickCount = typeof state.tickCount === 'number' ? state.tickCount : '?';
+	    const blockedCount = typeof state.blockedCount === 'number' ? state.blockedCount : 0;
+	    el.innerHTML =
+	      '<strong>RuntimeLoop</strong> · ' + running +
+	      ' · 上次 tick: ' + escapeHtml(lastTick) +
+	      ' · 累计 tick: ' + tickCount +
+	      ' · <span style="color:' + (blockedCount > 0 ? '#991b1b' : 'inherit') + '">阻塞: ' + blockedCount + '</span>';
+	    if (badge) {
+	      if (blockedCount > 0) {
+	        badge.textContent = '⚠ 阻塞 ' + blockedCount;
+	        badge.style.display = 'inline-block';
+	      } else {
+	        badge.style.display = 'none';
+	      }
+	    }
+	  } catch (e) {
+	    el.innerHTML = '<span class="muted">[loop] state unavailable (' + (e && e.message ? e.message : 'unknown') + ')</span>';
+	  }
+	}
+
 	async function loadRuntime() {
+	  // P0010.2.3 (ADR-059 audit D-2) — refresh Loop state alongside the
+	  // execution history. No new event / route / router change; this is
+	  // the single call site for the view-runtime view.
+	  await loadLoopStatus();
 	  const list = document.getElementById('runtimeExecutionsList');
 	  const countEl = document.getElementById('runtimeExecCount');
 	  const status = document.getElementById('runtimeCollectStatus');
@@ -2019,7 +2064,12 @@ const STOP_VERDICT_LABEL = {
   ask_human: '需人工确认',
 };
 
-/** Surface the capability boundary ONLY from the Agent's own persisted words. */
+/** Surface the capability boundary ONLY from structured data (P0010.2.3 ADR-059 audit F-1).
+ *  P0010.1 REPAIR-4 (ADR-054) moved this logic off fuzzy text match onto structured
+ *  fields: `inv.status === 'failed' || (inv.stopReason === 'judgment' && rec.humanNeeded.length > 0)`
+ *  is what `deriveInvestigationStatus` reads to set the canonical `needs_human` flag.
+ *  The legacy text match (人工核验/人工确认/无法获取) is REMOVED here — it never
+ *  flipped lifecycle and is the only place still doing string-includes on judgment text. */
 function deriveCapabilityBoundary(inv) {
   if (!inv) return null;
   if (inv.stopReason === 'missing_capability') {
@@ -2028,8 +2078,10 @@ function deriveCapabilityBoundary(inv) {
   if (inv.stopReason === 'ask_human') {
     return '所需业务事实无法由系统获取，需要运营人员人工确认。';
   }
-  const text = ((inv.judgment || '') + (inv.currentUnderstanding || '')).toLowerCase();
-  if (text.includes('人工核验') || text.includes('人工确认') || text.includes('人工核查') || text.includes('无法获取')) {
+  // P0010.2.3 (ADR-059 audit F-1) — structured-only check. The needs_human
+  // flag is set by deriveInvestigationStatus (p0007.ts) from stopReason +
+  // recommendation.humanNeeded[]; we honor it directly. No more string match.
+  if (inv.needsHuman === true) {
     const req = (inv.requiredEvidence || []).slice(0, 4).join('；');
     return '部分所需证据当前 Fabric 无法获取，需要人工核验' + (req ? '：' + req : '') + '。';
   }

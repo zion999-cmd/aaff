@@ -44,7 +44,15 @@ const toRow = (m: ContextMemory, agentId?: string): MemoryRow => ({
   created_at: m.created_at,
 });
 
-/** Upsert memories (insert or replace by memory_id). Returns count. */
+/** Upsert memories (insert or replace by memory_id). Returns count.
+ *
+ * P0010.2.3 (ADR-059 audit J-1) — REMOVE CANDIDATE.
+ * Production zero-call: only the in-memory wrapper `MemoryFacade.store`
+ * (itself unused) calls this. Out of scope for this slice to delete.
+ * Do not use in new code; the canonical write side is
+ * `recordInterventionInLearningContext` (writes `learning_contexts.body`,
+ * not `context_memories`).
+ */
 export const storeMemories = (db: Db, memories: readonly ContextMemory[]): number => {
   const stmt = db.prepare(
     `INSERT INTO context_memories (

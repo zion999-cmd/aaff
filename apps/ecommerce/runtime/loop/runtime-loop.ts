@@ -69,6 +69,7 @@ import {
 import { createLoopLogger, type LoopEvent } from './loop-events.js';
 import {
   listRecoverableCandidates,
+  countBlockedSituations,
   DEFAULT_MAX_CONSECUTIVE_FAILURES,
   type RecoveryOptions,
   type RecoverableSituation,
@@ -129,6 +130,15 @@ export interface LoopState {
   running: boolean;
   lastTickAt: string | null;
   tickCount: number;
+  /**
+   * P0010.2.3 (ADR-059 audit D-2) — count of situations currently in
+   * `blocked_runtime_failure` state (threshold-crossing tick already
+   * fired the event, operator has not yet cleared the block). One
+   * COUNT query against learning_contexts; cheap; updates on every
+   * `list()` call. The Workspace's "Runtime 执行" view shows this
+   * so operators see blocked situations without opening the URL.
+   */
+  blockedCount: number;
 }
 
 const isPolicyInvestigate = (d: PolicyDecision): d is { kind: 'investigate'; reason: 'new_situation' | 'meaningful_new_evidence' | 'recovery_no_investigation' | 'recovery_interrupted' | 'recovery_failed_retryable' } =>
@@ -173,6 +183,7 @@ export const createRuntimeLoop = (options: RuntimeLoopOptions): RuntimeLoop => {
     running: false,
     lastTickAt: null,
     tickCount: 0,
+    blockedCount: 0,
   };
   let timer: ReturnType<typeof setInterval> | null = null;
   let tickInFlight: Promise<LoopTickSummary> | null = null;
@@ -521,7 +532,13 @@ export const createRuntimeLoop = (options: RuntimeLoopOptions): RuntimeLoop => {
       tickInFlight = tick().finally(() => { tickInFlight = null; });
       return tickInFlight;
     },
-    list: (): LoopState => ({ ...state }),
+    list: (): LoopState => {
+      // P0010.2.3 (ADR-059 audit D-2) — surface blockedCount alongside
+      // the in-process state. The count is read live (each call) from
+      // learning_contexts, not cached, so it reflects operator /clear-block
+      // actions immediately.
+      return { ...state, blockedCount: countBlockedSituations(db) };
+    },
   };
 };
 

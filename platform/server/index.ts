@@ -16,6 +16,7 @@ import { knowledgeRouter } from './routes/knowledge.js';
 import { scheduleRouter } from './routes/schedule.js';
 import { outputsRouter } from './routes/outputs.js';
 import { openDb } from '#platform/storage/connection.js';
+import { initDatabase } from '#platform/storage/init.js';
 import { createScheduledAcquisitionRunner } from '#app/runtime/scheduling/index.js';
 import type { ScheduledAcquisition } from '#app/runtime/scheduling/index.js';
 import { createRuntimeLoop } from '#app/runtime/loop/index.js';
@@ -255,22 +256,24 @@ const main = async (): Promise<void> => {
     { capability: 'trade.overview', at: '00:00', enabled: true },
     { capability: 'traffic.overview', at: '00:00', enabled: true },
   ];
-  startServer({ db, schedule });
-  // Start the Loop after the HTTP server is listening. The Loop's first
-  // tick runs after `tickMs` (60s) so it does not race the server start.
-  // Force an immediate first tick so the operator sees a log line within
-  // seconds of `npm run dev` (the user-stated acceptance criterion).
-  const loop = _getPendingLoop();
-  if (loop) {
-    loop.start();
-    // eslint-disable-next-line no-console
-    console.log('[loop] loop started (continuous business runtime)');
-  }
   // P0010.1 Final Repair — Area A: idempotent product-catalog bootstrap.
   // Walks every getProductList*.json under data/evidence/jd and projects
   // (spu_id, proName) into the canonical products table so the Situation
   // cards display real product names (not "未知商品 · SKU <id>"). Skippable
   // via BOOTSTRAP_PRODUCT_CATALOG=skip. Failures are logged, never thrown.
+  //
+  // P0010.2.3 (audit A-1 fix): MUST run BEFORE startServer(). Otherwise the
+  // first /api/situations request races the bootstrap and the Situation
+  // producer inserts `entity_name = NULL` for every row (the catalog is
+  // empty at producer time). The UI then falls back to "未知商品 · SKU <id>".
+  //
+  // The schema (products / situations / signals tables) is normally created
+  // inside startServer(). On a fresh DB (no schema yet) bootstrap would run
+  // against an empty schema and silently skip every file. So we explicitly
+  // call initDatabase() here — it is idempotent (all `apply*` use
+  // CREATE TABLE IF NOT EXISTS), so the duplicate call inside startServer
+  // is a no-op.
+  initDatabase(db);
   try {
     const { bootstrapProductCatalog } = await import(
       '#app/connectors/jd/product-catalog-bootstrap.js'
@@ -282,6 +285,17 @@ const main = async (): Promise<void> => {
       '[bootstrap] product-catalog bootstrap failed:',
       err instanceof Error ? err.message : String(err),
     );
+  }
+  startServer({ db, schedule });
+  // Start the Loop after the HTTP server is listening. The Loop's first
+  // tick runs after `tickMs` (60s) so it does not race the server start.
+  // Force an immediate first tick so the operator sees a log line within
+  // seconds of `npm run dev` (the user-stated acceptance criterion).
+  const loop = _getPendingLoop();
+  if (loop) {
+    loop.start();
+    // eslint-disable-next-line no-console
+    console.log('[loop] loop started (continuous business runtime)');
   }
   // Supplement missing data in the background (non-blocking).
   void backfillRecentData(db);

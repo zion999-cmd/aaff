@@ -14,6 +14,7 @@ import { initDatabase } from '#platform/storage/init.js';
 import {
   listRecoverableCandidates,
   countConsecutiveFailures,
+  countBlockedSituations,
   DEFAULT_MAX_CONSECUTIVE_FAILURES,
   DEFAULT_RECOVERY_STALE_AFTER_MS,
 } from '#app/runtime/loop/recovery-candidates.js';
@@ -353,5 +354,113 @@ describe('countConsecutiveFailures', () => {
       ],
     };
     expect(countConsecutiveFailures(inv)).toBe(1);
+  });
+});
+
+// P0010.2.3 (ADR-059 audit D-2) — countBlockedSituations surface.
+describe('countBlockedSituations', () => {
+  let db: Database.Database;
+
+  beforeEach(() => {
+    db = openDb(':memory:');
+    initDatabase(db);
+  });
+
+  afterEach(() => {
+    db.close();
+  });
+
+  test('returns 0 when there are no learning_contexts at all', () => {
+    expect(countBlockedSituations(db)).toBe(0);
+  });
+
+  test('returns 0 when failed situations are below the threshold', () => {
+    insertSituation(db, 'sit_below');
+    insertLearningContext(db, 'sit_below', buildContextBody({
+      investigation: {
+        status: 'failed',
+        error: 'transient blip',
+        updatedAt: NOW,
+        consecutiveFailures: DEFAULT_MAX_CONSECUTIVE_FAILURES - 1,
+        blockedEmittedAt: '2026-08-25T00:00:00.000Z',
+      },
+    }));
+    expect(countBlockedSituations(db)).toBe(0);
+  });
+
+  test('counts a failed+blocked situation exactly once (no double-fire)', () => {
+    // Mirror of the R4-fix contract: the threshold-crossing tick stamps
+    // blockedEmittedAt, and the count sees it as one blocked situation.
+    insertSituation(db, 'sit_blocked_1');
+    insertLearningContext(db, 'sit_blocked_1', buildContextBody({
+      investigation: {
+        status: 'failed',
+        error: '3rd consecutive failure',
+        updatedAt: NOW,
+        consecutiveFailures: DEFAULT_MAX_CONSECUTIVE_FAILURES,
+        blockedEmittedAt: '2026-08-25T00:00:00.000Z',
+      },
+    }));
+    expect(countBlockedSituations(db)).toBe(1);
+  });
+
+  test('does NOT count a blocked situation that has been cleared (consecutiveFailures=0, no blockedEmittedAt)', () => {
+    // After /clear-block, consecutiveFailures=0 and blockedEmittedAt is deleted.
+    // The count must drop to 0 immediately.
+    insertSituation(db, 'sit_cleared');
+    insertLearningContext(db, 'sit_cleared', buildContextBody({
+      investigation: {
+        status: 'failed',
+        error: 'cleared by operator',
+        updatedAt: NOW,
+        consecutiveFailures: 0,
+        // no blockedEmittedAt
+      },
+    }));
+    expect(countBlockedSituations(db)).toBe(0);
+  });
+
+  test('counts multiple blocked situations independently', () => {
+    insertSituation(db, 'sit_a');
+    insertSituation(db, 'sit_b');
+    insertSituation(db, 'sit_c');
+    const blocked = (_sitId: string) => buildContextBody({
+      investigation: {
+        status: 'failed',
+        error: 'blocked',
+        updatedAt: NOW,
+        consecutiveFailures: DEFAULT_MAX_CONSECUTIVE_FAILURES,
+        blockedEmittedAt: '2026-08-25T00:00:00.000Z',
+      },
+    });
+    insertLearningContext(db, 'sit_a', blocked('sit_a'));
+    insertLearningContext(db, 'sit_b', blocked('sit_b'));
+    // sit_c is below threshold — must NOT be counted.
+    insertLearningContext(db, 'sit_c', buildContextBody({
+      investigation: {
+        status: 'failed',
+        error: 'transient',
+        updatedAt: NOW,
+        consecutiveFailures: 1,
+      },
+    }));
+    expect(countBlockedSituations(db)).toBe(2);
+  });
+
+  test('respects a custom threshold', () => {
+    insertSituation(db, 'sit_low');
+    insertLearningContext(db, 'sit_low', buildContextBody({
+      investigation: {
+        status: 'failed',
+        error: 'failed twice',
+        updatedAt: NOW,
+        consecutiveFailures: 2,
+        blockedEmittedAt: '2026-08-25T00:00:00.000Z',
+      },
+    }));
+    // Default threshold (3) excludes it.
+    expect(countBlockedSituations(db)).toBe(0);
+    // Custom threshold (2) includes it.
+    expect(countBlockedSituations(db, 2)).toBe(1);
   });
 });

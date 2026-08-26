@@ -21,9 +21,16 @@ export interface MemoryFacade {
   adjustmentsFor(db: Db, agentId?: string): RankingMemoryAdjustment[];
 }
 
+/**
+ * P0010.2.3 (ADR-059 audit J-2) — REMOVE CANDIDATE for `extract` + `store`.
+ * `queryActive` + `adjustmentsFor` are LIVE (read side, 4 production callers);
+ * `extract` + `store` are inert (zero production callers). Out of scope to
+ * delete the facade or its inert members; the JSDoc on the inert members
+ * makes the dead leg explicit so future contributors don't reach for it.
+ */
 export const MemoryFacade: MemoryFacade = {
-  extract: (input) => extractMemories(input),
-  store: (db, memories) => storeMemories(db, memories),
+  extract: (input) => extractMemories(input), // REMOVE CANDIDATE — production zero-call
+  store: (db, memories) => storeMemories(db, memories), // REMOVE CANDIDATE — production zero-call
   queryActive: (db, agentId) => queryActiveMemories(db, agentId),
   adjustmentsFor: (db, agentId) => memoryAdjustmentsFor(db, agentId),
 };

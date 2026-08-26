@@ -40,7 +40,13 @@ export const initMemoryStore = (db: Db): void => {
 
 // ---- CRUD ----
 
-/** Upsert memories — insert new, update existing by memory_id. */
+/** Upsert memories — insert new, update existing by operator_memories.memory_id.
+ *
+ * P0010.2.3 (ADR-059 audit J-1) — REMOVE CANDIDATE.
+ * Production zero-call: `apps/ecommerce/memory/index.ts:2` re-exports it,
+ * but no production route/orchestrator imports it. Out of scope for this
+ * slice to delete (per user spec — no Memory Architecture refactor).
+ */
 export const upsertMemories = (db: Db, memories: OperatorMemory[]): number => {
   const stmt = db.prepare(`
     INSERT INTO operator_memories (
@@ -90,7 +96,11 @@ export const upsertMemories = (db: Db, memories: OperatorMemory[]): number => {
   return count;
 };
 
-/** List all persisted memories, sorted by confidence descending. */
+/** List all persisted operator_memories, sorted by confidence descending.
+ *
+ * P0010.2.3 (ADR-059 audit J-1) — REMOVE CANDIDATE.
+ * Production zero-call: no route/orchestrator imports it. Out of scope to delete.
+ */
 export const listMemories = (db: Db, limit = 50): OperatorMemory[] => {
   const rows = db.prepare(`
     SELECT * FROM operator_memories
@@ -101,7 +111,11 @@ export const listMemories = (db: Db, limit = 50): OperatorMemory[] => {
   return rows.map(fromRow);
 };
 
-/** Get memories matching a category. */
+/** Get operator_memories matching a category.
+ *
+ * P0010.2.3 (ADR-059 audit J-1) — REMOVE CANDIDATE.
+ * Production zero-call: no route/orchestrator imports it. Out of scope to delete.
+ */
 export const findMemoriesByCategory = (db: Db, category: string): OperatorMemory[] => {
   const rows = db.prepare(`
     SELECT * FROM operator_memories

@@ -1275,3 +1275,59 @@ Runtime Kernel 不属于 HermesAgent 内部。它是 agentFabric 的公共执行
   - `tests/unit/loop/recovery-candidates.test.ts`: +2 tests (already-emitted suppressed, fresh-threshold-crossing included)
 
 - **Test count**: 62 → 64 loop tests (884 → 886 total, still 2 pre-existing flaky). Typecheck unchanged (baseline 19, all pre-existing).
+
+### ADR-059 (2026-08-27): Post-P0010.2 Regression Audit + Repair
+
+- **状态**: Accepted, implemented in the P0010.2.3 commit.
+- **来源**: User spec — audit the 10 most-recently-shipped capabilities (A-J) and confirm each is a complete production loop (Producer → Persistence → Runtime Trigger → API → Workspace Consumer → Live Verified). User explicit hard scope: allowed = fix broken legs in existing chain; forbidden = P0010.3 / Terminal Lifecycle / `situations.closed` / `closed_at` / Resolution Engine / Final Outcome / Situation Archive / Event Bus / Wake Engine / Action Engine / Approval / external sending / Feishu/WeCom/Email/Telegram / Trust Schema refactor / Evidence Identity migration / Knowledge Identity redesign / Knowledge Engine / new Memory Architecture / Skill Engine / hermes proxy / deleting SubprocessHermesClient / faking time/provenance/outcome for UI.
+- **Audit matrix** (full report: [post-p0010.2-regression-audit.md](audits/post-p0010.2-regression-audit.md)):
+  - A. Entity / 商品身份 — **REPAIR → PASS** (A-1: bootstrap before startServer + initDatabase; A-2: order test)
+  - B. Evidence / Knowledge 引用 — **DEFERRED** (SB-1/SB-2 P0010.3)
+  - C. Investigation / Recovery — **PASS** (already accepted)
+  - D. Runtime Continuous Loop — **REPAIR → PASS** (D-1: `countBlockedSituations` + `LoopState.blockedCount`; D-2: `loadLoopStatus()` + DOM slots; D-3: 10 tests)
+  - E. Hermes Transport — **PASS** + `SubprocessHermesClient` **LEGACY** (out of P0010 main chain)
+  - F. Human Intervention — **REPAIR → PASS** (F-1: drop dead fuzzy text match, use `inv.needsHuman`)
+  - G. Timeline — **REPAIR → PASS** (G-1: stop-reason `≈` annotation + "时间未记录" fallback; G-2: 3 tests)
+  - H. Output — **PASS** (live `out_3a43d1053b9bfa2d` returned by `/api/outputs`)
+  - I. Archive — **PASS** (live `/api/ranking/operator_mode` returns 7 rows; UI badge correct)
+  - J. Memory / Experience / Skill dead-leg — **REPAIR → PASS** (J-1/J-2: REMOVE CANDIDATE JSDoc on 5 dead exports; skill extraction is **not built**, no code to mark)
+
+- **Net change**:
+  - 6 cells REPAIR'd → PASS; 1 DEFERRED (B); 1 LEGACY (E subprocess); 2 PASS unchanged (C, H, I)
+  - 16 net new tests (3 + 6 + 4 + 3) — full suite **899 / 901 passing**, 2 pre-existing flaky (chat.contract 5s timeout; capability/coverage indicator count drift)
+  - `npm run typecheck` 0 new errors (baseline 19 unchanged)
+
+- **Live verification (6 cases)**:
+  1. Continuous Runtime — PASS (live log: 2+ ticks, full `tick → acquire → evidence → situation updated → investigation skipped` chain)
+  2. Restart Recovery — PASS (P0010.2.2 audit log; same invariants)
+  3. Human Feedback — PROVEN-BY-TEST (hermes auth broken in dev env; structural chain unit-tested)
+  4. Output — PASS (live `/api/outputs` returns real `out_3a43d1053b9bfa2d` status=ready)
+  5. Entity — PROVEN-BY-TEST + PARTIAL LIVE (source-level test pins invariant; live `products` table has real name "祁门红茶官方旗舰店..."; pre-existing 31 NULL `entity_name` rows are legacy data from pre-fix runs)
+  6. Archive — PASS (live `/api/ranking/operator_mode` returns 7 rows; UI `legacy-badge` correct; disabled "Situation 归档" stub)
+
+- **NOT INCLUDED** (per user hard scope, same as P0010.2.2):
+  - All P0010.3 / Terminal Lifecycle / Resolution Engine / Final Outcome / Situation Archive
+  - Event Bus / Wake Engine / Action Engine / Approval / external sending
+  - Trust Schema / Evidence Identity (SB-1) / Knowledge Identity (SB-2)
+  - New Memory Architecture / Skill Engine / hermes proxy
+  - Deletion of `SubprocessHermesClient` (kept as LEGACY)
+  - Any fake time/provenance/outcome fabrication
+
+- **Files changed** (13 source + 4 test):
+  - `platform/server/index.ts` (A-1)
+  - `apps/ecommerce/runtime/loop/recovery-candidates.ts` (D-1, +helper)
+  - `apps/ecommerce/runtime/loop/index.ts` (D-1, export)
+  - `apps/ecommerce/runtime/loop/runtime-loop.ts` (D-1, LoopState + list)
+  - `apps/ecommerce/workspace/index.html` (D-2, DOM)
+  - `apps/ecommerce/workspace/app.js` (D-2, F-1, J-2 inline)
+  - `apps/ecommerce/workspace/presentation.js` (G-1)
+  - `apps/ecommerce/experience/extraction.ts` (J-1)
+  - `apps/ecommerce/experience/repository.ts` (J-1)
+  - `apps/ecommerce/experience/facade.ts` (J-2)
+  - `apps/ecommerce/memory/store.ts` (J-1, 3 dead exports)
+  - `tests/unit/connectors/jd/product-catalog-bootstrap-order.test.ts` (NEW, A-2)
+  - `tests/unit/loop/recovery-candidates.test.ts` (extend, D-3: +6 tests)
+  - `tests/contract/workspace-loop-status.test.ts` (NEW, D-3)
+  - `tests/unit/workspace/timeline-proxy-annotation.test.ts` (NEW, G-2)
+
+- **Next**: NONE per user spec. The slice explicitly stops here. P0010.3 / Terminal Lifecycle / Resolution Engine / Final Outcome / Situation Archive / any of the forbidden list remain out of scope until the user reviews this commit and approves the next move.
