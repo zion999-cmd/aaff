@@ -1257,3 +1257,21 @@ Runtime Kernel 不属于 HermesAgent 内部。它是 agentFabric 的公共执行
 - "force re-investigate" 按钮（operator 可直接 POST /api/situation/:id/investigate 一次性重跑 — 这就是 manual path）
 
 **Next**: P0010.3 Terminal Lifecycle (`closed_at` / `closed_by` / `resolution_reason` / `lifecycle='closed'` / Resolution Engine / Outcome producer) — P0010.2.2 是 P0010.3 的前置（P0010.3 的 `closed` 终态会被 recovery scan 同样 skip，因为 `lifecycle IN ('open','partial')` 过滤；这是 integration 预期）。
+
+### ADR-058 Amendment 1 (2026-08-26): `blockedEmittedAt` sidecar — R4 audit fix
+
+- **状态**: Accepted, implemented in the audit-fix commit.
+- **来源**: Architecture audit ([p0010.2.2-architecture-audit.md](p0010.2.2-architecture-audit.md)) found that the threshold-crossing-tick filter at §5 above (`> max` skip / `== max` include) is correct, but the Loop re-fires the `investigation_blocked` event on EVERY subsequent tick when `consecutiveFailures == max` because the policy returns `skip` (so the counter never increments past max) and the recovery scan still includes the situation on every tick. Original ADR §5 comment said "one final time, on the threshold-crossing tick" but the code re-fires every 60s.
+
+- **Fix**: New sidecar `blockedEmittedAt: string | undefined` on the investigation marker (parallels `evidenceContentHash` and `consecutiveFailures` patterns). Writers: Loop stamps `blockedEmittedAt = nowIso()` on the threshold-crossing tick; `/clear-block` route deletes the field. The recovery scan filters out situations whose marker has `blockedEmittedAt` set (counter `== max AND blockedEmittedAt set → continue`).
+
+- **Verification**: Live test `sit_kill_during_investigation_test` (T+40s tick fires ONE `investigation BLOCKED ... consecutiveFailures=3` event; T+50s tick has NO `investigation BLOCKED` event, NO `recovery eligible` line for this situation — suppressed by `blockedEmittedAt`).
+
+- **Files changed (10 LOC + 2 tests)**:
+  - `shared/schemas/investigation.ts`: +1 optional field (`blockedEmittedAt`)
+  - `platform/server/routes/situation-chat.ts`: `markInvestigation` accepts `blockedEmittedAt`, `/clear-block` route deletes it
+  - `apps/ecommerce/runtime/loop/recovery-candidates.ts`: `if (consecutiveFailures === max && blockedEmittedAt) continue;`
+  - `apps/ecommerce/runtime/loop/runtime-loop.ts`: on `blocked_runtime_failure` policy decision, write `blockedEmittedAt = nowIso()` to the marker
+  - `tests/unit/loop/recovery-candidates.test.ts`: +2 tests (already-emitted suppressed, fresh-threshold-crossing included)
+
+- **Test count**: 62 → 64 loop tests (884 → 886 total, still 2 pre-existing flaky). Typecheck unchanged (baseline 19, all pre-existing).

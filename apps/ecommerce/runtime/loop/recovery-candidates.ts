@@ -163,11 +163,25 @@ export const listRecoverableCandidates = (
         // the threshold-crossing tick, not every subsequent tick.
         continue;
       }
-      // count == maxConsecutiveFailures is intentionally INCLUDED so
-      // the Loop's policy call this tick returns `blocked_runtime_failure`
-      // and the Loop emits the `investigation_blocked` event (one final
-      // time, on the threshold-crossing tick). count < max is the normal
-      // retry path.
+      // Audit R4 fix (P0010.2.2): if the Loop has already emitted the
+      // `investigation_blocked` event for this block cycle, suppress
+      // re-emission on subsequent ticks. The counter stays at max
+      // because the policy returns `skip` (so the counter never
+      // increments past max); without this guard, the recovery scan
+      // would re-include the situation on every tick (counter == max
+      // is INCLUDED) and the operator's log would re-fire the
+      // `investigation BLOCKED ...` event every 60s. The clear-block
+      // route clears `blockedEmittedAt` along with `consecutiveFailures`.
+      if (consecutiveFailures === maxConsecutiveFailures && (investigation as { blockedEmittedAt?: unknown }).blockedEmittedAt) {
+        continue;
+      }
+      // count == maxConsecutiveFailures (with NO blockedEmittedAt) is
+      // intentionally INCLUDED so the Loop's policy call this tick
+      // returns `blocked_runtime_failure` and the Loop emits the
+      // `investigation_blocked` event (one final time, on the
+      // threshold-crossing tick). The Loop then stamps
+      // `blockedEmittedAt` to suppress future re-emission. count < max
+      // is the normal retry path.
       result.push({
         situationId: row.situation_id,
         recoveryKind: 'failed_retryable',

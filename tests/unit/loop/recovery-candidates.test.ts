@@ -176,6 +176,48 @@ describe('listRecoverableCandidates', () => {
     expect(out).toHaveLength(0);
   });
 
+  // Audit R4 fix (P0010.2.2): the threshold-crossing tick fires the
+  // `investigation_blocked` event AND stamps `blockedEmittedAt` on the
+  // marker. Subsequent ticks see the marker and skip — without this,
+  // the recovery scan would re-include the situation on every tick
+  // (counter == max is INCLUDED) and the operator's log would re-fire
+  // the event every 60s until clear-block.
+  test('does NOT return a threshold-crossing situation that has already emitted blockedEmittedAt', () => {
+    insertSituation(db, 'sit_already_emitted');
+    insertLearningContext(db, 'sit_already_emitted', buildContextBody({
+      investigation: {
+        status: 'failed',
+        error: 'failed 3 times, blocked event already fired',
+        updatedAt: NOW,
+        consecutiveFailures: DEFAULT_MAX_CONSECUTIVE_FAILURES,
+        blockedEmittedAt: '2026-08-25T00:00:00.000Z',
+      },
+    }));
+    const out = listRecoverableCandidates(db);
+    expect(out).toHaveLength(0);
+  });
+
+  test('DOES return a threshold-crossing situation that has NOT yet emitted (fresh block cycle)', () => {
+    // The first tick the counter hits max — the recovery scan returns
+    // it, the policy returns blocked, the Loop emits the event AND
+    // stamps blockedEmittedAt. On the NEXT tick, the test above
+    // (already_emitted) takes over and the scan skips.
+    insertSituation(db, 'sit_threshold_fresh');
+    insertLearningContext(db, 'sit_threshold_fresh', buildContextBody({
+      investigation: {
+        status: 'failed',
+        error: 'failed 3 times for the first time',
+        updatedAt: NOW,
+        consecutiveFailures: DEFAULT_MAX_CONSECUTIVE_FAILURES,
+        // no blockedEmittedAt — first threshold-crossing tick
+      },
+    }));
+    const out = listRecoverableCandidates(db);
+    expect(out).toHaveLength(1);
+    expect(out[0]?.recoveryKind).toBe('failed_retryable');
+    expect(out[0]?.consecutiveFailures).toBe(DEFAULT_MAX_CONSECUTIVE_FAILURES);
+  });
+
   test('returns interrupted for an investigating marker older than the stale threshold', () => {
     insertSituation(db, 'sit_int');
     const staleStartedAt = new Date(Date.now() - (STALE_THRESHOLD_MS + 60_000)).toISOString();

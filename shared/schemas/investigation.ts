@@ -153,5 +153,16 @@ export const InvestigationSchema = z.object({
    * reject | override); this counter is the runtime's authoritative view
    * of "how many retries have we burned on this situation". */
   consecutiveFailures: z.number().int().min(0).optional(),
+  /**
+   * P0010.2.2 (audit R4 fix) — timestamp at which the Loop most recently
+   * emitted the `investigation_blocked` event for this situation. Set on
+   * the threshold-crossing tick so subsequent ticks see the marker and
+   * suppress re-emission; the operator's clear-block route resets this
+   * to `undefined` along with `consecutiveFailures`. Without this, every
+   * post-threshold tick would re-emit the blocked event (the counter
+   * stays at max because the policy returns `skip` instead of
+   * `investigate`, so the counter never increments past max). Sidecar
+   * pattern parallels `evidenceContentHash` and `consecutiveFailures`. */
+  blockedEmittedAt: z.string().optional(),
 });
 export type Investigation = z.infer<typeof InvestigationSchema>;

@@ -389,6 +389,30 @@ export const createRuntimeLoop = (options: RuntimeLoopOptions): RuntimeLoop => {
       });
       if (decision.kind === 'skip' && decision.reason === 'blocked_runtime_failure') {
         const count = hint?.consecutiveFailures ?? maxConsecutiveFailures;
+        // Audit R4 fix (P0010.2.2): stamp blockedEmittedAt on the
+        // threshold-crossing tick so subsequent ticks suppress the
+        // event. The clear-block route resets this to undefined
+        // along with consecutiveFailures=0. Only write the marker
+        // when this is a fresh block (not already emitted) — the
+        // recovery scan filters out already-emitted cases, so we
+        // only get here on the threshold-crossing tick. Defensive
+        // double-check below to make the no-re-emit invariant
+        // explicit at the policy boundary.
+        if (hint) {
+          const situation = loadSituation(db, situationId);
+          if (situation) {
+            const priorInv = loadInvestigationFromLearningContext(db, situationId);
+            if (priorInv && !(priorInv as { blockedEmittedAt?: unknown }).blockedEmittedAt) {
+              markInvestigation(db, situation, {
+                status: priorInv.status ?? 'failed',
+                ...(priorInv.error ? { error: priorInv.error } : {}),
+                ...(priorInv.evidenceContentHash ? { evidenceContentHash: priorInv.evidenceContentHash } : {}),
+                consecutiveFailures: count,
+                blockedEmittedAt: nowIso(),
+              });
+            }
+          }
+        }
         logger.emit({ kind: 'investigation_blocked', situationId, consecutiveFailures: count });
         investigationsSkipped++;
         continue;

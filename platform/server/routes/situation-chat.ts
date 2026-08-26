@@ -176,6 +176,10 @@ export const markInvestigation = (
      *  is preserved (preserves the counter on a status flip that isn't
      *  tied to a retry). */
     consecutiveFailures?: number;
+    /** P0010.2.2 (audit R4 fix) — timestamp at which the Loop most
+     *  recently emitted `investigation_blocked` for this situation. Set
+     *  on the threshold-crossing tick; cleared by /clear-block. */
+    blockedEmittedAt?: string;
   },
 ): void => {
   const now = nowIso();
@@ -227,6 +231,17 @@ export const markInvestigation = (
   // (counter that never resets).
   if (marker.consecutiveFailures !== undefined) {
     (next as Record<string, unknown>).consecutiveFailures = marker.consecutiveFailures;
+  }
+  // P0010.2.2 (audit R4 fix): blockedEmittedAt sidecar. The Loop
+  // stamps it on the threshold-crossing tick; /clear-block resets
+  // it. The recovery scan filters out situations whose marker has
+  // this set, so subsequent ticks no longer re-emit the
+  // `investigation_blocked` event (one final per block cycle, not
+  // every 60s). Setting it to undefined removes the field.
+  if (marker.blockedEmittedAt !== undefined) {
+    (next as Record<string, unknown>).blockedEmittedAt = marker.blockedEmittedAt;
+  } else {
+    delete (next as Record<string, unknown>).blockedEmittedAt;
   }
 
   storeInvestigationInLearningContext(db, situation, next);
@@ -593,12 +608,20 @@ export const situationChatRouter = (options: SituationChatOptions): Router => {
     // is the audit trail; the marker field is what the runtime reads.
     const priorInv = loadInvestigationFromLearningContext(options.db, situationId);
     if (priorInv) {
-      markInvestigation(options.db, situation, {
+      // Audit R4 fix (P0010.2.2): reset blockedEmittedAt along with
+      // consecutiveFailures so the next block cycle can re-emit
+      // the investigation_blocked event when the threshold is
+      // crossed again. The defensive `delete` is a no-op for
+      // prior markers that never had a block cycle (the field is
+      // already absent), so it is safe to always do.
+      const next: Record<string, unknown> = {
         status: priorInv.status ?? 'pending',
         ...(priorInv.error ? { error: priorInv.error } : {}),
         ...(priorInv.evidenceContentHash ? { evidenceContentHash: priorInv.evidenceContentHash } : {}),
         consecutiveFailures: 0,
-      });
+      };
+      delete next['blockedEmittedAt'];
+      markInvestigation(options.db, situation, next as Parameters<typeof markInvestigation>[2]);
     }
     res.json({ success: true, situationId, interventionId: intervention.interventionId });
   });
