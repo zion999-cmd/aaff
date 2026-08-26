@@ -1609,6 +1609,18 @@ async function loadSituationDetail(situationId) {
         const traceHost = document.createElement('div'); traceHost.id = 'situationTraceHost'; traceHost.style.marginTop = '10px';
         decisionContent.appendChild(traceHost);
         renderInvestigationTrace(traceHost, invData, explanation);
+        // P0010.2 closure Slice 2 — Agent Execution Trace (right pane).
+        // Polls the in-memory ring buffer (NOT persistent) for the current
+        // Situation only. Schema is runtime-agnostic so the right pane
+        // remains valid if the Agent Runtime is swapped (Hermes → Claude,
+        // etc.). The render function is self-contained: it sets up its
+        // own polling interval and clears it when this Situation view is
+        // torn down (situation-change).
+        const runtimeTraceHost = document.createElement('div');
+        runtimeTraceHost.id = 'situationRuntimeTraceHost_' + escHtml(situationId);
+        runtimeTraceHost.style.marginTop = '10px';
+        decisionContent.appendChild(runtimeTraceHost);
+        renderRuntimeTrace(runtimeTraceHost, situationId);
       }
       if (btn) btn.style.display = 'none';
     } else {
@@ -2384,6 +2396,169 @@ function renderInvestigationTrace(container, inv, explanation) {
       (explanation ? '<div style="font-size:0.75rem" class="muted">信号归因: ' + escHtml(explanation.primary_driver || '未知') + '</div>' : '') +
       inner +
     '</div></details>';
+}
+
+// P0010.2 closure Slice 2 — Agent Execution Trace (right pane).
+//
+// Contract: a single mount in the Situation right pane below the
+// Investigation Trace. Polls the in-memory ring buffer (NOT persistent;
+// restart wipes the buffer) for the current Situation only. Schema is
+// runtime-agnostic (source: runtime-loop | agent | system, kind: dotted
+// category.event) so a future Hermes→Claude swap keeps the right pane
+// intact.
+//
+// Self-contained: sets up its own polling interval; clears the previous
+// one when called again on the same host (so re-renders don't multiply
+// timers). Polling stops on natural situation change (the host is
+// rebuilt by the right-pane renderer). `message.delta` is never sent by
+// the server (filtered at the buffer boundary per spec).
+//
+// Empty state: "尚无执行记录（重启后清空）" with the buffer's lost
+// disclosure as a sub-line so the operator can distinguish "nothing has
+// happened yet" from "the server restarted and history is gone".
+function renderRuntimeTrace(host, situationId) {
+  if (!host || !situationId) return;
+  // Clear any prior poll cycle for this host (re-render safety).
+  if (host._runtimeTraceIntervalId) {
+    clearInterval(host._runtimeTraceIntervalId);
+    host._runtimeTraceIntervalId = null;
+  }
+  // Initial state — render an empty host so the right pane has a
+  // stable layout even before the first fetch returns. Avoids layout
+  // shift when the polling cycle starts.
+  host.innerHTML =
+    '<details open>' +
+      '<summary style="cursor:pointer;font-size:0.78rem;font-weight:600;color:var(--muted)">执行轨迹 (Runtime / Agent)</summary>' +
+      '<div class="runtime-trace" data-situation="' + escHtml(situationId) + '">' +
+        '<div class="runtime-trace-empty muted" style="font-size:0.75rem">正在加载执行轨迹…</div>' +
+      '</div>' +
+    '</details>';
+
+  const root = host.querySelector('.runtime-trace');
+  let cursorTs = null; // ISO 8601 string; updated to newest event ts each fetch.
+
+  const stateIcon = (kind) => {
+    if (typeof kind !== 'string') return '·';
+    if (kind === 'runtime.completed') return '✅';
+    if (kind === 'agent.turn.failed' || kind === 'agent.connect.failed') return '❌';
+    if (kind === 'runtime.blocked') return '⛔';
+    if (kind === 'runtime.retry' || kind === 'runtime.recovery_attempt') return '🔁';
+    if (kind === 'agent.connect.started') return '🔌';
+    if (kind === 'agent.connect.ok') return '✅';
+    if (kind === 'agent.session.created') return '🆕';
+    if (kind === 'agent.turn.started') return '▶';
+    if (kind === 'agent.turn.completed') return '✅';
+    if (kind === 'agent.tool.called') return '🛠';
+    if (kind === 'agent.tool.completed') return '✔';
+    if (kind === 'runtime.scheduled') return '📋';
+    if (kind === 'runtime.skipped') return '⏭';
+    return '·';
+  };
+
+  const renderEvent = (e) => {
+    const time = (e.ts || '').slice(11, 19); // HH:MM:SS
+    const icon = stateIcon(e.kind);
+    const summary = e.summary ? escHtml(e.summary) : '<span class="muted">（无说明）</span>';
+    const detailRaw = e.detail ? JSON.stringify(e.detail, null, 2) : '';
+    const detailBlock = detailRaw
+      ? '<details style="margin-top:4px"><summary class="muted" style="cursor:pointer;font-size:0.7rem">查看原始 detail</summary>' +
+          '<pre style="font-size:0.7rem;white-space:pre-wrap;margin:4px 0 0;padding:6px;background:var(--bg-2, #f5f5f5);border-radius:3px">' + escHtml(detailRaw) + '</pre>' +
+        '</details>'
+      : '';
+    const metaBits = [];
+    if (e.source) metaBits.push(escHtml(e.source));
+    if (e.kind) metaBits.push('<code style="font-size:0.65rem">' + escHtml(e.kind) + '</code>');
+    if (e.sessionId) metaBits.push('<span style="font-size:0.65rem">session=' + escHtml(String(e.sessionId).slice(0, 12)) + '</span>');
+    if (e.turnId) metaBits.push('<span style="font-size:0.65rem">turn=' + escHtml(String(e.turnId).slice(0, 12)) + '</span>');
+    return (
+      '<div class="runtime-trace-event" data-kind="' + escHtml(e.kind || '') + '">' +
+        '<div class="runtime-trace-event-head">' +
+          '<span class="runtime-trace-event-icon">' + icon + '</span>' +
+          '<span class="runtime-trace-event-time">' + escHtml(time) + '</span>' +
+          '<span class="runtime-trace-event-summary">' + summary + '</span>' +
+        '</div>' +
+        (metaBits.length || detailBlock
+          ? '<div class="runtime-trace-event-meta">' +
+              (metaBits.length ? metaBits.join(' · ') : '') +
+              detailBlock +
+            '</div>'
+          : '') +
+      '</div>'
+    );
+  };
+
+  const renderList = (events, disclosure) => {
+    if (!events || !events.length) {
+      const disclosureText = disclosure && disclosure.kind === 'on-restart'
+        ? '（重启后清空）'
+        : '';
+      return (
+        '<div class="runtime-trace-empty muted" style="font-size:0.75rem">' +
+          '尚无执行记录' + (disclosureText ? ' ' + escHtml(disclosureText) : '') +
+        '</div>'
+      );
+    }
+    // Server already returns newest first; we just preserve order.
+    return events.map(renderEvent).join('');
+  };
+
+  const fetchOnce = async () => {
+    // If the host was detached (situation change → right pane rebuilt),
+    // stop polling silently. The new pane will mount a fresh cycle.
+    if (!host.isConnected) {
+      if (host._runtimeTraceIntervalId) {
+        clearInterval(host._runtimeTraceIntervalId);
+        host._runtimeTraceIntervalId = null;
+      }
+      return;
+    }
+    const params = new URLSearchParams();
+    params.set('situationId', situationId);
+    if (cursorTs) params.set('since', cursorTs);
+    params.set('limit', '100');
+    try {
+      const res = await fetch('/api/runtime/loop/events?' + params.toString(), { headers: { Accept: 'application/json' } });
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      const body = await res.json();
+      if (!body || body.success !== true || !body.data) {
+        throw new Error('malformed response');
+      }
+      const data = body.data;
+      const events = Array.isArray(data.events) ? data.events : [];
+      // If this is the first fetch, replace the host content; if a poll
+      // cycle brings new events, prepend them above the existing list.
+      if (cursorTs === null) {
+        root.innerHTML = renderList(events, { kind: data.lost, capacity: data.capacity });
+      } else if (events.length) {
+        // events are newest-first; insert at the very top of the host.
+        const html = renderList(events, { kind: data.lost, capacity: data.capacity });
+        const tmp = document.createElement('div');
+        tmp.innerHTML = html;
+        while (tmp.firstChild) root.insertBefore(tmp.firstChild, root.firstChild);
+      }
+      // Advance the cursor to the newest event's ts so the next poll
+      // only fetches newer entries. If the response is empty, we keep
+      // the cursor where it was (no new events; the server's `since`
+      // filter would also be a no-op for our case).
+      if (events.length) {
+        cursorTs = events[0].ts;
+      }
+    } catch (err) {
+      // Network blip / server restart. Show a transient warning but
+      // keep the existing list intact; the next poll cycle will retry.
+      if (cursorTs === null) {
+        root.innerHTML =
+          '<div class="runtime-trace-empty muted" style="font-size:0.75rem">' +
+            '执行轨迹加载失败（' + escHtml((err && err.message) ? err.message : '未知错误') + '），将在下一轮重试' +
+          '</div>';
+      }
+    }
+  };
+
+  // Fire one fetch immediately, then poll every 5s. The interval is
+  // stored on the host so re-renders can clear it cleanly.
+  fetchOnce();
+  host._runtimeTraceIntervalId = setInterval(fetchOnce, 5000);
 }
 
 async function startInvestigation(situationId) {

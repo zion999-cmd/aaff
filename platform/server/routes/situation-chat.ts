@@ -34,6 +34,7 @@ import {
 } from '#app/experience/learning-context-producer.js';
 import { buildInvestigationPrompt, parseInvestigation, extractJsonObject } from '#app/runtime/investigation/index.js';
 import { materializeWorkItem } from '#app/runtime/loop/recommendation-to-output.js';
+import { traceBuffer, makeTraceEvent } from '#app/runtime/loop/trace-ring-buffer.js';
 import { uuid } from '#shared/utils/crypto.js';
 
 // ---- Session registry (server-side) ----
@@ -50,7 +51,117 @@ export interface SituationChatClient {
 interface ActiveSituationSession {
   client: SituationChatClient;
   hermesSessionId: string;
+  /** Slice 2 — unsubscribe the agent-trace buffer subscription. Called
+   *  when the session is dropped (catch paths) so the closure isn't
+   *  kept alive past its useful lifetime. */
+  unsubscribeTrace?: () => void;
 }
+
+// ---- Slice 2: Agent-trace buffer subscription -------------------------
+
+/**
+ * Register a SECOND `client.onEvent` handler that pushes runtime-agnostic
+ * TraceEvents into the ring buffer. The primary `collectTurn` handler in
+ * the route accumulates `message.delta` text into the response — that
+ * work is independent of observability and continues to work as before.
+ *
+ * Slice 2 invariants:
+ *   - `message.delta` is SKIPPED. Streaming 1k tokens/min would flood
+ *     the 200-event buffer in under a second; the operator cares about
+ *     turn boundaries, not byte-level deltas.
+ *   - `event.session_id !== hermesSessionId` events are dropped. The
+ *     same WS client may multiplex other sessions in tests; we only
+ *     trace THIS situation's session.
+ *   - The subscription lives as long as the cached `ActiveSituationSession`.
+ *     On `sessions.delete(...)` the route calls `unsubscribeTrace()` so
+ *     the closure is GC-eligible.
+ */
+const subscribeAgentTrace = (
+  client: SituationChatClient,
+  situationId: string,
+  hermesSessionId: string,
+): (() => void) => {
+  return client.onEvent((event: HermesEvent) => {
+    if (event.session_id !== undefined && event.session_id !== hermesSessionId) return;
+    if (event.type === 'message.delta') return;
+
+    const base = {
+      source: 'agent' as const,
+      situationId,
+      sessionId: hermesSessionId,
+    };
+
+    switch (event.type) {
+      case 'session.created':
+        traceBuffer.push(
+          makeTraceEvent({
+            ...base,
+            kind: 'agent.session.created',
+            summary: 'Agent 会话已创建',
+            detail: { ...event },
+          }),
+        );
+        return;
+      case 'turn.start':
+      case 'turn.started':
+      case 'message.start':
+        traceBuffer.push(
+          makeTraceEvent({
+            ...base,
+            kind: 'agent.turn.started',
+            summary: 'Agent 正在处理本轮',
+            detail: { ...event },
+          }),
+        );
+        return;
+      case 'message.complete':
+      case 'turn.complete':
+      case 'turn.end':
+        traceBuffer.push(
+          makeTraceEvent({
+            ...base,
+            kind: 'agent.turn.completed',
+            summary: 'Agent 已生成回复',
+            detail: { ...event },
+          }),
+        );
+        return;
+      case 'message.failed':
+      case 'turn.failed':
+        traceBuffer.push(
+          makeTraceEvent({
+            ...base,
+            kind: 'agent.turn.failed',
+            summary: `Agent 处理失败：${typeof event.payload?.text === 'string' ? event.payload.text : '未知错误'}`,
+            detail: { ...event },
+          }),
+        );
+        return;
+      case 'tool.call':
+        traceBuffer.push(
+          makeTraceEvent({
+            ...base,
+            kind: 'agent.tool.called',
+            summary: 'Agent 调用工具',
+            detail: { ...event },
+          }),
+        );
+        return;
+      case 'tool.result':
+        traceBuffer.push(
+          makeTraceEvent({
+            ...base,
+            kind: 'agent.tool.completed',
+            summary: 'Agent 工具调用完成',
+            detail: { ...event },
+          }),
+        );
+        return;
+      // Unknown event types are dropped silently. The buffer is for
+      // state changes the operator acts on; raw noise is not.
+    }
+  });
+};
 
 interface SituationChatOptions {
   /** Directory to project the Fabric Workspace into */
@@ -430,6 +541,12 @@ export const situationChatRouter = (options: SituationChatOptions): Router => {
           ...(options.profile ? { profile: options.profile } : {}),
         });
         active = { client, hermesSessionId: created.sessionId };
+        // Slice 2 — register the agent-trace buffer subscription for the
+        // session's lifetime. We register HERE (not later) so we don't
+        // miss any events between session create and prompt submit. The
+        // unsubscribe is stashed on the active session for the catch
+        // path below.
+        active.unsubscribeTrace = subscribeAgentTrace(client, situationId, created.sessionId);
         sessions.set(situationId, active);
       }
 
@@ -445,6 +562,8 @@ export const situationChatRouter = (options: SituationChatOptions): Router => {
       });
     } catch (err) {
       // On failure, drop the cached session so the next message can retry fresh.
+      const dropped = sessions.get(situationId);
+      dropped?.unsubscribeTrace?.();
       sessions.delete(situationId);
       res.status(500).json({
         success: false,
@@ -535,6 +654,9 @@ export const situationChatRouter = (options: SituationChatOptions): Router => {
           ...(options.profile ? { profile: options.profile } : {}),
         });
         active = { client, hermesSessionId: created.sessionId };
+        // Slice 2 — same as /chat: register agent-trace subscription at
+        // session-create so we don't miss events from prompt submit onward.
+        active.unsubscribeTrace = subscribeAgentTrace(client, situationId, created.sessionId);
         sessions.set(situationId, active);
       }
 
@@ -553,6 +675,8 @@ export const situationChatRouter = (options: SituationChatOptions): Router => {
 
       res.json({ success: true, agentStatus: 'completed', situationId, recommendation: rec.recommendation });
     } catch (err) {
+      const dropped = sessions.get(situationId);
+      dropped?.unsubscribeTrace?.();
       sessions.delete(situationId);
       const message = err instanceof Error ? err.message : 'Recommendation failed';
       res.status(200).json({
@@ -697,6 +821,10 @@ export const situationChatRouter = (options: SituationChatOptions): Router => {
           ...(options.profile ? { profile: options.profile } : {}),
         });
         active = { client, hermesSessionId: created.sessionId };
+        // Slice 2 — same as /chat and /recommend: register the
+        // agent-trace subscription so the right-pane UI sees the
+        // connect / session / turn / tool events.
+        active.unsubscribeTrace = subscribeAgentTrace(client, situationId, created.sessionId);
         sessions.set(situationId, active);
       }
 
@@ -722,6 +850,8 @@ export const situationChatRouter = (options: SituationChatOptions): Router => {
         investigation: result.investigation,
       });
     } catch (err) {
+      const dropped = sessions.get(situationId);
+      dropped?.unsubscribeTrace?.();
       sessions.delete(situationId);
       const message = err instanceof Error ? err.message : 'Investigation failed';
       res.status(200).json({

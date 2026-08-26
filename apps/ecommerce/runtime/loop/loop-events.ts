@@ -1,8 +1,22 @@
 // P0010.2 — Loop event tagged-union. Single source of truth for what the
 // RuntimeLoop emits (logs + the onEvent callback). Tagged so consumers can
 // narrow with `kind`.
+//
+// P0010.2 closure Slice 2 — `stdoutSink` ALSO pushes a runtime-agnostic
+// TraceEvent into the in-memory ring buffer (see `./trace-ring-buffer.ts`).
+// The mapping `mapLoopEventToTraceEvent` translates each LoopEvent into the
+// TraceEvent shape that the right-pane UI consumes. Sub-second noise
+// (per-capability acquisition ticks) returns `null` from the mapper and
+// is dropped at the buffer boundary; everything the operator actually
+// acts on is preserved.
 
 import type { Database as Db } from 'better-sqlite3';
+import {
+  traceBuffer,
+  makeTraceEvent,
+  type TraceEvent,
+  type TraceSource,
+} from './trace-ring-buffer.js';
 
 export type LoopEvent =
   | { kind: 'tick_started'; capability: string; date: string }
@@ -77,15 +91,151 @@ export const createLoopLogger = (sink: (event: LoopEvent) => void) => {
   };
 };
 
-/** Default sink: write to stdout with the `[loop]` tag. The Loop keeps a
- *  test seam by letting the caller pass any sink (production defaults to
- *  this). */
+// ---- Slice 2: LoopEvent -> TraceEvent mapping -------------------------
+
+/**
+ * Runtime-agnostic mapping from a LoopEvent to a TraceEvent. The kind
+ * field of the TraceEvent is prefixed with `runtime.` so the UI can
+ * distinguish Runtime-loop events from Agent events without knowing
+ * anything about the Hermes wire format. When the Runtime is replaced,
+ * the same shape stays valid (the producer in `runtime-loop.ts` still
+ * emits LoopEvents; only the Agent-side producer changes).
+ *
+ * Returns `null` for events the operator does not need to see in the
+ * right pane (e.g. `tick_started` / `acquisition_started` are
+ * sub-second noise; `loop_started` / `loop_stopped` are process-level
+ * signals that are better surfaced as the panel header, not per-event
+ * rows). The buffer's 200-event capacity is reserved for what the
+ * operator actually acts on.
+ */
+const mapLoopEventToTraceEvent = (e: LoopEvent): TraceEvent | null => {
+  const source: TraceSource = 'runtime-loop';
+  switch (e.kind) {
+    case 'investigation_triggered':
+      return makeTraceEvent({
+        source,
+        kind: 'runtime.scheduled',
+        situationId: e.situationId,
+        summary: `Runtime 已安排 Agent 调查（触发原因：${triggerReasonLabel(e.reason)}）`,
+        detail: { reason: e.reason },
+      });
+    case 'investigation_skipped':
+      return makeTraceEvent({
+        source,
+        kind: e.reason === 'blocked_runtime_failure' ? 'runtime.blocked' : 'runtime.skipped',
+        situationId: e.situationId,
+        summary: skipReasonLabel(e.reason, e.situationId),
+        detail: { reason: e.reason },
+      });
+    case 'investigation_failed':
+      return makeTraceEvent({
+        source,
+        kind: 'runtime.skipped',
+        situationId: e.situationId,
+        summary: `Runtime 调查失败：${e.error}`,
+        detail: { reason: 'investigation_failed', error: e.error },
+      });
+    case 'investigation_completed':
+      return makeTraceEvent({
+        source,
+        kind: 'runtime.completed',
+        situationId: e.situationId,
+        summary: 'Runtime 调查完成，已形成当前判断',
+      });
+    case 'investigation_blocked':
+      return makeTraceEvent({
+        source,
+        kind: 'runtime.blocked',
+        situationId: e.situationId,
+        summary: `Runtime 已暂停调查（连续失败 ${e.consecutiveFailures} 次），需运营点击「解除阻塞」`,
+        detail: { consecutiveFailures: e.consecutiveFailures },
+      });
+    case 'recovery_candidates_found':
+      return makeTraceEvent({
+        source,
+        kind: 'runtime.recovery_attempt',
+        summary: `Runtime 恢复扫描发现 ${e.count} 个待补调查的 Situation（${e.kinds.join('、')}）`,
+        detail: { count: e.count, kinds: e.kinds },
+      });
+    case 'output_created':
+      return makeTraceEvent({
+        source,
+        kind: 'runtime.completed',
+        situationId: e.situationId,
+        summary: `Runtime 已生成工作输出（${e.outputId}）`,
+        detail: { outputId: e.outputId },
+      });
+    case 'tick_done':
+      return makeTraceEvent({
+        source,
+        kind: 'runtime.completed',
+        summary: `Runtime tick 完成：capabilities=${e.capabilities} situations=${e.situations} investigations=${e.investigations}`,
+        detail: {
+          capabilities: e.capabilities,
+          situations: e.situations,
+          investigations: e.investigations,
+          outputs: e.outputs,
+        },
+      });
+    case 'loop_started':
+    case 'loop_stopped':
+      return makeTraceEvent({
+        source: 'system',
+        kind: e.kind === 'loop_started' ? 'runtime.completed' : 'runtime.skipped',
+        summary:
+          e.kind === 'loop_started'
+            ? `Runtime loop 已启动（capabilities=${e.capabilities.join(',')}）`
+            : 'Runtime loop 已停止',
+        detail: e.kind === 'loop_started' ? { capabilities: e.capabilities, tickMs: e.tickMs } : undefined,
+      });
+    case 'tick_started':
+    case 'acquisition_started':
+    case 'acquisition_succeeded':
+    case 'acquisition_failed':
+    case 'situations_updated':
+      return null;
+  }
+};
+
+const triggerReasonLabel = (
+  r: 'new_situation' | 'meaningful_new_evidence' | 'recovery_no_investigation' | 'recovery_interrupted' | 'recovery_failed_retryable',
+): string => {
+  switch (r) {
+    case 'new_situation': return '新发现 Situation';
+    case 'meaningful_new_evidence': return '新证据';
+    case 'recovery_no_investigation': return '补调查（从未调查）';
+    case 'recovery_interrupted': return '补调查（上次中断）';
+    case 'recovery_failed_retryable': return '补调查（上次失败可重试）';
+  }
+};
+
+const skipReasonLabel = (r: SkipReason, situationId: string): string => {
+  switch (r) {
+    case 'no_evidence': return `Runtime 暂未安排（尚无新证据） — ${situationId}`;
+    case 'no_meaningful_change': return `Runtime 暂未安排（证据无变化） — ${situationId}`;
+    case 'waiting_human': return `Runtime 暂未安排（等待运营反馈） — ${situationId}`;
+    case 'already_investigated': return `Runtime 暂未安排（已完成） — ${situationId}`;
+    case 'no_situation': return `Runtime 暂未安排（Situation 不存在） — ${situationId}`;
+    case 'blocked_runtime_failure': return `Runtime 已暂停调查（连续失败达到阈值） — ${situationId}`;
+  }
+};
+
+/** Default sink: write to stdout with the `[loop]` tag AND push a derived
+ *  TraceEvent into the in-memory ring buffer. The Loop keeps a test seam
+ *  by letting the caller pass any sink (production defaults to this). */
 export const stdoutSink = (event: LoopEvent): void => {
   // The Loop is the only operator of this logger, so the eslint-disable
   // comment lives at the call site, not here. This helper is pure
   // formatting.
   // eslint-disable-next-line no-console
   console.log(formatLoopEvent(event));
+  // Slice 2: also push the runtime-agnostic trace event. We push
+  // BEFORE returning so test sinks that capture TraceEvents see them
+  // in the same tick as the LoopEvent they derive from. The map
+  // returns `null` for sub-second noise (acquisition ticks) — those
+  // still log to stdout but do not pollute the buffer.
+  const trace = mapLoopEventToTraceEvent(event);
+  if (trace) traceBuffer.push(trace);
 };
 
 const formatLoopEvent = (e: LoopEvent): string => {
@@ -125,3 +275,9 @@ const formatLoopEvent = (e: LoopEvent): string => {
 
 // Re-export for tests that want to seed a Learning Context without a real db.
 export type { Db };
+
+// Internal export so the route wiring in situation-chat.ts can reuse
+// `triggerReasonLabel` for the /api/situation/:id/investigate path's
+// "manual" events (so the UI sees the same wording whether the
+// investigation was scheduled by the Loop or by the operator).
+export { triggerReasonLabel, skipReasonLabel };

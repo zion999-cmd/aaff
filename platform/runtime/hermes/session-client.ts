@@ -30,6 +30,7 @@ import {
   ENV_TOKEN_NAMES,
   type ResolveHermesTokenResult,
 } from './token-resolver.js';
+import { traceBuffer, makeTraceEvent } from '#app/runtime/loop/trace-ring-buffer.js';
 
 // ---- Types ----
 
@@ -106,6 +107,51 @@ export interface HermesConnectInfo {
 /** Optional structured logger; defaults to `console.info`. */
 export type HermesConnectLogger = (info: HermesConnectInfo) => void;
 
+// ---- Slice 2: HermesConnectInfo -> TraceEvent mapping -----------------
+
+/**
+ * Runtime-agnostic mapping from a HermesConnectInfo to a TraceEvent. The
+ * `source` is `agent` (the Agent Runtime layer — Hermes today, any
+ * non-Hermes Agent tomorrow), and the `kind` is one of the
+ * `agent.connect.*` set. Connect events are situation-less (the connect
+ * happens before any specific situation is bound to the client), so
+ * `situationId` is intentionally omitted. The UI renders them as
+ * process-level signals; the API's situationId filter naturally excludes
+ * them when an operator scopes to a single Situation.
+ */
+const connectInfoToTraceEvent = (info: HermesConnectInfo): ReturnType<typeof makeTraceEvent> => {
+  const port = info.port;
+  const tokenSource = info.tokenSource ?? 'unknown';
+  const attempt = info.attempt;
+  const auth = info.authRequired ? 'auth_required' : 'no_auth';
+  if (info.outcome === 'ok') {
+    return makeTraceEvent({
+      source: 'agent',
+      kind: 'agent.connect.ok',
+      summary: `Agent 连接成功（port=${port} · ${auth} · tokenSource=${tokenSource} · attempt=${attempt} · ${info.latencyMs}ms）`,
+      detail: { ...info },
+    });
+  }
+  if (info.outcome === 'no-token-resolved') {
+    return makeTraceEvent({
+      source: 'agent',
+      kind: 'agent.connect.failed',
+      summary: `Agent 连接失败：未解析到 token（port=${port} · ${auth}）`,
+      detail: { ...info },
+    });
+  }
+  // 'failed' (or null outcome during in-flight attempt 1) — both are
+  // connect failures from the operator's POV. We split them by attempt
+  // so the operator can see "first try failed; second try succeeded" or
+  // "both attempts failed".
+  return makeTraceEvent({
+    source: 'agent',
+    kind: 'agent.connect.failed',
+    summary: `Agent 连接失败（attempt=${attempt} · port=${port} · ${auth}）：${info.error ?? '未知错误'}`,
+    detail: { ...info },
+  });
+};
+
 let defaultConnectLogger: HermesConnectLogger = (info) => {
   // eslint-disable-next-line no-console
   console.info(
@@ -114,6 +160,10 @@ let defaultConnectLogger: HermesConnectLogger = (info) => {
       `outcome=${info.outcome} latencyMs=${info.latencyMs}` +
       (info.error ? ` error=${info.error}` : ''),
   );
+  // Slice 2: also push the runtime-agnostic trace event. Connect
+  // events are situation-less; the right-pane UI renders them as
+  // "agent-layer" rows when no situationId filter is applied.
+  traceBuffer.push(connectInfoToTraceEvent(info));
 };
 
 export function setHermesConnectLogger(logger: HermesConnectLogger | null): void {
@@ -127,6 +177,14 @@ export function setHermesConnectLogger(logger: HermesConnectLogger | null): void
           `outcome=${info.outcome} latencyMs=${info.latencyMs}` +
           (info.error ? ` error=${info.error}` : ''),
       );
+      // Slice 2: same buffer push as the default logger. We DO NOT
+      // try to push events from a caller-supplied logger (the operator
+      // may have redirected to a different sink for live-verify
+      // scenarios). Buffer is the in-process observability surface;
+      // a custom logger is the external log surface; they are
+      // independent. The default (and `setHermesConnectLogger(null)`
+      // fallback) keep the buffer populated.
+      traceBuffer.push(connectInfoToTraceEvent(info));
     });
 }
 

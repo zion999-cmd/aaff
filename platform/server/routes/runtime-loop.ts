@@ -5,13 +5,20 @@
 //   POST /api/runtime/loop/tick    — force a tick now (idempotent; reuses in-flight)
 //   POST /api/runtime/loop/start   — start the loop (no-op if already running)
 //   POST /api/runtime/loop/stop    — stop the loop (no-op if already stopped)
+//   GET  /api/runtime/loop/events  — Slice 2: Agent Execution Trace
+//                                    (in-memory ring buffer; query by
+//                                    situationId + since + limit)
 //
 // Strict boundaries (NOT INCLUDED):
 //   - No event bus, no wake engine, no durable job queue.
 //   - The Loop is process-local; restart the server = reset its tick state.
+//   - The events endpoint exposes an in-memory ring buffer; process
+//     restart = empty buffer (explicit `lost: 'lost-on-restart'` field).
 
 import { Router } from 'express';
 import type { RuntimeLoop, LoopTickSummary } from '#app/runtime/loop/index.js';
+import { traceBuffer, traceBufferDisclosure } from '#app/runtime/loop/trace-ring-buffer.js';
+import { nowIso } from '#shared/utils/time.js';
 
 const ok = (res: any, data: unknown) => res.json({ success: true, data });
 const fail = (res: any, status: number, error: string) =>
@@ -42,6 +49,70 @@ export const runtimeLoopRouter = (loop: RuntimeLoop): Router => {
   router.post('/runtime/loop/stop', (_req, res) => {
     loop.stop();
     ok(res, loop.list());
+  });
+
+  // Slice 2 — Agent Execution Trace.
+  //
+  // Query parameters (all optional):
+  //   - `situationId` — keep only events whose `situationId` matches.
+  //                     Omit to see the full process-wide stream
+  //                     (connect events + tick summaries + per-Situation
+  //                     events). The Workspace right pane ALWAYS passes
+  //                     the current situationId so the operator only
+  //                     sees the trace of the Situation they're looking
+  //                     at.
+  //   - `since`       — keep only events with `ts >= since` (ISO 8601
+  //                     string; lexicographic compare is chronological).
+  //                     The UI uses this for incremental polling: it
+  //                     sends the `ts` of the most recent event it has,
+  //                     and the server returns only newer events.
+  //   - `limit`       — return at most this many events, NEWEST FIRST.
+  //                     Default 100. Hard-capped at 200 (= buffer
+  //                     capacity) so a malicious caller cannot pull
+  //                     more than the buffer holds.
+  //
+  // Response shape:
+  //   {
+  //     success: true,
+  //     data: {
+  //       events: TraceEvent[],   // NEWEST FIRST
+  //       serverTs: string,       // ISO 8601; UI uses for the next `since`
+  //       lost: 'lost-on-restart', // explicit disclosure: the buffer is
+  //                                // process-local; restart wipes it
+  //       capacity: number,       // ring buffer capacity
+  //       size: number            // current events in the buffer
+  //     }
+  //   }
+  router.get('/runtime/loop/events', (req, res) => {
+    const situationIdRaw = req.query['situationId'];
+    const sinceRaw = req.query['since'];
+    const limitRaw = req.query['limit'];
+    const situationId = typeof situationIdRaw === 'string' && situationIdRaw.length > 0 ? situationIdRaw : undefined;
+    const since = typeof sinceRaw === 'string' && sinceRaw.length > 0 ? sinceRaw : undefined;
+    // Hard cap the limit at the buffer capacity. Negative or non-numeric
+    // inputs collapse to the default 100.
+    const DEFAULT_LIMIT = 100;
+    const parsedLimit = typeof limitRaw === 'string' ? Number.parseInt(limitRaw, 10) : NaN;
+    const safeLimit =
+      Number.isFinite(parsedLimit) && parsedLimit > 0
+        ? Math.min(parsedLimit, traceBuffer.capacity)
+        : DEFAULT_LIMIT;
+    const events = traceBuffer.query({
+      ...(situationId !== undefined ? { situationId } : {}),
+      ...(since !== undefined ? { since } : {}),
+      limit: safeLimit,
+    });
+    const disclosure = traceBufferDisclosure();
+    res.json({
+      success: true,
+      data: {
+        events,
+        serverTs: nowIso(),
+        lost: disclosure.kind,
+        capacity: disclosure.capacity,
+        size: traceBuffer.size(),
+      },
+    });
   });
 
   return router;

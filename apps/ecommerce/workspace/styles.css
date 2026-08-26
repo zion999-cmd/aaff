@@ -929,3 +929,76 @@ ul, ol { list-style: none; }
 }
 .popover-warning-reason { font-weight: 600; color: #b45309; font-size: 0.76rem; }
 .popover-warning-detail { color: var(--muted); font-size: 0.72rem; margin-top: 3px; }
+
+/* P0010.2 closure Slice 2 — Agent Execution Trace (right pane).
+ * Visual contract: business-readable rows (icon + HH:MM:SS + summary),
+ * raw detail in a collapsed sub-block, no console-spelunker feel. The
+ * trace is the operator's window into "is the Runtime doing anything
+ * for this Situation right now" — it must be calm and skimmable. */
+.runtime-trace {
+  margin-top: 6px;
+  padding: 6px 8px;
+  border: 1px solid var(--border, #e5e7eb);
+  border-radius: 6px;
+  background: var(--bg-1, #fafafa);
+  max-height: 320px;
+  overflow-y: auto;
+}
+.runtime-trace-empty {
+  padding: 4px 2px;
+  font-style: italic;
+}
+.runtime-trace-disclosure {
+  font-size: 0.7rem;
+  color: var(--muted);
+  margin-top: 2px;
+}
+.runtime-trace-event {
+  display: block;
+  padding: 4px 0;
+  border-bottom: 1px dashed var(--border, #e5e7eb);
+  font-size: 0.78rem;
+  line-height: 1.4;
+}
+.runtime-trace-event:last-child { border-bottom: 0; }
+.runtime-trace-event-head {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+}
+.runtime-trace-event-icon {
+  flex: 0 0 auto;
+  font-size: 0.85rem;
+  line-height: 1;
+}
+.runtime-trace-event-time {
+  flex: 0 0 auto;
+  font-family: var(--font-mono, ui-monospace, "SF Mono", monospace);
+  font-size: 0.7rem;
+  color: var(--muted);
+}
+.runtime-trace-event-summary {
+  flex: 1 1 auto;
+  word-break: break-word;
+}
+/* Subtle visual hint for the most common failure path (Hermes not
+ * reachable). Operators can spot "agent.connect.failed" at a glance
+ * without reading the message. */
+.runtime-trace-event[data-kind="agent.connect.failed"] .runtime-trace-event-summary,
+.runtime-trace-event[data-kind="agent.turn.failed"] .runtime-trace-event-summary {
+  color: #b91c1c;
+}
+.runtime-trace-event[data-kind="runtime.blocked"] .runtime-trace-event-summary {
+  color: #b45309;
+  font-weight: 600;
+}
+.runtime-trace-event[data-kind="runtime.completed"] .runtime-trace-event-summary,
+.runtime-trace-event[data-kind="agent.turn.completed"] .runtime-trace-event-summary,
+.runtime-trace-event[data-kind="agent.connect.ok"] .runtime-trace-event-summary {
+  color: #047857;
+}
+.runtime-trace-event-meta {
+  margin-top: 2px;
+  padding-left: 22px;
+  color: var(--muted);
+}

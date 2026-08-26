@@ -10,3 +10,11 @@ export { createLoopLogger, stdoutSink } from './loop-events.js';
 export type { LoopEvent, SkipReason } from './loop-events.js';
 export { listRecoverableCandidates, countConsecutiveFailures, countBlockedSituations, DEFAULT_MAX_CONSECUTIVE_FAILURES, DEFAULT_RECOVERY_STALE_AFTER_MS } from './recovery-candidates.js';
 export type { RecoverableSituation, RecoveryOptions, RecoveryKind } from './recovery-candidates.js';
+// P0010.2 closure Slice 2 — Agent Execution Trace ring buffer.
+export {
+  TraceRingBuffer,
+  traceBuffer,
+  traceBufferDisclosure,
+  makeTraceEvent,
+} from './trace-ring-buffer.js';
+export type { TraceEvent, TraceKind, TraceSource } from './trace-ring-buffer.js';
