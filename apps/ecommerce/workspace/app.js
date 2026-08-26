@@ -7,8 +7,16 @@
 // imported from `./presentation.js` (the single source of truth, also
 // unit-tested in tests/contract/investigation.contract.ts). The two
 // DOM-coupled wrappers below (renderSourceTag / humanizeError call sites
-// inside renderHeroSummary) reuse the pure helpers but inject the live
-// `state.panelMode` and `escHtml` from this module.
+// inside renderHeroSummary) reuse the pure helpers and inject `escHtml`
+// from this module.
+//
+// P0010.2 closure — the legacy 运营/开发模式 toggle was removed. The
+// Workspace permanently renders in operator (business) language. The
+// dev-mode branches in `capabilityLabel` / `scrubCapabilityIdsInProse` /
+// `renderSourceTag` / `renderHeroSummary` are gone, so the presentation
+// helpers are now always invoked with `panelMode = 'business'` (or, in
+// the case of `humanizeError`, with the literal constant).
+
 import {
   businessDescribeSituation,
   businessDescribeSituationShort,
@@ -44,8 +52,6 @@ const toastNode = document.getElementById('toast');
 // ═══ i18n ═══════════════════════════════════════════════════
 const i18n = {
   'zh-CN': {
-    'mode.business': '运营模式', 'mode.developer': '开发模式',
-    'mode.operator': 'Operator', 'mode.builder': 'Builder',
     'header.role': '运营总监', 'header.team': '电商运营团队',
     'nav.section.discovery': '发现视图', 'nav.section.analysis': '分析视图',
     'nav.product': '商品分析', 'nav.trend': '趋势观察', 'nav.archive': '历史归档', 'nav.runtime': 'Runtime 执行',
@@ -92,7 +98,6 @@ const i18n = {
     
   },
   en: {
-    'mode.business': 'Business', 'mode.developer': 'Developer', 'mode.operator': 'Operator', 'mode.builder': 'Builder',
     'header.role': 'Ops Director', 'header.team': 'E-commerce Team',
     'nav.section.discovery': 'Discovery', 'nav.section.analysis': 'Analysis',
     'nav.product': 'Products', 'nav.trend': 'Trends', 'nav.archive': 'Archive', 'nav.runtime': 'Runtime',
@@ -149,7 +154,6 @@ function applyI18n() {
 // ═══ State ══════════════════════════════════════════════════
 const state = {
   activeView: 'inbox', activeFilter: 'all',
-  panelMode: 'business',      // 'business' | 'developer'
   selectedEntityId: null, findingsData: [],
   rankingsCache: [], memoriesCache: [],
   productNames: {},  // product_id → name
@@ -1425,7 +1429,7 @@ async function loadSituationDetail(situationId) {
     html += '<div class="situation-layer-body" id="situationUnderstanding_' + escHtml(situationId) + '">';
     html += '<p class="muted placeholder">加载中...</p>';
     html += '</div>';
-    html += '<button class="btn btn-primary" id="startInvestigation_' + escHtml(situationId) + '" style="margin-top:8px;font-size:0.78rem" onclick="startInvestigation(\'' + escHtml(situationId) + '\')">🔍 交给 Agent 调查</button>';
+    html += '<button class="btn btn-primary" id="startInvestigation_' + escHtml(situationId) + '" data-action="manual-investigate" style="margin-top:8px;font-size:0.78rem" onclick="startInvestigation(\'' + escHtml(situationId) + '\')">🔍 交给 Agent 调查</button>';
     html += '</div>';
 
     // Layer 4: 你怎么处理？
@@ -1647,8 +1651,19 @@ async function loadSituationDetail(situationId) {
           // is ONLY ever shown in the blocked state. It posts to
           // /clear-block which resets the failure counter and lets the
           // next Loop tick re-investigate.
+          //
+          // P0010.2 closure micro-repair — the dispatch in
+          // `startInvestigation` branches on `data-action`, not on
+          // Chinese text matching. The same `startInvestigation_<id>`
+          // DOM id is reused across states (the click handler is
+          // shared), so the dispatcher needs an intent-revealing
+          // attribute to pick the right HTTP endpoint. The data-action
+          // value travels with the button when the blocked-state copy
+          // is applied (here) and when the manual-investigate copy is
+          // applied (line 1428).
           btn.style.display = 'block';
           btn.textContent = '解除阻塞并重新调度';
+          btn.dataset.action = 'clear-block';
         } else {
           btn.style.display = 'none';
         }
@@ -1675,7 +1690,10 @@ async function loadSituationDetail(situationId) {
 
 const HYPO_STATUS_LABEL = { supported: '已支持', weakened: '已弱化', proposed: '待验证', rejected: '已排除' };
 
-/** Capability business labels (operator-facing). Developer mode shows raw ids. */
+/** Capability business labels (operator-facing). The Workspace permanently
+ *  renders in business language — raw capability ids are never exposed. An
+ *  unknown capability is reported honestly as "未识别能力", not as a raw
+ *  technical string. */
 const CAPABILITY_LABELS = {
   'trade.overview': '交易概览', 'trade.detail': '交易构成', 'traffic.overview': '流量分析',
   'product.overview': '商品表现', 'service.overview': '服务指标', 'industry.benchmark': '行业对标',
@@ -1684,10 +1702,6 @@ const CAPABILITY_LABELS = {
 };
 function capabilityLabel(id) {
   if (!id) return id;
-  // Developer mode is the ONLY place where raw capability ids are exposed.
-  // Business mode never leaks a raw id; an unknown capability is reported
-  // honestly as "未识别能力", not as a raw technical string.
-  if (state.panelMode === 'developer') return id;
   if (CAPABILITY_LABELS[id]) return CAPABILITY_LABELS[id];
   // Evidence label like "trade.overview 2026-08-13 (周四基准)" — map the leading id.
   for (var k in CAPABILITY_LABELS) {
@@ -1698,17 +1712,16 @@ function capabilityLabel(id) {
 
 /**
  * P0010.1: scrub raw capability ids + English technical literals + internal
- * metric scalars out of the Agent's PROSE in business mode. Developer mode is
- * exempt (the raw id/scalar IS the surface there). Unknown ids are left as-is
- * rather than inventing a label — the data is what it is.
+ * metric scalars out of the Agent's PROSE. The Workspace permanently runs
+ * in business mode, so the raw id/scalar is NEVER the surface. Unknown
+ * ids are left as-is rather than inventing a label — the data is what it is.
  *
  * - Hermes → Agent
  * - trade.overview / traffic.overview / ... → 交易概览 / 流量分析 / ...
- * - evidenceId / signal_id / trace_id / ... → （开发模式可见）
- * - 综合得分 0.367 / overall_score 0.367 → 综合表现（开发模式可见原始分）
+ * - evidenceId / signal_id / trace_id / ... → 已隐藏（仅运营视图）
+ * - 综合得分 0.367 / overall_score 0.367 → 综合表现（数值仅在审计日志中可见）
  */
 function scrubCapabilityIdsInProse(text) {
-  if (state.panelMode === 'developer') return text;
   if (!text) return text;
   var out = text;
   // 1) raw capability ids
@@ -1720,10 +1733,10 @@ function scrubCapabilityIdsInProse(text) {
   out = out.replace(/\bHermes\b/g, 'Agent');
   out = out.replace(
     /\b(evidenceId|signal_id|trace_id|situationId|capabilityId|taskId|interventionId)\b\s*[:：=]?\s*[A-Za-z0-9_\-]{4,}/g,
-    '（开发模式可见）',
+    '已隐藏（仅运营视图）',
   );
   // 3) internal metric scalars
-  out = out.replace(/(?:综合得分|overall_score|排名分)\s*[:：=]?\s*\d+(?:\.\d+)?/g, '综合表现（开发模式可见原始分）');
+  out = out.replace(/(?:综合得分|overall_score|排名分)\s*[:：=]?\s*\d+(?:\.\d+)?/g, '综合表现（数值仅在审计日志中可见）');
   return out;
 }
 
@@ -1741,13 +1754,15 @@ function scrubCapabilityIdsInProse(text) {
  *   - unknown     → ''       (do not fabricate)
  *
  * DOM-coupled wrapper around the pure `sourceTagLabel` / `sourceTagTooltip`
- * helpers in `./presentation.js`. Adds the panelMode / refId tooltip
- * resolution and the HTML span.
+ * helpers in `./presentation.js`. Adds the refId tooltip resolution and
+ * the HTML span. The Workspace permanently runs in business mode, so the
+ * raw refId is never exposed in the title attribute — only the
+ * kind-specific tooltip is.
  */
 function renderSourceTag(kind, refId) {
   var label = sourceTagLabel(kind, refId);
   if (!label) return '';
-  var title = (state.panelMode === 'developer' && refId) ? String(refId) : sourceTagTooltip(kind);
+  var title = sourceTagTooltip(kind);
   // P0010.1 REPAIR: tag is clickable. data-source-* attributes are
   // read by the document-level click handler (initSourcePopoverDispatcher).
   // We store the kind + refId as DOM data; the popover content is computed
@@ -2038,10 +2053,10 @@ function renderHeroSummary(inv, interventionCount) {
   if (!hasCognition) return '';
   var html = '';
   if (inv.status === 'failed') {
-    var reason = humanizeError(inv.error, state.panelMode);
+    var reason = humanizeError(inv.error, 'business');
     html += '<div class="inv-stale-banner" style="margin:0 0 12px;padding:10px 12px;border:1px solid var(--danger,#d9534f);border-left-width:3px;border-radius:6px;background:rgba(217,83,79,0.06)">' +
       '<div style="font-size:0.78rem;font-weight:600;color:var(--danger,#d9534f)">⚠️ 最新调查未完成 — 以下为上一次有效判断</div>' +
-      '<div style="font-size:0.72rem;color:var(--muted);margin-top:3px">原因: ' + escHtml(reason) + (state.panelMode === 'developer' && inv.error ? ' · [开发] ' + escHtml(String(inv.error)) : '') + '</div>' +
+      '<div style="font-size:0.72rem;color:var(--muted);margin-top:3px">原因: ' + escHtml(reason) + '</div>' +
       '</div>';
   }
   html += '<div class="hero-block" style="margin:0 0 16px;padding:14px 16px;border:1px solid var(--primary);border-left-width:4px;border-radius:8px;background:var(--primary-light)">';
@@ -2381,21 +2396,35 @@ async function startInvestigation(situationId) {
   const btn = document.getElementById('startInvestigation_' + escHtml(situationId));
   if (!uEl) return;
 
-  // P0010.2.4 (ADR-060) — branch on the button's current text (the
-  // only signal we have at click time without re-querying the API).
-  // The button is shown in two distinct states:
-  //   - "解除阻塞并重新调度" → POST /clear-block (operator override,
-  //     resets the failure counter; the next Loop tick drives the
-  //     actual investigation). Shown ONLY in the `blocked` display
-  //     state.
-  //   - "🔍 交给 Agent 调查"  → POST /investigate (legacy manual
-  //     trigger, kept for the rare case the operator wants to fire a
-  //     turn immediately without waiting for the Loop). The previous
-  //     "🔄 立即调查（恢复）" copy was a contradiction
-  //     (the runtime was already recovering) and is gone.
-  var isClearBlock = btn && btn.textContent && btn.textContent.indexOf('清除阻塞') !== -1;
+  // P0010.2.4 (ADR-060) — branch on the button's `data-action`
+  // attribute (NOT on Chinese text matching). The same `startInvestigation_<id>`
+  // DOM id is reused across two distinct intent states, and the
+  // dispatcher must read intent from a stable, machine-readable signal
+  // rather than from the visible label.
+  //
+  //   data-action="clear-block"      → POST /clear-block
+  //       (operator override in the `blocked` state; resets the
+  //        failure counter; the next Loop tick drives the actual
+  //        investigation). Set when the button is in the blocked
+  //        display state at `app.js` (the renderer around line 1651).
+  //
+  //   data-action="manual-investigate" → POST /investigate
+  //       (legacy manual trigger, kept for the rare case the operator
+  //        wants to fire a turn immediately without waiting for the
+  //        Loop's tick). Set at the initial render at `app.js:1428`.
+  //
+  // The previous substring check `indexOf('清除阻塞')` did NOT match the
+  // current button text `'解除阻塞并重新调度'`, so the clear-block
+  // branch was unreachable. The click always fell through to the
+  // legacy /investigate path — and when /investigate returned a
+  // completed investigation, the new recommendation gate
+  // (P0010.2 closure micro-repair) correctly rendered "生成建议",
+  // producing the "instant 生成建议 after 解除阻塞" symptom the user
+  // reported. The data-action switch fixes the dispatcher without
+  // changing the visible copy.
+  var action = btn && btn.dataset ? btn.dataset.action : null;
 
-  if (isClearBlock) {
+  if (action === 'clear-block') {
     uEl.innerHTML = '<p class="muted">⏳ 正在重置失败计数，下一轮 Runtime 调度会驱动新一轮调查...</p>';
     if (btn) btn.disabled = true;
     try {
@@ -3215,11 +3244,10 @@ async function updatePanel(finding, ranking) {
   if (state.selectedEntityId !== eid) return; // stale selection — ignore late response
   state.currentTrace = trace;
 
-  if (state.panelMode === 'business') {
-    renderBusinessPanel(finding, ranking, trace);
-    return;
-  }
-  renderTracePanel(trace, entityName, ranking?.trace_id && !trace ? '加载失败: 无法读取 /api/trace/' + ranking.trace_id.slice(0, 8) + '…' : null);
+  // P0010.2 closure — Workspace permanently renders in business mode. The
+  // legacy dev-mode trace panel was removed with the 运营/开发模式 toggle;
+  // `renderBusinessPanel` is the only render path here.
+  renderBusinessPanel(finding, ranking, trace);
 }
 
 // ═══ V1 Business Mode: AI Summary + Reasoning + Tool Calls ═══
@@ -3363,30 +3391,6 @@ function renderTracePanel(trace, entityName, message) {
   `;
 }
 
-// ═══ Mode Toggles ═════════════════════════════════════════
-function togglePanelMode() {
-  var checked = document.getElementById('panelModeToggle').checked;
-  state.panelMode = checked ? 'developer' : 'business';
-
-  var biz = document.getElementById('panelBusiness');
-  var dev = document.getElementById('panelDeveloper');
-  if (!biz || !dev) return;
-
-  if (state.panelMode === 'business') {
-    biz.style.display = 'block';
-    dev.style.display = 'none';
-  } else {
-    biz.style.display = 'none';
-    dev.style.display = 'block';
-  }
-
-  if (state.selectedEntityId) {
-    var finding = state.findingsData.find(function(f) { return (f.entityId||f.entity_id) === state.selectedEntityId; });
-    var ranking = state.rankingsCache.find(function(r) { return r.entity_id === state.selectedEntityId; });
-    if (finding) updatePanel(finding, ranking);
-  }
-}
-
 // ═══ Event Bindings ══════════════════════════════════════
 // P0007.3: Situation detail back button
 document.getElementById('situationBackBtn')?.addEventListener('click', () => {
@@ -3401,7 +3405,8 @@ document.getElementById('langToggle')?.addEventListener('change', (e) => {
 document.querySelectorAll('.sidebar-item').forEach(item => {
   item.addEventListener('click', (e) => { e.preventDefault(); switchView(item.dataset.view, item.dataset.filter || 'all'); });
 });
-document.getElementById('panelModeToggle')?.addEventListener('change', togglePanelMode);
+// P0010.2 closure — the legacy 运营/开发模式 toggle was removed. The
+// `panelModeToggle` element no longer exists; the listener is gone too.
 document.getElementById('decisionCloseBtn')?.addEventListener('click', () => {
   state.selectedEntityId = null;
   state.currentTrace = null;

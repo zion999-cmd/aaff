@@ -58,16 +58,6 @@ ul, ol { list-style: none; }
 .header-title { font-size: 1rem; font-weight: 600; color: var(--text); }
 .header-right { display: flex; align-items: center; gap: 16px; font-size: 0.82rem; }
 
-.mode-toggle-group { display: flex; align-items: center; gap: 8px; }
-.mode-label { font-size: 0.78rem; color: var(--text); }
-.mode-label.muted { color: var(--muted); }
-.mode-switch { position: relative; display: inline-block; width: 44px; height: 24px; }
-.mode-switch input { opacity: 0; width: 0; height: 0; }
-.mode-slider { position: absolute; inset: 0; background: #cbd5e1; border-radius: 24px; cursor: pointer; transition: background 0.2s; }
-.mode-slider::before { content: ''; position: absolute; height: 18px; width: 18px; left: 3px; bottom: 3px; background: white; border-radius: 50%; transition: transform 0.2s; }
-.mode-switch input:checked + .mode-slider { background: var(--primary); }
-.mode-switch input:checked + .mode-slider::before { transform: translateX(20px); }
-
 .header-icon-btn { position: relative; font-size: 1.1rem; padding: 4px; border-radius: var(--radius-sm); color: var(--muted); transition: color 0.15s, background 0.15s; }
 .header-icon-btn:hover { color: var(--text); background: var(--bg-strong); }
 .bell-badge { position: absolute; top: -2px; right: -4px; background: var(--danger); color: white; font-size: 0.6rem; min-width: 16px; height: 16px; border-radius: 8px; display: flex; align-items: center; justify-content: center; font-weight: 600; }
