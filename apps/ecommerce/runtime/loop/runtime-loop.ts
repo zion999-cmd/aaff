@@ -264,7 +264,12 @@ export const createRuntimeLoop = (options: RuntimeLoopOptions): RuntimeLoop => {
             : 0;
         markInvestigation(db, situation, {
           status: 'failed',
-          error: result.error ?? 'investigation returned not-ok',
+          // P0010.2 — preserve the structured failure reason on the
+          // marker so the operator can see the taxonomy, not just the
+          // raw error text.
+          error: result.failureReason
+            ? `[${result.failureReason}] ${result.error ?? 'investigation returned not-ok'}`
+            : (result.error ?? 'investigation returned not-ok'),
           ...(latestContentHash ? { evidenceContentHash: latestContentHash } : {}),
           consecutiveFailures: priorCount + 1,
         });
@@ -272,6 +277,9 @@ export const createRuntimeLoop = (options: RuntimeLoopOptions): RuntimeLoop => {
           kind: 'investigation_failed',
           situationId,
           error: result.error ?? 'investigation returned not-ok',
+          ...(result.failureReason ? { failureReason: result.failureReason } : {}),
+          ...(result.drift && result.drift.length > 0 ? { drift: result.drift } : {}),
+          ...(result.unmappable && result.unmappable.length > 0 ? { unmappable: result.unmappable } : {}),
         });
         return;
       }
@@ -284,7 +292,15 @@ export const createRuntimeLoop = (options: RuntimeLoopOptions): RuntimeLoop => {
         ...(latestContentHash ? { evidenceContentHash: latestContentHash } : {}),
         consecutiveFailures: 0,
       });
-      logger.emit({ kind: 'investigation_completed', situationId });
+      logger.emit({
+        kind: 'investigation_completed',
+        situationId,
+        // P0010.2 — surface vocabulary drift the parser normalized at
+        // the raw boundary, so the operator can see "the Agent said
+        // `confirmed` and we mapped it to `supported`" without having
+        // to dig into the Investigation's persisted payload.
+        ...(result.drift && result.drift.length > 0 ? { drift: result.drift } : {}),
+      });
       // WorkItem is materialized inside runInvestigationTurn's route
       // wiring (single call site covers both Loop and manual POSTs).
       // Nothing to do here.

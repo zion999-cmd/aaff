@@ -35,8 +35,41 @@ export type LoopEvent =
         | 'recovery_failed_retryable';
     }
   | { kind: 'investigation_skipped'; situationId: string; reason: SkipReason }
-  | { kind: 'investigation_completed'; situationId: string }
-  | { kind: 'investigation_failed'; situationId: string; error: string }
+  | {
+      kind: 'investigation_completed';
+      situationId: string;
+      /**
+       * P0010.2 — vocabulary drift the parser normalized at the raw
+       * boundary. Empty when the Agent honored the canonical vocabulary.
+       */
+      drift?: Array<{ field: string; original: string; canonical: string }>;
+    }
+  | {
+      kind: 'investigation_failed';
+      situationId: string;
+      error: string;
+      /**
+       * P0010.2 — structured failure reason. See
+       * platform/server/routes/situation-chat.ts:InvestigationFailureReason
+       * for the full taxonomy. The Workspace renders this with a specific
+       * actionable message instead of a generic "Runtime 调查失败".
+       */
+      failureReason?:
+        | 'agent_transport_failed'
+        | 'agent_timeout'
+        | 'provider_failed'
+        | 'contract_invalid';
+      /**
+       * P0010.2 — vocabulary drift the parser normalized at the raw
+       * boundary. Empty when the Agent honored the canonical vocabulary.
+       */
+      drift?: Array<{ field: string; original: string; canonical: string }>;
+      /**
+       * P0010.2 — vocabulary drift the parser REFUSED (not on the
+       * allow-list). Present only when `failureReason === 'contract_invalid'`.
+       */
+      unmappable?: Array<{ field: string; original: string }>;
+    }
   /**
    * P0010.2.2 — emitted when the Loop's recovery scan finds pre-existing
    * situations that need Agent attention (no_investigation /

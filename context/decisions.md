@@ -1553,3 +1553,65 @@ Runtime Kernel 不属于 HermesAgent 内部。它是 agentFabric 的公共执行
 - `tests/contract/hermes-auth-probe.test.ts` (header comment)
 - `tests/unit/workspace/investigation-display-state.test.ts` (扩展)
 - `tests/unit/investigation/feedback-consumption.test.ts` (扩展)
+
+## ADR-062: Investigation Contract vocabulary drift normalization + 4-reason failure classification
+
+**Date**: 2026-08-27
+**Status**: ACCEPTED
+**Driver**: User live report — Investigation Contract rejected for hypothesis status vocabulary drift (`confirmed`, `strongly_supported`, `partially_rejected`) + "Turn timed out waiting for message.complete" events.
+
+### Decision
+
+1. **Canonical vocabulary normalization at the Hermes raw → canonical boundary**. New `apps/ecommerce/runtime/investigation/normalize.ts` with `Object.freeze` allow-list of 5 known equivalent values:
+   - `confirmed` → `supported`
+   - `strongly_supported` → `supported`
+   - `partially_rejected` → `weakened`
+   - `complete` → `judgment`
+   - `wait` → `observe`
+2. **Canonical persisted schema UNCHANGED** — `proposed | supported | weakened | rejected` for hypothesis status; `judgment | observe | missing_capability | ask_human` for stop reason. Unknown values **fail-CLOSED** with `unmappable[]` returned to caller.
+3. **Prompt vocabulary constraint** as a primary defense (not just a normalization safety net). `buildInvestigationPrompt` adds "Status vocabulary — HARD CONSTRAINT" section listing 4 canonical + naming drift values as "known but to-avoid" so the Agent learns to honor canonical rather than relying on normalization as a license to drift.
+4. **Parser two-step**: (a) direct `safeParse`, (b) on failure, apply `normalizeInvestigationContract` then re-parse. **Does NOT hand-pick fields from failed reply** — fail-closed.
+5. **Failure 4-reason classification**: `InvestigationFailureReason = 'agent_transport_failed' | 'agent_timeout' | 'provider_failed' | 'contract_invalid'`. Provider error detected via `isProviderError` regex (Hermes 0.20.5 does NOT set `payload.status='error'` for upstream rejections; error text only in `payload.text`).
+6. **Timeout and schema failure are SEPARATE**: `agent_timeout` and `contract_invalid` are different failure reasons, not lumped together.
+7. **Accept `turn.completed` / `turn.complete` as `message.complete` alternatives** in `collectTurn` for forward compatibility with Hermes 0.20.5+ event name variants.
+8. **Pre-existing TDZ bug fix** in `collectTurn`: `let unsubscribe = () => {}; unsubscribe = client.onEvent(...)` (not `const`), because mock clients can synchronously replay queued events before the const assignment completes.
+
+### Reasoning
+
+- The user explicitly forbade expanding the Zod enum ("don't expand Zod enum"). The allow-list normalization at the boundary is the smallest change that satisfies the Agent's natural vocabulary drift while keeping the canonical contract clean.
+- The user explicitly forbade "manual field picking from failed reply" — the previous `reply2` re-prompt path could fall through to hand-picking fields, which violates "no fake success" and "do not synthesize the contract from prose". The two-step parse + normalization re-parse is the strict-but-forgiving path.
+- Whitespace and case-fold are NOT normalized because that would mask Agent bugs (a `confirmed` would be `CONFIRMED` if the Agent learned case-insensitive drift later). Strict exact-match on the allow-list is the fail-closed path.
+- The prompt vocabulary constraint is added because "all normalization, no prompt" is a lazy fix that doesn't teach the Agent the canonical vocabulary. The user's specification was explicit: "Prompt constraint + boundary normalization double safety".
+- The 4-reason classification gives the operator a single, actionable signal. "Investigation failed" is not enough — the operator needs to know whether the fix is in Fabric (contract), Hermes (timeout), transport (auth/connect), or the model provider (HTTP 400).
+
+### Boundary
+
+- No P0010.3 / Terminal Lifecycle / `situations.closed` / `closed_at` / Resolution Engine / Final Outcome / Situation Archive.
+- No Event Bus / Wake Engine / Action Engine / Approval / external sending / Feishu-WeCom-Email-Telegram.
+- No Trust Schema / Evidence Identity (SB-1) / Knowledge Identity (SB-2).
+- No new Memory Architecture / Skill Engine.
+- No Hermes proxy / new transport / `SubprocessHermesClient` deletion.
+- No fake time/provenance/outcome.
+- No widening of canonical Zod enum (the 4-value persisted schema is unchanged).
+
+### Files
+
+**New**:
+- `apps/ecommerce/runtime/investigation/normalize.ts` (~250 LOC)
+- `tests/unit/investigation/contract-normalize.test.ts` (30 tests)
+- `tests/unit/investigation/collect-turn-classify.test.ts` (13 tests)
+
+**Modified**:
+- `apps/ecommerce/runtime/investigation/parse.ts` — two-step parse
+- `apps/ecommerce/runtime/investigation/prompt.ts` — vocabulary constraint
+- `apps/ecommerce/runtime/investigation/index.ts` — re-exports
+- `platform/server/routes/situation-chat.ts` — failure classification + drift/unmappable + collectTurn improvements
+- `apps/ecommerce/runtime/loop/loop-events.ts` — extended `investigation_failed` / `investigation_completed` events
+- `apps/ecommerce/runtime/loop/runtime-loop.ts` — forwards new fields
+
+### Verification
+
+- `npm run typecheck`: 0 new errors (baseline 19 pre-existing).
+- `npm test`: 968 passed / 2 pre-existing flaky (chat.contract + coverage) / +43 net new.
+- Pre-existing 3 loop test failures verified NOT introduced by this slice (via `git stash`).
+- **Live verify (real Hermes 0.20.5 port 9120, real agentFabric :3000)**: full chain worked — connect → turn → parse → persisted; one full success (5 hypotheses canonical, judgment + recommendation materialized); one `contract_invalid` correctly classified; no manual field picking; no fake success.

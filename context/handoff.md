@@ -255,3 +255,54 @@ the loop is closed today.
   `appliesTo` is real production wiring, or (b) the operator
   runbook for `HERMES_DASHBOARD_SESSION_TOKEN` setup on both
   sides. Either is a separate, scoped slice.
+
+---
+
+# Handoff — P0010.2 Production Investigation Contract Repair (ADR-062) (2026-08-27)
+
+## Session goal
+
+User live report: "P0010.2 Production Investigation Contract Repair — 直接修复并 live 验收". Investigation runs through (runtime scheduling ✅, agent connect ✅, Hermes turn returns results ✅), but Investigation Contract rejected for `confirmed` / `strongly_supported` / `partially_rejected` vocabulary drift, plus some "Turn timed out waiting for message.complete" events. User explicit constraints:
+
+1. **Don't expand Zod enum** — explicit allow-list normalization at Hermes raw → canonical boundary. Canonical persisted schema stays `proposed | supported | weakened | rejected` only. Unknown values fail-closed. Prompt constraint + boundary normalization = double safety.
+2. **Contract failure must not waste the whole investigation** — if rawReply has complete judgment/findings/recommendation, normalization re-parse is allowed. NO manual field picking from failed reply.
+3. **Timeout check separately** — don't mix with schema failure. Check real Hermes event sequence. Don't just bump timeout.
+4. **Failure classification** — 4 structured reasons (`contract_invalid` / `agent_timeout` / `agent_transport_failed` / `provider_failed`).
+5. **Live acceptance with real Hermes** — at least one real successful turn, no seed change. If timeout, report Hermes event sequence.
+6. **STOP** — no lifecycle change, no Terminal Lifecycle, no Event Bus, no fake success, no skipping Zod validation.
+
+## New files
+
+- `apps/ecommerce/runtime/investigation/normalize.ts` (~250 LOC) — pure functions `normalizeHypothesisStatus`, `normalizeStopReason`, `normalizeInvestigationContract`. `Object.freeze` allow-list. `NormalizationResult<T>` tagged union. `CANONICAL_HYPOTHESIS_STATUSES` / `CANONICAL_STOP_REASONS` exports. Whitespace and case-fold NOT accepted. Re-exported from `index.ts`.
+- `tests/unit/investigation/contract-normalize.test.ts` — 30 tests covering all normalize functions + parseInvestigation two-step path + buildInvestigationPrompt vocabulary constraint + CANONICAL_* pin.
+
+## Modified files
+
+- `apps/ecommerce/runtime/investigation/parse.ts` — rewritten as two-step (direct + normalized re-parse); on failure returns `{ok:false, error, unmappable?}`. Does NOT hand-pick fields from failed reply.
+- `apps/ecommerce/runtime/investigation/prompt.ts` — added "Status vocabulary — HARD CONSTRAINT" section listing 4 canonical + naming drift values as "known but to-avoid".
+- `apps/ecommerce/runtime/investigation/index.ts` — re-exports.
+- `platform/server/routes/situation-chat.ts` — `InvestigationFailureReason` type (4 reasons), `InvestigationTurnResult` extended with `failureReason` / `drift` / `unmappable`. `runInvestigationTurn` classifies first-turn catch + re-prompt path failure. `collectTurn` TDZ fix (let unsubscribe), provider error text-sniffing, accept `turn.completed` / `turn.complete` as message.complete alternatives.
+- `apps/ecommerce/runtime/loop/loop-events.ts` — `investigation_failed` event extended with `failureReason?` / `drift?` / `unmappable?`. `investigation_completed` event extended with `drift?`.
+- `apps/ecommerce/runtime/loop/runtime-loop.ts` — forwards `result.failureReason` to event + persists `[failureReason] error` on failed marker; forwards `result.drift` to completed event.
+- `tests/unit/investigation/collect-turn-classify.test.ts` (new) — 13 tests for failure classification (4 message.complete with text/error/HTTP-400/Non-retryable, 3 turn.completed variants, 2 cross-session, 2 failure-reason regex, 1 InvestigationTurnResult shape, 1 openai-exception).
+
+## Live acceptance (real Hermes 0.20.5 port 9120, real agentFabric :3000)
+
+- **Investigation 1** (sit_ffe66f339e3add26cac8, 祁门红茶旗舰店, 23:34:59 → 23:36:30):
+  - `agent.connect.started` → `agent.connect.failed` (first WS blip) → `agent.connect.ok` (`port=9120 · no_auth · tokenSource=auto-dashboard · attempt=1 · 296ms`) → `agent.turn.started` → `agent.turn.completed` (turn 1: 76s, prose only) → `agent.turn.started` (re-prompt path triggered) → `agent.turn.completed` (turn 2: 13s, prose only) → Investigation `status=failed` with `[contract_invalid]` prefix in error → **4-reason classification correctly triggered**, NO manual field picking, NO fake success.
+- **Investigation 2** (sit_80e647bab4db7bc9383f, 未知商品 SKU 10072459153406): **FULL SUCCESS** — `status=completed`, 5 hypotheses (rejected/supported/supported/rejected/proposed, all canonical), 4 findings, judgment "【伪异常 · 间歇性listing问题】", stopReason=`judgment`, capabilityUsed=`product.overview, trade.overview, traffic.overview` (3 real fabric capabilities). Agent learned the prompt vocabulary, no drift normalization triggered.
+- **Synthetic drift-normalization E2E**: parseInvestigation on a Hermes-shaped raw reply with all 3 known drift values + complete stopReason → `ok=true drift.length=4`, all 4 entries correctly mapped (confirmed→supported, strongly_supported→supported, partially_rejected→weakened, complete→judgment).
+- **Provider error classification**: 12/12 cases (6 true positive provider errors + 6 true negative) correctly classified.
+
+## Test results
+
+- `npm run typecheck`: 0 new errors (baseline 19 pre-existing).
+- `npm test`: 968 passed / 2 pre-existing flaky (chat.contract + coverage) / +43 net new.
+- Pre-existing 3 loop test failures verified NOT introduced by this slice (via `git stash` — same 3 failures on master).
+
+## Risk + suggestions
+
+- **Risk 1**: The agent's prose-only response (Investigation 1) is a Hermes model behavior, not a Fabric issue. The 4-reason classification correctly classified this as `contract_invalid` without giving up. No further action needed in Fabric.
+- **Risk 2**: For investigations where the Agent times out mid-turn (e.g. "Turn timed out waiting for message.complete"), the new `agent_timeout` reason will surface. If we see this frequently, the next step is to check Hermes model latency for the prompt length, not bump the Fabric timeout.
+- **Risk 3**: The drift allow-list is fixed. If the Agent starts emitting a NEW drift value (e.g. "plausible" or "confirmed_partial"), the operator will see `contract_invalid` with `unmappable[]` in the loop events. To handle, add to allow-list (1 line in `normalize.ts`) and the parser will pick it up on the next turn.
+- **Suggested next step**: Commit + push + report SHA + STOP per user spec. After ChatGPT re-review, consider (a) whether to add a "Contract vocabulary drift count" metric to the dashboard so operator can see drift frequency, or (b) the Hermes 0.20.5 prompt template that reduces Agent verbosity (out of scope for this slice — that's a Hermes/model issue).

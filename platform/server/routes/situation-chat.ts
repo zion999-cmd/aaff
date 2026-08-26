@@ -269,6 +269,16 @@ export const collectTurn = (client: SituationChatClient, sessionId: string, time
     let text = '';
     let timedOut = false;
 
+    // P0010.2 — bug fix: declare `unsubscribe` as `let` and assign it
+    // AFTER the closure is created. The previous `const unsubscribe =
+    // client.onEvent(...)` pattern is a TDZ trap when the client
+    // synchronously replays buffered events inside `onEvent` (which our
+    // test mock does, and which the real Hermes WS client also does on
+    // reconnect). The closure would call `unsubscribe()` before its
+    // declaration was reached, raising "Cannot access 'unsubscribe'
+    // before initialization".
+    let unsubscribe: () => void = () => { /* replaced below */ };
+
     const timeout = setTimeout(() => {
       timedOut = true;
       unsubscribe();
@@ -278,7 +288,7 @@ export const collectTurn = (client: SituationChatClient, sessionId: string, time
       // 300s keeps the Agent's real completion time inside the window.
     }, timeoutMs);
 
-    const unsubscribe = client.onEvent((event: HermesEvent) => {
+    unsubscribe = client.onEvent((event: HermesEvent) => {
       if (event.session_id !== undefined && event.session_id !== sessionId) return;
 
       if (event.type === 'message.delta') {
@@ -289,13 +299,43 @@ export const collectTurn = (client: SituationChatClient, sessionId: string, time
         if (timedOut) return;
         clearTimeout(timeout);
         unsubscribe();
-        if (event.payload?.status === 'error') {
-          rejectTurn(new Error(`Hermes message error: ${event.payload?.text ?? ''}`));
+        // P0010.2 — provider-error detection. The canonical signal is
+        // `payload.status === 'error'`, but Hermes 0.20.5 sometimes
+        // sends upstream-rejection text (HTTP 4xx, BadRequestError, etc.)
+        // without setting the flag. We sniff the text so the operator
+        // sees `provider_failed` instead of a confusing "Hermes message
+        // error" that gets routed into the wrong failure bucket.
+        const payload = event.payload ?? {};
+        const status = (payload as { status?: string }).status;
+        const complete = String(payload.text ?? '');
+        const isProviderError = (s: string): boolean => {
+          if (!s) return false;
+          return /^HTTP\s+\d{3}\b/i.test(s)
+            || /\bNon-retryable\b/i.test(s)
+            || /\bBadRequestError\b/i.test(s)
+            || /\bAuthenticationError\b/i.test(s)
+            || /\bRateLimitError\b/i.test(s)
+            || /\bOpenAIException\b/i.test(s);
+        };
+        if (status === 'error' || isProviderError(complete)) {
+          rejectTurn(new Error(`Hermes message error: ${complete || '<empty>'}`));
           return;
         }
         // message.complete carries the full text; prefer accumulated if non-empty.
-        const complete = String(event.payload?.text ?? '');
         resolveTurn((text.trim() || complete.trim()).trim());
+      } else if (event.type === 'turn.completed' || event.type === 'turn.complete') {
+        // Older Hermes variants and some proxies emit turn.completed
+        // instead of message.complete. Treat as terminal but only resolve
+        // if we have accumulated text — otherwise the caller is still
+        // waiting for a meaningful reply.
+        if (timedOut) return;
+        clearTimeout(timeout);
+        unsubscribe();
+        if (text.trim()) {
+          resolveTurn(text.trim());
+        } else {
+          rejectTurn(new Error(`Turn completed (${event.type}) but no message text was accumulated.`));
+        }
       }
     });
   });
@@ -303,11 +343,69 @@ export const collectTurn = (client: SituationChatClient, sessionId: string, time
 
 // ---- P0010 Investigation turn (shared by the route + automatic trigger) ----
 
+/**
+ * P0010.2 Production Investigation Contract Repair — structured failure
+ * classification. The previous behaviour was a single opaque "failed" with a
+ * raw `error` string. The Workspace then showed a generic "Runtime 调查失败"
+ * and the operator had to guess whether to fix Hermes, fix the prompt, or
+ * fix the LLM provider.
+ *
+ * The new classification has FOUR reasons and each is actionable:
+ *
+ *  - `agent_transport_failed`  WS connect refused / session create failed
+ *                             / WS closed mid-turn. The Agent never received
+ *                             the prompt. Fix: check Hermes is up, token is
+ *                             valid, port is reachable.
+ *  - `agent_timeout`           Turn started, message.complete never arrived
+ *                             within `timeoutMs`. Fix: bump timeout OR
+ *                             check that Hermes is actually returning
+ *                             message.complete (not some other terminal
+ *                             event name).
+ *  - `provider_failed`         Hermes returned message.complete with
+ *                             `payload.status === 'error'`. The upstream
+ *                             LLM provider rejected the request (e.g.
+ *                             400 / 401 / 429). Fix: check provider
+ *                             config / API key / model name.
+ *  - `contract_invalid`        Hermes returned a valid message.complete
+ *                             with text, but the text is not a valid
+ *                             Investigation Contract (Zod failed after
+ *                             vocabulary normalization). Fix: Agent
+ *                             drifted from the prompt; check
+ *                             parseInvestigation's `unmappable` list for
+ *                             the exact field that was off.
+ */
+export type InvestigationFailureReason =
+  | 'agent_transport_failed'
+  | 'agent_timeout'
+  | 'provider_failed'
+  | 'contract_invalid';
+
 export interface InvestigationTurnResult {
   ok: boolean;
   status?: 'failed' | 'completed';
   investigation?: LearningContext['investigation'];
   error?: string;
+  /**
+   * P0010.2 — structured failure reason. `undefined` when `ok === true`.
+   * Persisted on the investigation marker so the Workspace can show
+   * "Agent 已完成推理，但返回格式不符合 Investigation Contract；系统正在
+   * 自动兼容已知状态词并重试解析" instead of a generic "调查失败".
+   */
+  failureReason?: InvestigationFailureReason;
+  /**
+   * P0010.2 — drift the parser successfully normalized at the raw
+   * boundary. Surfaced in the TraceEvent so the operator can see that a
+   * near-synonym was accepted and rewritten. `undefined` when the
+   * contract was already canonical.
+   */
+  drift?: Array<{ field: string; original: string; canonical: string }>;
+  /**
+   * P0010.2 — drift the parser REFUSED (not on the allow-list). Present
+   * only when `failureReason === 'contract_invalid'`. The operator can
+   * use this list to know exactly which field tripped the contract.
+   */
+  unmappable?: Array<{ field: string; original: string }>;
+  /** First 2 KB of the raw Agent reply for diagnosis. Never logged at INFO. */
   rawReply?: string;
 }
 
@@ -489,12 +587,21 @@ export const runInvestigationTurn = async (
     reply = await replyPromise;
   } catch (err) {
     const message = err instanceof Error ? err.message : 'Investigation failed';
+    // P0010.2 — classify the failure. The two collectTurn rejection paths
+    // are 'Turn timed out waiting for message.complete' (agent_timeout)
+    // and 'Hermes message error: ...' (provider_failed). Everything else
+    // (e.g. submitPrompt throwing) is transport.
+    const failureReason: InvestigationFailureReason = /timed out waiting for message\.complete/i.test(message)
+      ? 'agent_timeout'
+      : /^Hermes message error:/i.test(message)
+        ? 'provider_failed'
+        : 'agent_transport_failed';
     markInvestigation(db, situation, {
       status: 'failed',
-      error: message,
+      error: `[${failureReason}] ${message}`,
       ...(evidenceContentHash ? { evidenceContentHash } : {}),
     });
-    return { ok: false, status: 'failed', error: message };
+    return { ok: false, status: 'failed', error: message, failureReason };
   }
 
   let parsed = parseInvestigation(reply, situation.situationId);
@@ -503,6 +610,9 @@ export const runInvestigationTurn = async (
       `You just investigated situation ${situation.situationId}. Now output ONLY the Investigation Contract as a single JSON object (no prose, no markdown fences).`,
       `Use the exact shape: {"situationId":"${situation.situationId}","currentUnderstanding":"...","knownEvidence":[...],"hypotheses":[{"statement":"...","status":"..."}],"unknowns":[...],"nextQuestion":"...","requiredEvidence":[...],"investigationRequest":"...","findings":[{"question":"...","evidenceRefs":[...],"answer":"...","impactOnHypothesis":"..."}],"judgment":"...","stopReason":"...","capabilityUsed":"...","evidenceAcquired":[...]}`,
       `Base every field on what you actually did and observed in this investigation. Do not invent capabilities or evidence you did not acquire.`,
+      // P0010.2 — re-affirm the vocabulary explicitly so the re-prompt
+      // is also a teaching moment.
+      `hypotheses[].status MUST be EXACTLY one of: "proposed", "supported", "weakened", "rejected". stopReason MUST be EXACTLY one of: "judgment", "observe", "missing_capability", "ask_human". No synonyms.`,
     ].join('\n');
     try {
       const reply2Promise = collectTurn(client, sessionId, 240_000);
@@ -510,22 +620,38 @@ export const runInvestigationTurn = async (
       const reply2 = await reply2Promise;
       const parsed2 = parseInvestigation(reply2, situation.situationId);
       if (!parsed2.ok) {
+        const errorMsg = `[contract_invalid] ${parsed2.error}`;
         markInvestigation(db, situation, {
           status: 'failed',
-          error: parsed2.error,
+          error: errorMsg,
           ...(evidenceContentHash ? { evidenceContentHash } : {}),
         });
-        return { ok: false, status: 'failed', error: parsed2.error, rawReply: (reply + '\n---\n' + reply2).slice(0, 2000) };
+        return {
+          ok: false,
+          status: 'failed',
+          error: parsed2.error,
+          failureReason: 'contract_invalid',
+          ...(parsed2.unmappable ? { unmappable: parsed2.unmappable } : {}),
+          rawReply: (reply + '\n---\n' + reply2).slice(0, 2000),
+        };
       }
       parsed = parsed2;
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Investigation failed';
+      // The re-prompt itself failed — same classification rules as the
+      // first turn. The fact that this was a re-prompt is in the error
+      // text already; the classification is the same.
+      const failureReason: InvestigationFailureReason = /timed out waiting for message\.complete/i.test(message)
+        ? 'agent_timeout'
+        : /^Hermes message error:/i.test(message)
+          ? 'provider_failed'
+          : 'agent_transport_failed';
       markInvestigation(db, situation, {
         status: 'failed',
-        error: message,
+        error: `[${failureReason}] ${message}`,
         ...(evidenceContentHash ? { evidenceContentHash } : {}),
       });
-      return { ok: false, status: 'failed', error: message };
+      return { ok: false, status: 'failed', error: message, failureReason };
     }
   }
 
@@ -561,7 +687,14 @@ export const runInvestigationTurn = async (
     materializeWorkItem(db, situation.situationId, completed);
   } catch { /* WorkItem creation is best-effort — never blocks the investigation */ }
 
-  return { ok: true, status: 'completed', investigation: completed };
+  return {
+    ok: true,
+    status: 'completed',
+    investigation: completed,
+    // P0010.2 — surface the drift we normalized at the raw boundary. Empty
+    // when the Agent honored the canonical vocabulary (the common case).
+    ...(parsed.drift.length > 0 ? { drift: parsed.drift } : {}),
+  };
 };
 
 // ---- Router ----
