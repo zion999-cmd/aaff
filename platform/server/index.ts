@@ -11,13 +11,11 @@ import { workspaceRouter } from './routes/workspace.js';
 import { chatRouter } from './routes/chat.js';
 import { runtimeRouter } from './routes/runtime.js';
 import { p0007Router } from './routes/p0007.js';
-import { situationChatRouter, runInvestigationTurn } from './routes/situation-chat.js';
+import { situationChatRouter } from './routes/situation-chat.js';
 import { knowledgeRouter } from './routes/knowledge.js';
 import { scheduleRouter } from './routes/schedule.js';
 import { outputsRouter } from './routes/outputs.js';
 import { openDb } from '#platform/storage/connection.js';
-import { HermesSessionClient } from '#platform/runtime/hermes/index.js';
-import { loadSituation } from '#app/experience/learning-context-producer.js';
 import { createScheduledAcquisitionRunner } from '#app/runtime/scheduling/index.js';
 import type { ScheduledAcquisition } from '#app/runtime/scheduling/index.js';
 import { createRuntimeLoop } from '#app/runtime/loop/index.js';
@@ -86,13 +84,12 @@ export const createServer = (options: ServerOptions): Express => {
 
   // P0010.1 Slice 3 — Scheduled Acquisition (optional). Reuses the existing
   // capability → Evidence path; after a successful run, feeds new evidence into
-  // the Situation path (→ automatic investigation for newly created situations).
+  // the Situation path. P0010.2.2 — investigation is owned by the
+  // RuntimeLoop's recovery scan (no parallel auto-investigate chain).
   if (options.schedule && options.schedule.length > 0) {
-    const fabricDir = resolve(process.cwd(), 'data', 'fabric-workspace');
     const runner = createScheduledAcquisitionRunner(db, options.schedule, async () => {
       const { runSituationProducer } = await import('#app/runtime/situation/index.js');
-      const result = runSituationProducer(db, { shopId: 'jd_shop_001', shopName: '祁门红茶旗舰店' });
-      for (const sid of result.createdIds ?? []) void autoInvestigateSituation(db, fabricDir, sid);
+      runSituationProducer(db, { shopId: 'jd_shop_001', shopName: '祁门红茶旗舰店' });
     });
     runner.start();
     app.use('/api', scheduleRouter(runner));
@@ -233,66 +230,16 @@ const backfillRecentData = async (db: Db, days = 7): Promise<void> => {
     // eslint-disable-next-line no-console
     console.log(`[backfill] situations: ${situationResult.created} created / ${situationResult.skipped} deduped`);
 
-    // P0010.1 Slice 2 (recovery): automatic investigation — newly created
-    // Situations AND existing situations without a COMPLETED investigation are
-    // investigated WITHOUT a manual click (steady-state). Failures/timeouts
-    // leave a 'failed' marker (recoverable), so no turn is silently lost.
-    // Fire-and-forget, processed sequentially in the background; startup is
-    // never blocked. Hermes unreachable → the turn fails and is retried later.
-    const fabricDir = resolve(process.cwd(), 'data', 'fabric-workspace');
-    const todo = new Set<string>(situationResult.createdIds ?? []);
-    for (const sid of findRecoveryCandidates(db, todo, MAX_AUTO_INVESTIGATE)) todo.add(sid);
-    if (todo.size > 0) {
-      void autoInvestigatePending(db, fabricDir, [...todo]);
-    }
+    // P0010.2.2 — Investigation Recovery is owned by the RuntimeLoop (every
+    // tick) via `listRecoverableCandidates`. The Loop's first tick will
+    // pick up any pre-existing open situations whose investigation was
+    // never run / was interrupted / is retryable. We deliberately do NOT
+    // call any startup-time recovery helper here — that would be a
+    // second recovery path, which the user explicitly forbade. (See
+    // ADR-058 for the rationale.)
   } catch (err) {
     // eslint-disable-next-line no-console
     console.error('[backfill] failed:', err instanceof Error ? err.message : String(err));
-  }
-};
-
-/** Bounded recovery: situations without a completed investigation (old, failed, or stale-investigating).
- * A situation counts as completed if its investigation has status='completed' OR a stopReason
- * (the 4 pre-existing investigations were persisted before the status field existed). */
-const MAX_AUTO_INVESTIGATE = 3;
-const findRecoveryCandidates = (db: Db, exclude: Set<string>, limit: number): string[] => {
-  const rows = db.prepare(
-    `SELECT s.situation_id FROM situations s
-     WHERE NOT EXISTS (
-       SELECT 1 FROM learning_contexts lc
-       WHERE lc.situation_id = s.situation_id
-         AND (
-           json_extract(lc.body, '$.investigation.status') = 'completed'
-           OR json_extract(lc.body, '$.investigation.stopReason') IS NOT NULL
-         )
-     )
-     ORDER BY s.observed_at DESC
-     LIMIT ?`,
-  ).all(limit * 2) as { situation_id: string }[];
-  return rows.map((r) => r.situation_id).filter((id) => !exclude.has(id)).slice(0, limit);
-};
-
-/** Investigate a list of situations SEQUENTIALLY in the background (no Queue/Engine — a plain loop). */
-const autoInvestigatePending = async (db: Db, fabricDir: string, ids: string[]): Promise<void> => {
-  for (const sid of ids) {
-    await autoInvestigateSituation(db, fabricDir, sid);
-  }
-};
-
-/** P0010.1: run one P0010 investigation for a situation in a fresh Hermes session. */
-export const autoInvestigateSituation = async (db: Db, workspaceDir: string, situationId: string): Promise<void> => {
-  const situation = loadSituation(db, situationId);
-  if (!situation) return;
-  try {
-    const client = new HermesSessionClient();
-    await client.connect();
-    const created = await client.createSession({ cwd: workspaceDir, profile: 'default' });
-    const result = await runInvestigationTurn(client, created.sessionId, db, situation);
-    // eslint-disable-next-line no-console
-    console.log(`[auto-investigate] ${situationId}: ${result.ok ? 'completed' : 'contract error: ' + (result.error ?? '')}`);
-  } catch (err) {
-    // eslint-disable-next-line no-console
-    console.log(`[auto-investigate] ${situationId}: ${err instanceof Error ? err.message : String(err)}`);
   }
 };
 

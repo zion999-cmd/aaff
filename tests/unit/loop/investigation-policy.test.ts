@@ -244,6 +244,171 @@ describe('createInvestigationPolicy', () => {
     });
     expect(decision).toEqual({ kind: 'skip', reason: 'waiting_human' });
   });
+
+  // P0010.2.2 — Recovery reason rewriting.
+  // The hint is purely cosmetic for the `reason` field; the actual
+  // decision is still content-driven. These cases pin the contract so
+  // a future refactor cannot silently change the go/no-go behavior.
+  test('recovery_no_investigation rewrites the investigate reason (no prior investigation)', () => {
+    // No learning context row, has evidence, recoveryHint='no_investigation'.
+    const decision = policy.shouldInvestigate({
+      situationId: SIT,
+      latestContentHash: 'hash-latest',
+      recoveryHint: 'no_investigation',
+    });
+    expect(decision).toEqual({ kind: 'investigate', reason: 'recovery_no_investigation' });
+  });
+
+  test('recovery_interrupted rewrites the investigate reason (interrupted marker, same content)', () => {
+    // Prior has a contentHash sidecar equal to the latest (so the
+    // content-driven decision is skip), but recoveryHint says
+    // 'interrupted' → the recovery should still investigate the
+    // interrupted turn. The recovery scan lives in recovery-candidates.ts
+    // and only emits an interrupted candidate when startedAt is past
+    // the stale window; the policy trusts the hint.
+    insertLearningContext(db, SIT, buildContextBody({
+      investigation: {
+        status: 'investigating',
+        startedAt: '2026-08-25T00:00:00.000Z',
+        updatedAt: '2026-08-25T00:00:00.000Z',
+        evidenceContentHash: 'hash-same',
+      },
+    }));
+    const decision = policy.shouldInvestigate({
+      situationId: SIT,
+      latestContentHash: 'hash-same',
+      recoveryHint: 'interrupted',
+    });
+    expect(decision).toEqual({ kind: 'investigate', reason: 'recovery_interrupted' });
+  });
+
+  test('recovery_failed_retryable rewrites the investigate reason (failed, count below threshold)', () => {
+    // Prior has a contentHash sidecar equal to the latest, but the
+    // recovery scan flagged it as retryable (consecutive failures
+    // below the threshold). The hint still drives investigate — the
+    // content-driven skip is overridden by the recovery scan's
+    // judgment that this is a different problem space (a stuck turn,
+    // not a stable completed state).
+    insertLearningContext(db, SIT, buildContextBody({
+      investigation: {
+        status: 'failed',
+        error: 'previous turn timed out',
+        updatedAt: '2026-08-25T12:00:00.000Z',
+        evidenceContentHash: 'hash-same',
+      },
+      humanInterventions: [
+        { type: 'investigation', content: { status: 'failed' }, at: '2026-08-25T12:00:00.000Z' },
+      ],
+    }));
+    const decision = policy.shouldInvestigate({
+      situationId: SIT,
+      latestContentHash: 'hash-same',
+      recoveryHint: 'failed_retryable',
+      consecutiveFailures: 1,
+    });
+    expect(decision).toEqual({ kind: 'investigate', reason: 'recovery_failed_retryable' });
+  });
+
+  test('no recoveryHint keeps the default reason (new_situation, no prior)', () => {
+    // The producer's current-tick output path. No hint means "this
+    // came from the producer, not the recovery scan" → the reason is
+    // the canonical 'new_situation', not a recovery_* reason.
+    const decision = policy.shouldInvestigate({
+      situationId: SIT,
+      latestContentHash: 'hash-latest',
+    });
+    expect(decision).toEqual({ kind: 'investigate', reason: 'new_situation' });
+  });
+
+  // P0010.2.2 — Blocked threshold.
+  // N consecutive failures (default 3) → blocked_runtime_failure. The
+  // operator must explicitly POST /clear-block to resume. The hint
+  // rewrite is irrelevant when the decision is skip (the operator
+  // doesn't see an investigate reason).
+  test('blocked_runtime_failure when consecutiveFailures >= maxConsecutiveFailures', () => {
+    insertLearningContext(db, SIT, buildContextBody({
+      investigation: { status: 'failed', error: 'x', updatedAt: NOW },
+      humanInterventions: [
+        { type: 'investigation', content: { status: 'failed' }, at: '2026-08-25T00:00:00.000Z' },
+        { type: 'investigation', content: { status: 'failed' }, at: '2026-08-25T01:00:00.000Z' },
+        { type: 'investigation', content: { status: 'failed' }, at: '2026-08-25T02:00:00.000Z' },
+      ],
+    }));
+    const decision = policy.shouldInvestigate({
+      situationId: SIT,
+      latestContentHash: 'hash-latest',
+      consecutiveFailures: 3,
+      maxConsecutiveFailures: 3,
+    });
+    expect(decision).toEqual({ kind: 'skip', reason: 'blocked_runtime_failure' });
+  });
+
+  test('blocked_runtime_failure takes precedence over no_meaningful_change', () => {
+    // Even when the content is identical (so the natural decision
+    // would be no_meaningful_change), the threshold wins. The runtime
+    // is the single source of truth for "should we fire again?" — it
+    // does not let the content-driven decision mask the operator
+    // block state.
+    insertLearningContext(db, SIT, buildContextBody({
+      investigation: {
+        status: 'failed',
+        error: 'still failing',
+        evidenceContentHash: 'hash-same',
+        updatedAt: NOW,
+      },
+      humanInterventions: [
+        { type: 'investigation', content: { status: 'failed' }, at: '2026-08-25T00:00:00.000Z' },
+        { type: 'investigation', content: { status: 'failed' }, at: '2026-08-25T01:00:00.000Z' },
+        { type: 'investigation', content: { status: 'failed' }, at: '2026-08-25T02:00:00.000Z' },
+      ],
+    }));
+    const decision = policy.shouldInvestigate({
+      situationId: SIT,
+      latestContentHash: 'hash-same',
+      consecutiveFailures: 3,
+      maxConsecutiveFailures: 3,
+    });
+    expect(decision).toEqual({ kind: 'skip', reason: 'blocked_runtime_failure' });
+  });
+
+  test('below the threshold the policy still investigates (no block)', () => {
+    insertLearningContext(db, SIT, buildContextBody({
+      investigation: { status: 'failed', error: 'x', updatedAt: NOW },
+      humanInterventions: [
+        { type: 'investigation', content: { status: 'failed' }, at: '2026-08-25T00:00:00.000Z' },
+        { type: 'investigation', content: { status: 'failed' }, at: '2026-08-25T01:00:00.000Z' },
+      ],
+    }));
+    const decision = policy.shouldInvestigate({
+      situationId: SIT,
+      latestContentHash: 'hash-latest',
+      consecutiveFailures: 2,
+      maxConsecutiveFailures: 3,
+    });
+    expect(decision.kind).toBe('investigate');
+    // Reason is the content-driven one (failed legacy, no sidecar → new_situation).
+    expect(decision).toEqual({ kind: 'investigate', reason: 'new_situation' });
+  });
+
+  test('operator override resets the consecutive-failure counter on the investigation marker', () => {
+    // The /clear-block route writes consecutiveFailures=0 to the
+    // investigation marker. After the reset, the policy sees a
+    // 0-count investigation and does not block.
+    insertLearningContext(db, SIT, buildContextBody({
+      investigation: {
+        status: 'failed',
+        error: 'x',
+        updatedAt: NOW,
+        consecutiveFailures: 0, // operator just cleared
+      },
+    }));
+    const decision = policy.shouldInvestigate({
+      situationId: SIT,
+      latestContentHash: 'hash-latest',
+      maxConsecutiveFailures: 3,
+    });
+    expect(decision.kind).toBe('investigate');
+  });
 });
 
 describe('isWaitingOnHuman', () => {

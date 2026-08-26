@@ -52,6 +52,7 @@
 - [x] P0010.1 Final Repair (ADR-047..055) — 8 区诚实收尾: 实体解析 / 时间轴 / 4 canonical human kind / needs_human 语义 / Archive legacy badge / Output 候选下架 / Final outcome audit / Trust reference audit
 - [x] P0010.2 Continuous Business Runtime (ADR-056) — RuntimeLoop 60s tick + per-tick mutex + InvestigationPolicy contentHash compare + materializeWorkItem 幂等
 - [x] P0010.2.1 contentHash sidecar fix (ADR-057) — InvestigationSchema evidenceContentHash field + markInvestigation 接受 hash + fail-CLOSED on legacy
+- [x] P0010.2.2 Investigation Recovery / Self-Healing Runtime (ADR-058) — listRecoverableCandidates 每 tick 扫 open/partial (3 kind: no_investigation / failed_retryable / interrupted) + InvestigationPolicy +4 reasons (3 recovery_* + blocked_runtime_failure) + consecutiveFailures counter sidecar (P0010.2.1 模式) + POST /clear-block + LoopEvent investigation_blocked + Workspace UI 4 状态矩阵 (立即调查按钮默认隐藏). 单 invariant: 进程重启不能把 situation 永久留在 pending 状态. live 2-cycle log 验收: 2 天 stuck investigating 自动 resume / 3 连失败后 blocked 不再第 4 次 / clear-block 单独 resume. 边界: 不做 Action Engine/Approval/Event Bus/新 lifecycle/第二 recovery 逻辑. 46 net new tests, 884 passed / 2 pre-existing flaky, typecheck 0 new errors.
 - [ ] P0010.3 终态 Lifecycle（unblocks E 真 Archive + G 终态） — situations.closed_at + lifecycle='closed' + Resolution Engine + Outcome producer
 - [ ] P0010.3 Evidence Identity (H.1 / SB-1) — content_hash 是唯一持久 handle 不可跨加载；需 evidence_id 列 or hash-keyed
 - [ ] P0010.3 Knowledge Identity (H.2 / SB-2) — operator_memories vs context_memories shared identity or 2 surface decision

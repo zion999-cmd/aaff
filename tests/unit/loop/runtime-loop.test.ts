@@ -23,6 +23,7 @@ import type {
 
 const runSituationProducerMock = vi.hoisted(() => vi.fn());
 const runInvestigationTurnMock = vi.hoisted(() => vi.fn());
+const markInvestigationMock = vi.hoisted(() => vi.fn());
 const closeClientMock = vi.hoisted(() => vi.fn());
 const connectClientMock = vi.hoisted(() => vi.fn());
 const createSessionMock = vi.hoisted(() => vi.fn());
@@ -33,6 +34,7 @@ vi.mock('#app/runtime/situation/index.js', () => ({
 
 vi.mock('#platform/server/routes/situation-chat.js', () => ({
   runInvestigationTurn: runInvestigationTurnMock,
+  markInvestigation: markInvestigationMock,
 }));
 
 // Fake HermesSessionClient — the Loop's `hermesClientFactory` returns one of
@@ -67,6 +69,49 @@ const seedSituation = (db: Database.Database, situationId: string) => {
     NOW, 'test', JSON.stringify(['test']), 'open', NOW, NOW,
   );
 };
+
+const insertLearningContext = (
+  db: Database.Database,
+  situationId: string,
+  body: Record<string, unknown>,
+) => {
+  db.prepare(
+    `INSERT INTO learning_contexts (context_id, situation_id, lifecycle, created_at, updated_at, body)
+     VALUES (?, ?, ?, ?, ?, ?)`,
+  ).run(`ctx_${situationId}`, situationId, 'partial', NOW, NOW, JSON.stringify(body));
+};
+
+const buildContextBody = (overrides: Record<string, unknown> = {}): Record<string, unknown> => ({
+  contextId: 'ctx_test',
+  situation: {
+    situationId: 'sit_default',
+    domain: 'ecommerce',
+    type: 'anomaly_investigation',
+    entity: { id: 'jd_shop_001', type: 'shop' },
+    temporal: { observedAt: NOW },
+    description: 'test',
+    tags: ['test'],
+  },
+  lifecycle: 'partial',
+  createdAt: NOW,
+  updatedAt: NOW,
+  observations: [],
+  evidenceIds: [],
+  signalIds: [],
+  agentActivities: [],
+  humanInterventions: [],
+  actions: [],
+  outcomes: [],
+  outputs: [],
+  summary: {
+    capabilitiesUsed: [],
+    agentRuntimes: [],
+    humanActors: [],
+    totalEvidence: 0,
+    totalSignals: 0,
+  },
+  ...overrides,
+});
 
 const collectEvents = () => {
   const events: Array<{ kind: string; [key: string]: unknown }> = [];
@@ -392,5 +437,243 @@ describe('createRuntimeLoop', () => {
     expect(loop.list().running).toBe(false);
     const summary = await loop.tickNow();
     expect(summary.capabilities).toBe(1);
+  });
+
+  // P0010.2.2 — Recovery integration tests.
+  // The Loop calls listRecoverableCandidates on every tick; this section
+  // pins the integration contract:
+  //   - pre-existing open situation without a learning_context → recovery
+  //     triggers the policy + investigation
+  //   - a recovered candidate is excluded from the producer's output
+  //     (no double-investigation)
+  //   - a blocked situation (>= 3 failures) emits investigation_blocked
+  //     and does NOT call Hermes
+  //   - the recovery_candidates_found event is emitted with the kinds
+
+  test('recovers a pre-existing open situation that has no learning_context', async () => {
+    runSituationProducerMock.mockReturnValue({ created: 0, skipped: 0, createdIds: [], situations: [] });
+    seedSituation(db, 'sit_orphan');
+    const policy = fakePolicy(new Map([
+      ['sit_orphan', { kind: 'investigate', reason: 'recovery_no_investigation' as const }],
+    ]));
+    const { events, sink } = collectEvents();
+    const loop = createRuntimeLoop({
+      db,
+      schedule: [{ capability: 'trade.overview', at: '00:00', enabled: true }],
+      tickMs: 60_000,
+      policy,
+      hermesClientFactory: () => new FakeHermesClient(),
+      onEvent: sink,
+      autoStart: false,
+    });
+
+    const summary = await loop.tickNow();
+    expect(summary.investigationsTriggered).toBe(1);
+    const kinds = events.map((e) => e.kind);
+    expect(kinds).toContain('recovery_candidates_found');
+    const recovered = events.find((e) => e.kind === 'recovery_candidates_found') as
+      | { kind: 'recovery_candidates_found'; count: number; kinds: string[] }
+      | undefined;
+    expect(recovered?.count).toBe(1);
+    expect(recovered?.kinds).toContain('no_investigation');
+    const triggered = events.find((e) => e.kind === 'investigation_triggered') as
+      | { kind: 'investigation_triggered'; situationId: string; reason: string }
+      | undefined;
+    expect(triggered?.reason).toBe('recovery_no_investigation');
+    expect(connectClientMock).toHaveBeenCalledTimes(1);
+    expect(runInvestigationTurnMock).toHaveBeenCalledTimes(1);
+
+    loop.stop();
+  });
+
+  test('excludes producer-emitted situations from the recovery scan (no double-investigation)', async () => {
+    // The producer emits sit_a (createdId). The DB has a separate
+    // open situation sit_b without a learning_context. The recovery
+    // scan must NOT include sit_a (it's already in the producer output).
+    runSituationProducerMock.mockReturnValue({
+      created: 1,
+      skipped: 0,
+      createdIds: ['sit_a'],
+      situations: [],
+    });
+    seedSituation(db, 'sit_a');
+    seedSituation(db, 'sit_b');
+    const policy = fakePolicy(new Map([
+      ['sit_a', { kind: 'investigate', reason: 'new_situation' as const }],
+      ['sit_b', { kind: 'investigate', reason: 'recovery_no_investigation' as const }],
+    ]));
+    const { events, sink } = collectEvents();
+    const loop = createRuntimeLoop({
+      db,
+      schedule: [{ capability: 'trade.overview', at: '00:00', enabled: true }],
+      tickMs: 60_000,
+      policy,
+      hermesClientFactory: () => new FakeHermesClient(),
+      onEvent: sink,
+      autoStart: false,
+    });
+
+    const summary = await loop.tickNow();
+    expect(summary.investigationsTriggered).toBe(2);
+    // sit_a is in the producer output; recovery scan should report
+    // only sit_b.
+    const recovered = events.find((e) => e.kind === 'recovery_candidates_found') as
+      | { kind: 'recovery_candidates_found'; count: number; kinds: string[] }
+      | undefined;
+    expect(recovered?.count).toBe(1);
+    expect(connectClientMock).toHaveBeenCalledTimes(2);
+    expect(runInvestigationTurnMock).toHaveBeenCalledTimes(2);
+
+    loop.stop();
+  });
+
+  test('emits investigation_blocked and skips Hermes when the recovery scan sees a threshold-crossing candidate', async () => {
+    // The recovery scan INCLUDES a situation whose consecutiveFailures
+    // exactly equals the threshold (this is the threshold-crossing
+    // tick — the policy's `blocked_runtime_failure` decision fires the
+    // event, and the situation is then excluded on subsequent ticks).
+    seedSituation(db, 'sit_blocked');
+    insertLearningContext(db, 'sit_blocked', buildContextBody({
+      situation: { situationId: 'sit_blocked', domain: 'ecommerce', type: 'anomaly_investigation',
+        entity: { id: 'jd_shop_001', type: 'shop' },
+        temporal: { observedAt: NOW }, description: 'test', tags: ['test'] },
+      lifecycle: 'partial',
+      createdAt: NOW,
+      updatedAt: NOW,
+      observations: [],
+      evidenceIds: [],
+      signalIds: [],
+      agentActivities: [],
+      humanInterventions: [],
+      actions: [],
+      outcomes: [],
+      outputs: [],
+      summary: { capabilitiesUsed: [], agentRuntimes: [], humanActors: [], totalEvidence: 0, totalSignals: 0 },
+      investigation: { status: 'failed', error: 'crossed the threshold', updatedAt: NOW, consecutiveFailures: 3 },
+    }));
+    runSituationProducerMock.mockReturnValue({ created: 0, skipped: 0, createdIds: [], situations: [] });
+    const policy = fakePolicy(new Map([
+      ['sit_blocked', { kind: 'skip', reason: 'blocked_runtime_failure' as const }],
+    ]));
+    const { events, sink } = collectEvents();
+    const loop = createRuntimeLoop({
+      db,
+      schedule: [{ capability: 'trade.overview', at: '00:00', enabled: true }],
+      tickMs: 60_000,
+      policy,
+      hermesClientFactory: () => new FakeHermesClient(),
+      onEvent: sink,
+      autoStart: false,
+      recoveryOptions: { maxConsecutiveFailures: 3 },
+    });
+
+    const summary = await loop.tickNow();
+    expect(summary.investigationsTriggered).toBe(0);
+    // Threshold-crossing tick: the recovery scan includes the situation,
+    // the policy returns `blocked_runtime_failure`, the Loop emits the
+    // `investigation_blocked` event, and Hermes is NOT called.
+    const kinds = events.map((e) => e.kind);
+    expect(kinds).toContain('investigation_blocked');
+    expect(connectClientMock).not.toHaveBeenCalled();
+    expect(runInvestigationTurnMock).not.toHaveBeenCalled();
+
+    loop.stop();
+  });
+
+  test('does NOT include strictly-above-threshold situations (silence after the crossing tick)', async () => {
+    // Once the policy has returned `blocked_runtime_failure` for a
+    // situation and the operator has not cleared it, the recovery scan
+    // excludes the situation entirely (count > max). Subsequent ticks
+    // produce no event for it.
+    seedSituation(db, 'sit_already_blocked');
+    insertLearningContext(db, 'sit_already_blocked', buildContextBody({
+      situation: { situationId: 'sit_already_blocked', domain: 'ecommerce', type: 'anomaly_investigation',
+        entity: { id: 'jd_shop_001', type: 'shop' },
+        temporal: { observedAt: NOW }, description: 'test', tags: ['test'] },
+      lifecycle: 'partial',
+      createdAt: NOW,
+      updatedAt: NOW,
+      observations: [],
+      evidenceIds: [],
+      signalIds: [],
+      agentActivities: [],
+      humanInterventions: [],
+      actions: [],
+      outcomes: [],
+      outputs: [],
+      summary: { capabilitiesUsed: [], agentRuntimes: [], humanActors: [], totalEvidence: 0, totalSignals: 0 },
+      investigation: { status: 'failed', error: 'silenced', updatedAt: NOW, consecutiveFailures: 4 },
+    }));
+    runSituationProducerMock.mockReturnValue({ created: 0, skipped: 0, createdIds: [], situations: [] });
+    const policy = fakePolicy(new Map()); // empty — situation is not in the candidate set
+    const { events, sink } = collectEvents();
+    const loop = createRuntimeLoop({
+      db,
+      schedule: [{ capability: 'trade.overview', at: '00:00', enabled: true }],
+      tickMs: 60_000,
+      policy,
+      hermesClientFactory: () => new FakeHermesClient(),
+      onEvent: sink,
+      autoStart: false,
+      recoveryOptions: { maxConsecutiveFailures: 3 },
+    });
+
+    const summary = await loop.tickNow();
+    expect(summary.investigationsTriggered).toBe(0);
+    const kinds = events.map((e) => e.kind);
+    expect(kinds).not.toContain('investigation_blocked');
+    expect(connectClientMock).not.toHaveBeenCalled();
+    expect(runInvestigationTurnMock).not.toHaveBeenCalled();
+
+    loop.stop();
+  });
+
+  test('emits investigation_blocked when a manually-pinned candidate crosses the threshold mid-tick (excludeIds bypass)', async () => {
+    // Bypass the recovery scan by setting excludeIds to include the
+    // blocked situation, and set a tight maxConsecutiveFailures=1 so
+    // the policy's threshold check fires on the call.
+    runSituationProducerMock.mockReturnValue({ created: 1, skipped: 0, createdIds: ['sit_x'], situations: [] });
+    seedSituation(db, 'sit_x');
+    const policy = fakePolicy(new Map([
+      ['sit_x', { kind: 'skip', reason: 'blocked_runtime_failure' as const }],
+    ]));
+    const { events, sink } = collectEvents();
+    const loop = createRuntimeLoop({
+      db,
+      schedule: [{ capability: 'trade.overview', at: '00:00', enabled: true }],
+      tickMs: 60_000,
+      policy,
+      hermesClientFactory: () => new FakeHermesClient(),
+      onEvent: sink,
+      autoStart: false,
+      recoveryOptions: { excludeIds: new Set(['sit_x']), maxConsecutiveFailures: 1 },
+    });
+
+    await loop.tickNow();
+    const kinds = events.map((e) => e.kind);
+    expect(kinds).toContain('investigation_blocked');
+    expect(connectClientMock).not.toHaveBeenCalled();
+
+    loop.stop();
+  });
+
+  test('no recovery_candidates_found event when there is nothing to recover (normal tick)', async () => {
+    runSituationProducerMock.mockReturnValue({ created: 0, skipped: 0, createdIds: [], situations: [] });
+    const { events, sink } = collectEvents();
+    const loop = createRuntimeLoop({
+      db,
+      schedule: [{ capability: 'trade.overview', at: '00:00', enabled: true }],
+      tickMs: 60_000,
+      policy: fakePolicy(new Map()),
+      hermesClientFactory: () => new FakeHermesClient(),
+      onEvent: sink,
+      autoStart: false,
+    });
+
+    await loop.tickNow();
+    const kinds = events.map((e) => e.kind);
+    expect(kinds).not.toContain('recovery_candidates_found');
+
+    loop.stop();
   });
 });

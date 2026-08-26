@@ -394,3 +394,188 @@ investigated, with the backfill covering the 7-day window).
 - Restart `hermes serve` with a new `HERMES_DASHBOARD_SESSION_TOKEN`
   → loop auto-discovers within 60s (no agentFabric restart needed)
   IF agentFabric started without an env pin.
+
+---
+
+# Handoff — P0010.2.2 Investigation Recovery / Self-Healing Runtime (2026-08-26)
+
+## Session goal
+
+Close the 4 recovery gaps the user surfaced after running P0010.2
+continuously for 2 days:
+1. Loop only re-evaluates situations the producer just emitted
+   (pre-existing open situations from a prior process run are silently
+   ignored forever — no startup re-enqueue).
+2. `InvestigationPolicy` doesn't recognize "interrupted" state (a
+   process that died mid-turn leaves `status='investigating'` with
+   a stale `startedAt`, and the policy reads it as effectively
+   completed and skips forever).
+3. No failure-count threshold (a persistent hermes outage → infinite
+   retry, no operator attention signal).
+4. Workspace UI contradicts itself ("系统自动开始调查" text +
+   "🔄 立即调查（恢复）" button both rendered).
+
+**Single invariant** (verbatim): "只要一个 Situation 仍需要 Agent
+推进，并且不存在明确的 human/blocking condition，Fabric 就必须
+最终自动安排 Agent；进程重启不能把它永久遗留在 pending 状态".
+
+**Hard constraints** (all kept):
+- 不做 Action Engine / Approval / 新 Scheduler / Event Bus
+- 不碰 Terminal Lifecycle (`open|partial|mature` stays)
+- 不引入第二个 Recovery 逻辑
+- 不让 LLM 猜商品 / 不 hardcode / 不建第二套 Product Store
+- 不为 demo 伪造时间 / provenance / final outcome
+- 自治默认 / 人类可中断 / 仅必要时阻塞
+- 不让「立即调查（恢复）」按钮成为系统正常工作的必要依赖
+- "本次验收不要主要看测试数量，也先不要看 Workspace 截图.
+  我们真正要看的证据是连续运行日志"
+
+## What was built (1 commit-sized slice)
+
+### Files changed
+- `apps/ecommerce/runtime/loop/recovery-candidates.ts` (NEW, ~290 LOC)
+- `apps/ecommerce/runtime/loop/investigation-policy.ts` (extend: 3
+  investigate reasons + 1 skip reason + recoveryHint / counter ctx)
+- `apps/ecommerce/runtime/loop/loop-events.ts` (extend: 2 event kinds
+  — `recovery_candidates_found`, `investigation_blocked`)
+- `apps/ecommerce/runtime/loop/runtime-loop.ts` (extend: per-tick
+  recovery scan, threshold wiring, event emission)
+- `apps/ecommerce/runtime/loop/index.ts` (barrel: re-export)
+- `platform/server/routes/situation-chat.ts` (extend: clear-block
+  route, GET investigation now returns `blockedRuntimeFailure` +
+  `consecutiveFailures`)
+- `platform/server/index.ts` (REMOVE: `autoInvestigatePending`
+  startup chain + `MAX_AUTO_INVESTIGATE` helper; REMOVE: parallel
+  call in the per-day scheduler's `onAfterRun`; CLEAN: dead imports)
+- `apps/ecommerce/workspace/app.js` (4-branch state matrix; hidden
+  recovery button by default; visible only in `blocked_runtime_failure`)
+- `shared/schemas/investigation.ts` (add `consecutiveFailures?: number`
+  sidecar — runtime marker, NOT a domain field; matches the existing
+  `evidenceContentHash` sidecar pattern from P0010.2.1)
+- `tests/unit/loop/recovery-candidates.test.ts` (NEW, 21 cases)
+- `tests/unit/loop/investigation-policy.test.ts` (extend, +9 cases)
+- `tests/unit/loop/runtime-loop.test.ts` (extend, +5 cases)
+
+### The bug found and fixed during live demo
+
+The original plan used `humanInterventions` array entries of
+`type: 'investigation'` with `content.status: 'failed'` to track
+the consecutive-failure counter. The plan's `countConsecutiveFailures`
+walked this array. But in production, `markInvestigation(status='failed')`
+only writes to the `investigation` field, never to `humanInterventions`.
+**The counter would never increment.** Unit tests passed because the
+test data was hand-constructed; the production wiring was silent.
+
+The live 2-cycle log (with hermes down — token missing) showed the
+bug: 3 failed ticks in a row, but `blocked_runtime_failure` never
+fired because the counter stayed at 0.
+
+**Fix**: added `consecutiveFailures?: number` as a runtime sidecar
+on the investigation marker (parallels the existing
+`evidenceContentHash` sidecar). Three writers:
+- Loop failure path: `markInvestigation({ status: 'failed',
+  consecutiveFailures: prior + 1 })`
+- Loop success path: `markInvestigation({ status: 'completed',
+  consecutiveFailures: 0 })`
+- `/clear-block` route: `markInvestigation({ consecutiveFailures: 0 })`
+
+`countConsecutiveFailures` simplified to just read the field
+(removed the humanInterventions walking — that walking was the
+original bug surface).
+
+Also fixed the recovery scan filter threshold: was
+`consecutiveFailures >= maxConsecutiveFailures` (filters out the
+threshold-crossing tick), now `> max` (the `==` case is the
+threshold-crossing tick — the policy call is what fires
+`investigation_blocked`).
+
+## Live 2-cycle acceptance log (the user's hard criterion)
+
+Inserted `sit_recover_2cyc_001` (open, no learning_context) into
+DB. Started server. Observed 4 ticks (~4 minutes).
+
+**Tick 1** (~60s after boot):
+```
+[loop] recovery eligible count=10 kinds=no_investigation,...,interrupted,interrupted
+[loop] investigation triggered situation=sit_recover_2cyc_001 reason=recovery_no_investigation
+[loop] investigation failed situation=sit_recover_2cyc_001 error=Missing Hermes dashboard session token
+[loop] investigation triggered situation=sit_4498ebec5ad9e10bf4d8 reason=recovery_interrupted
+[loop] investigation triggered situation=sit_ce9a693d4b2c49325a1c reason=recovery_interrupted
+```
+The 2 `interrupted` candidates are the same situations that were
+stuck in `status='investigating'` from **2026-08-24 19:31 / 19:38**
+— 2 days ago. The recovery scan found them and the Loop picked up
+where the process left off.
+
+**Tick 2** (~120s):
+```
+[loop] recovery eligible count=10 kinds=failed_retryable,...
+[loop] investigation triggered situation=sit_recover_2cyc_001 reason=recovery_failed_retryable
+[loop] investigation failed situation=sit_recover_2cyc_001 ...
+```
+Counter went 0→1.
+
+**Tick 3** (~180s):
+Same pattern. Counter 1→2.
+
+**Tick 4** (~240s) — **threshold-crossing**:
+```
+[loop] recovery eligible count=10 kinds=failed_retryable,...
+[loop] investigation BLOCKED situation=sit_e022c5b35852ce7fd3e3 consecutiveFailures=3 — operator must POST /api/situation/:id/clear-block to resume
+... (9 more BLOCKED events)
+[loop] investigation BLOCKED situation=sit_recover_2cyc_001 consecutiveFailures=3 — operator must POST /api/situation/:id/clear-block to resume
+[loop] tick done capabilities=2 situations=0 investigations=0 outputs=0
+```
+All 10 situations blocked simultaneously. **No 4th attempt on any
+of them.** `investigations=0` proves no Hermes call was made this tick.
+
+**Operator clear-block + recovery**:
+```bash
+curl -X POST http://127.0.0.1:3000/api/situation/sit_recover_2cyc_001/clear-block
+# {"success":true,"situationId":"sit_recover_2cyc_001","interventionId":"int_clearblock_..."}
+```
+DB now shows `consecutiveFailures=0` on the marker. **Tick 5**:
+```
+[loop] investigation triggered situation=sit_recover_2cyc_001 reason=recovery_failed_retryable
+[loop] investigation failed situation=sit_recover_2cyc_001 ...
+```
+The cleared situation **resumed**, while the other 9 (no one cleared
+them) remained in `investigation_blocked` state — exactly the
+expected "per-situation gate" behavior.
+
+## Tests
+
+- 62 loop tests (21 recovery-candidates + 17 policy + 24 runtime-loop)
+- 884 / 884 total non-flaky tests pass
+- 2 pre-existing failures unchanged (chat contract timeout,
+  capability coverage assertion — both P0008-era, not in scope)
+- typecheck: 0 new errors (baseline 19 = all pre-existing, none
+  in our new files)
+
+## Risks & known limitations
+
+- The `consecutiveFailures` sidecar is an additive field on the
+  investigation marker; the existing `evidenceContentHash` is the
+  same pattern. Both are runtime markers, not domain fields.
+- The `humanInterventions` walking for the counter is now gone;
+  if any downstream consumer (none in this slice) reads the old
+  `type: 'investigation'` entries, they'll see no data. The
+  `humanInterventions` array still records operator decisions
+  (accept/reject/override/defer/no_action) via the canonical
+  route — that's the unchanged operator surface.
+- The clear-block route is the only path to reset the counter.
+  This is intentional — silent auto-recovery of a hard-blocked
+  situation is the worst behavior. The operator must acknowledge.
+
+## Suggested next step (NOT in this slice)
+
+User asked: should be inserted **before Terminal Lifecycle** (P0010.3).
+P0010.3 is the next natural slice and is the unlock for:
+- P0010.1 H area (Resolution Engine, `closed_at`/`closed_by`/
+  `resolution_reason` columns, `lifecycle='closed'`)
+- E area (real Archive, replacing the legacy badge)
+- G area (Final Outcome producer)
+
+P0010.2.2 is the recovery piece the user asked for; P0010.3 is
+the lifecycle piece. The two together make a self-healing +
+self-completing business runtime.

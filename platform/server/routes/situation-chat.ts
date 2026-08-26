@@ -30,9 +30,11 @@ import {
   loadLearningContext,
   loadInvestigationFromLearningContext,
   storeInvestigationInLearningContext,
+  recordInterventionInLearningContext,
 } from '#app/experience/learning-context-producer.js';
 import { buildInvestigationPrompt, parseInvestigation, extractJsonObject } from '#app/runtime/investigation/index.js';
 import { materializeWorkItem } from '#app/runtime/loop/recommendation-to-output.js';
+import { uuid } from '#shared/utils/crypto.js';
 
 // ---- Session registry (server-side) ----
 
@@ -167,6 +169,13 @@ export const markInvestigation = (
      *  content it was looking at; the next tick can then decide to skip
      *  (same content) vs retry (new content) without guessing. */
     evidenceContentHash?: string;
+    /** P0010.2.2 — consecutive-failure counter for the runtime block
+     *  threshold. When the caller explicitly sets this, it overrides the
+     *  existing value (used by the Loop to track retries and by the
+     *  /clear-block route to reset). When omitted, the existing value
+     *  is preserved (preserves the counter on a status flip that isn't
+     *  tied to a retry). */
+    consecutiveFailures?: number;
   },
 ): void => {
   const now = nowIso();
@@ -209,6 +218,15 @@ export const markInvestigation = (
   // would re-trigger investigation every tick forever.
   if (marker.evidenceContentHash) {
     (next as Record<string, unknown>).evidenceContentHash = marker.evidenceContentHash;
+  }
+  // P0010.2.2: same pattern for the consecutive-failure sidecar. The Loop
+  // increments it on each failed attempt; the /clear-block route resets
+  // it to 0 on operator override. Without this, the runtime cannot
+  // distinguish "transient blip" from "sustained outage" — and would
+  // either retry forever (no counter) or block on the first failure
+  // (counter that never resets).
+  if (marker.consecutiveFailures !== undefined) {
+    (next as Record<string, unknown>).consecutiveFailures = marker.consecutiveFailures;
   }
 
   storeInvestigationInLearningContext(db, situation, next);
@@ -504,14 +522,85 @@ export const situationChatRouter = (options: SituationChatOptions): Router => {
 
   // GET /api/situation/:id/investigation — the situation's stored P0010
   // Investigation Contract (read-only; null when not yet investigated).
-  router.get('/situation/:id/investigation', (req, res) => {
+  // P0010.2.2 — also surfaces `blockedRuntimeFailure` so the Workspace UI
+  // can decide whether to show the recovery button. The flag is computed
+  // from the same `countConsecutiveFailures` helper the policy uses, so
+  // the UI and the policy cannot disagree.
+  router.get('/situation/:id/investigation', async (req, res) => {
     const situationId = req.params['id'];
     if (!options.db) {
       res.json({ success: false, error: 'Investigation requires a database' });
       return;
     }
     const investigation = loadLearningContext(options.db, situationId)?.investigation ?? null;
-    res.json({ success: true, situationId, investigation });
+    let blockedRuntimeFailure = false;
+    let consecutiveFailures = 0;
+    if (investigation) {
+      const { countConsecutiveFailures, DEFAULT_MAX_CONSECUTIVE_FAILURES } = await import(
+        '#app/runtime/loop/recovery-candidates.js'
+      );
+      // `humanInterventions` lives on the Learning Context, not the
+      // investigation. Pass the full context so the count includes
+      // everything the policy sees.
+      const fullCtx = loadLearningContext(options.db, situationId);
+      consecutiveFailures = countConsecutiveFailures((fullCtx ?? investigation) as unknown as Record<string, unknown>);
+      blockedRuntimeFailure = consecutiveFailures >= DEFAULT_MAX_CONSECUTIVE_FAILURES;
+    }
+    res.json({ success: true, situationId, investigation, blockedRuntimeFailure, consecutiveFailures });
+  });
+
+  // POST /api/situation/:id/clear-block — P0010.2.2 operator escape hatch.
+  // Resets the consecutive-failure counter for a situation that the Loop
+  // marked `blocked_runtime_failure`. The mechanism is intentionally the
+  // SAME as an operator clicking "重试调查": append a `decision: override`
+  // human intervention, which `countConsecutiveFailures` recognizes as a
+  // counter-reset. The next tick's policy will see the override and stop
+  // returning `blocked_runtime_failure` for this situation.
+  //
+  // This is NOT a manual re-investigation — the Loop still owns the next
+  // turn. It is just the "operator acknowledges the block, resume" surface
+  // for the self-healing runtime.
+  router.post('/situation/:id/clear-block', (req, res) => {
+    const situationId = req.params['id'];
+    if (!situationId) {
+      res.status(400).json({ success: false, error: 'Missing situation ID' });
+      return;
+    }
+    if (!options.db) {
+      res.status(500).json({ success: false, error: 'Clear-block requires a database' });
+      return;
+    }
+    const situation = loadSituation(options.db, situationId);
+    if (!situation) {
+      res.status(404).json({ success: false, error: 'Situation not found' });
+      return;
+    }
+    const intervention = {
+      interventionId: `int_clearblock_${uuid()}`,
+      situationId,
+      actor: { id: 'system:clear-block', role: 'operator' },
+      type: 'decision' as const,
+      content: { decision: 'override', rationale: 'Operator cleared runtime_failure block; resume auto-investigation.' },
+      timestamp: nowIso(),
+      summary: 'Clear runtime-failure block (operator override).',
+      respondsToActivityIds: [],
+      _legacySource: 'none' as const,
+    };
+    recordInterventionInLearningContext(options.db, situation, intervention);
+    // P0010.2.2 — also reset the canonical counter on the investigation
+    // marker so the next tick's `listRecoverableCandidates` no longer
+    // sees this situation as blocked. The decision intervention above
+    // is the audit trail; the marker field is what the runtime reads.
+    const priorInv = loadInvestigationFromLearningContext(options.db, situationId);
+    if (priorInv) {
+      markInvestigation(options.db, situation, {
+        status: priorInv.status ?? 'pending',
+        ...(priorInv.error ? { error: priorInv.error } : {}),
+        ...(priorInv.evidenceContentHash ? { evidenceContentHash: priorInv.evidenceContentHash } : {}),
+        consecutiveFailures: 0,
+      });
+    }
+    res.json({ success: true, situationId, interventionId: intervention.interventionId });
   });
 
   // POST /api/situation/:id/investigate — P0010 Knowledge-Guided Investigation.

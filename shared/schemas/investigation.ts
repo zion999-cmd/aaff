@@ -140,5 +140,18 @@ export const InvestigationSchema = z.object({
    * contract is content-agnostic — this is a P0010.2 runtime marker, not
    * part of the Investigation's domain shape. */
   evidenceContentHash: z.string().optional(),
+  /**
+   * P0010.2.2 — consecutive-failure counter for the runtime block threshold.
+   * Incremented by the Loop when an investigation fails on the same content,
+   * reset to 0 on success OR when the operator explicitly clears the block
+   * via POST /api/situation/:id/clear-block. When the counter reaches
+   * `maxConsecutiveFailures` (default 3), InvestigationPolicy returns
+   * `blocked_runtime_failure` and the Loop emits `investigation_blocked`.
+   * Like `evidenceContentHash`, this is a runtime sidecar — not part of the
+   * Investigation's domain contract. The canonical operator surface for
+   * blocking remains the human intervention grammar (decision: accept |
+   * reject | override); this counter is the runtime's authoritative view
+   * of "how many retries have we burned on this situation". */
+  consecutiveFailures: z.number().int().min(0).optional(),
 });
 export type Investigation = z.infer<typeof InvestigationSchema>;

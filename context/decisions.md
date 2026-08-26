@@ -1181,3 +1181,79 @@ Runtime Kernel 不属于 HermesAgent 内部。它是 agentFabric 的公共执行
 6. **Live demo 验证**：每 10s tick 稳定输出 `investigation skipped reason=no_meaningful_change` for 两个已 investigated 的 situations. 之前在 P0010.2 首次 demo 里看到的 "tick → investigation triggered → tick → investigation triggered → tick → ..." 无限循环不再出现。
 
 **边界**: 不为 `evidenceContentHash` 建新表（schema field 就够）；不写新 migration（DB schema 零变化，in-place 字段新增）；不引入 `evidenceIdentity` / `Evidence.first_class_id`（P0010.1 H.1 仍 outstanding，下一刀处理）；不改 `evidence` table；不改 Hermes 协议；不改 Situation lifecycle。
+
+## ADR-058: P0010.2.2 — Investigation Recovery / Self-Healing Runtime
+
+- **日期**: 2026-08-26
+- **状态**: Accepted (live 2-cycle log satisfies the user's hard acceptance criterion)
+- **来源**: 用户 P0010.2 两日 live demo 暴露 4 个 recovery 缺口。`apps/ecommerce/runtime/loop/recovery-candidates.ts` (NEW) + `investigation-policy.ts` (extend) + `runtime-loop.ts` (wire-in) + `situation-chat.ts` (clear-block route) + `index.ts` (REMOVE `autoInvestigatePending`) + `workspace/app.js` (state matrix + hidden button) + `shared/schemas/investigation.ts` (consecutiveFailures sidecar). 3 new test files / +24 cases; 0 new typecheck errors; 884 passed / 2 pre-existing flaky.
+
+**单一 invariant**（verbatim 用户原话保留）:
+> "只要一个 Situation 仍需要 Agent 推进，并且不存在明确的 human/blocking condition，Fabric 就必须最终自动安排 Agent；进程重启不能把它永久遗留在 pending 状态".
+
+**核心决策**:
+
+1. **单一 recovery path = Loop**（不是第二个 recovery 逻辑，不是新的 scheduler）。`autoInvestigatePending` 启动钩子（`platform/server/index.ts:340, 246`）+ P0010.1 Slice 3 per-day scheduler 的并行 `autoInvestigateSituation` 调用整体 REMOVE（ADR-039 REMOVE sweep precedent）。Loop 的每 tick `listRecoverableCandidates` 扫 `situations WHERE lifecycle IN ('open','partial')` + LEFT JOIN `learning_contexts` 一次查完。`maxCandidatesPerTick=20` 防止大 backlog 拖死 tick。
+
+2. **3 种 candidate kinds**（= recovery 路径识别的 3 种 stuck pattern）:
+   - `no_investigation` — `lifecycle='open'` 无 learning_context 或 learning_context 无 `investigation` 字段（从未跑过 / 跑了但 schema 还没存）。**最高信息增益**，FIFO 优先于其它两种。
+   - `failed_retryable` — `status='failed'` AND `consecutiveFailures < max`（可重试）。max 默认 3（`DEFAULT_MAX_CONSECUTIVE_FAILURES`）。
+   - `interrupted` — `status='investigating'` AND `startedAt` 超过 `recoveryStaleAfterMs`（默认 10min，等于 `collectTurn` 600s timeout）。Process 死了 / hermes 卡住 / 网络断 / 任何 mid-tick 死亡 — 都走这条。
+
+3. **`consecutiveFailures` 是 `Investigation` 的 optional schema sidecar**（与 P0010.2.1 `evidenceContentHash` 同样 pattern）。在 plan 阶段设计为 walk `humanInterventions` 数组，但 live demo 暴露 `markInvestigation` 从不 append 该数组 → counter 永远 0 → `blocked_runtime_failure` 永不 fire。改用 `InvestigationSchema.consecutiveFailures: number`：
+   - Loop 失败路径：`markInvestigation({ status: 'failed', consecutiveFailures: prior + 1 })`
+   - Loop 成功路径：`markInvestigation({ status: 'completed', consecutiveFailures: 0 })`
+   - `/clear-block` 路由：`markInvestigation({ consecutiveFailures: 0 })`
+   - `countConsecutiveFailures` 简化成直接读字段（不再 walk humanInterventions；删了那 9 个对应 unit test）。
+
+4. **`InvestigationPolicy` 5 个新 reasons**:
+   - investigate: `recovery_no_investigation` / `recovery_interrupted` / `recovery_failed_retryable` (3 个)
+   - skip: `blocked_runtime_failure` (1 个)
+   - 关键设计：recovery hint **OVERRIDES** content-driven `no_meaningful_change`（hint 是 runtime 的权威判断，content-driven decision 在 interrupted / failed_retryable 场景下让位）。
+
+5. **threshold-crossing tick filter**：`recovery-candidates.ts` 用 `consecutiveFailures > maxConsecutiveFailures` (不是 `>=`)。`==` 那一次 tick 是 crossing tick — policy 会被调用、`investigation_blocked` 事件会 emit 一次、然后 situation 在后续 tick 被 scan 静默排除。`>` 是 "already-blocked silence" — 避免每秒刷一次 BLOCKED 事件 spam 日志。
+
+6. **4 种 blocking condition**（verbatim 用户原话保留的硬分类）:
+   - ① capability boundary — `MISSING_CAPABILITY` 走人工核验，不进 block 状态
+   - ② explicit human decision — `decision: defer` → `waiting_human`（`isWaitingOnHuman` 已存在）
+   - ③ sustained failure threshold — `consecutiveFailures >= 3` → `blocked_runtime_failure`（new）
+   - ④ explicit human pause — `decision: accept` / `reject` / `override` 显式干预
+   只有 ④ 配 `/clear-block` 路由能 resume；③ 是 operator 显式动作而非自动。
+
+7. **Workspace UI 4 状态矩阵**:
+   - `completed` / `investigating` / `failed` — 既有 UI
+   - `blocked_runtime_failure` — **新**：文字 "⚠ 自动调查连续失败 — 需要检查 Runtime / Hermes" + 「🔄 重试调查（清除阻塞）」按钮（点击 POST /clear-block）
+   - 无 investigation — 文字 "等待 Agent 自动调查（已进入 Runtime 调度队列）" **不带**按钮（避免暗示按钮是必要依赖）
+   - 「立即调查（恢复）」按钮在 default 隐藏，只在 `blocked_runtime_failure` 显示 — 这与之前的 4 状态文案"系统会自动开始调查"是**逻辑一致**的（之前 UI 自相矛盾）。
+
+**验收（user 原话硬约束）**:
+> "本次验收不要主要看测试数量，也先不要看 Workspace 截图。我们真正要看的证据是连续运行日志".
+
+**真实 log 4 ticks** (hermes 故意 down, dashboard session token 缺失):
+- **Tick 1**: `recovery eligible count=10 kinds=no_investigation,...,interrupted,interrupted` + `sit_recover_2cyc_001 reason=recovery_no_investigation`（pre-existing 2-DAY-OLD `status='investigating'` 2 个被自动续跑 — `sit_4498ebec5ad9e10bf4d8` from 2026-08-24 19:31 / `sit_ce9a693d4b2c49325a1c` from 2026-08-24 19:38）→ 全部 fail → counter=1
+- **Tick 2**: 10 `failed_retryable` → fail → counter=2
+- **Tick 3**: 10 `failed_retryable` → fail → counter=3
+- **Tick 4** (threshold-crossing): `recovery eligible count=10 kinds=failed_retryable` + 10 个 `investigation BLOCKED ... consecutiveFailures=3` 同时 emit + `tick done ... investigations=0`（**无第 4 次 Hermes call**）
+- **POST /clear-block** on sit_recover_2cyc_001: counter reset 0 → Tick 5: 仅该 situation `reason=recovery_failed_retryable` 重新触发, 其他 9 个仍 blocked (per-situation gate 工作正常)
+
+**严格边界**（所有 verbatim 用户原话约束都遵守）:
+- ❌ 不做 Action Engine / Approval / 新 Scheduler / Event Bus
+- ❌ 不碰 Terminal Lifecycle (`open|partial|mature` stays; `closed` 仍是 P0010.3)
+- ❌ 不引入第二个 Recovery 逻辑
+- ❌ 不让 LLM 猜商品 / 不 hardcode / 不建第二套 Product Store
+- ❌ 不为 demo 伪造时间 / provenance / final outcome
+- ❌ 不引入 4 分类之外的 block 条件
+- ❌ 不让「立即调查（恢复）」按钮成为系统正常工作的必要依赖
+- ❌ 不引入 `lifecycle='closed'` / 不建 Resolution Engine / 不加 Event Bus
+- ❌ `SubprocessHermesClient` 本阶段不删
+
+**NOT INCLUDED** (exhaustive, 与 P0010.2 同一 NOT INCLUDED 集合):
+- Trust Schema 重构 / Knowledge Engine / Evidence migration / Event Bus
+- Wake Engine / Scheduler (the Loop IS the scheduler) / Hermes transport 改
+- Action Engine / Approval / 外部发送 / Resolution Engine
+- 第二套 Timeline Store
+- 为 demo 伪造时间 / provenance / final outcome
+- 任何 4 之外的 blocking condition
+- "force re-investigate" 按钮（operator 可直接 POST /api/situation/:id/investigate 一次性重跑 — 这就是 manual path）
+
+**Next**: P0010.3 Terminal Lifecycle (`closed_at` / `closed_by` / `resolution_reason` / `lifecycle='closed'` / Resolution Engine / Outcome producer) — P0010.2.2 是 P0010.3 的前置（P0010.3 的 `closed` 终态会被 recovery scan 同样 skip，因为 `lifecycle IN ('open','partial')` 过滤；这是 integration 预期）。

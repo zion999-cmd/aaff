@@ -1439,10 +1439,18 @@ async function loadSituationDetail(situationId) {
     // LLM/Hermes call, no new evidence acquisition. Trace is a secondary drill-down.
     // The Pattern Engine is NEVER presented as "Agent 当前理解" — it only appears
     // as a secondary 信号归因 inside the Trace.
+    //
+    // P0010.2.2 — also reads `blockedRuntimeFailure` from the API so the
+    // "立即调查（恢复）" button only appears in the single state where it
+    // is meaningful. In the normal flow (failed / no investigation yet /
+    // investigating) the button is hidden because the Runtime is already
+    // self-healing on its own tick.
     const uEl = document.getElementById('situationUnderstanding_' + escHtml(situationId));
     const btn = document.getElementById('startInvestigation_' + escHtml(situationId));
     let invData = null;
     let invStatus = 'pending'; // pending | investigating | failed | completed
+    let invBlockedRuntimeFailure = false;
+    let invConsecutiveFailures = 0;
     try {
       const inv = await apiGet('/api/situation/' + encodeURIComponent(situationId) + '/investigation');
       invData = inv?.investigation ?? null;
@@ -1451,6 +1459,8 @@ async function loadSituationDetail(situationId) {
         else if (invData.status === 'failed') invStatus = 'failed';
         else if (invData.status === 'completed' || invData.stopReason) invStatus = 'completed';
       }
+      invBlockedRuntimeFailure = inv?.blockedRuntimeFailure === true;
+      invConsecutiveFailures = Number(inv?.consecutiveFailures ?? 0);
     } catch { /* keep pending */ }
 
     // P0010.1 REPAIR: 5-state Lifecycle + Commitment + Outputs (second pass).
@@ -1553,17 +1563,43 @@ async function loadSituationDetail(situationId) {
       if (uEl) {
         if (invStatus === 'investigating') {
           uEl.innerHTML = '<p class="muted">🔍 Agent 正在调查此 Situation（读取知识 → 提出下一问题 → 获取证据 → 更新判断），完成后自动更新此页面...</p>' + willShow;
+        } else if (invBlockedRuntimeFailure) {
+          // P0010.2.2 — operator-attention surface. The runtime has
+          // retried 3 times without success (and there is no
+          // accept/reject/override decision that resets the counter).
+          // Show the recovery button so the operator can acknowledge
+          // the block and resume the auto-recovery path.
+          uEl.innerHTML = '<p class="muted" style="color:var(--warning)">⚠ 自动调查连续失败 ' + escHtml(String(invConsecutiveFailures)) +
+            ' 次 — 需要检查 Runtime / Hermes 是否可用。<br/><small>点击下方按钮可手动重置失败计数，让 Runtime 调度下一轮调查。</small></p>' + willShow;
         } else if (invStatus === 'failed') {
           // P0010.1 Productization: humanize the raw error string in business mode.
+          // P0010.2.2 — keep the "auto-recover on next tick" copy; the button
+          // is hidden in this state because the runtime IS already recovering.
           var humanReason = humanizeError(invData?.error, state.panelMode);
           uEl.innerHTML = '<p class="muted" style="color:var(--warning)">⚠ ' + escHtml(humanReason) +
-            '。<br/><small>系统会在下次启动时自动恢复调查，无需人工点击。</small></p>' + willShow;
+            '。<br/><small>系统会在下一轮 Runtime 调度中自动恢复调查，无需人工点击。</small></p>' + willShow;
         } else {
-          uEl.innerHTML = '<p class="muted placeholder">Agent 尚未调查此 Situation。系统会自动开始调查。</p>' + willShow;
+          // P0010.2.2 — no investigation yet. The situation is in the
+          // Loop's recovery queue (or the producer's next-tick output);
+          // the operator does NOT need to click anything for the
+          // runtime to drive it.
+          uEl.innerHTML = '<p class="muted placeholder">等待 Agent 自动调查（已进入 Runtime 调度队列）。</p>' + willShow;
         }
       }
-      // 「交给 Agent 调查」is a RECOVERY control only — not the normal primary entry.
-      if (btn) { btn.style.display = 'block'; btn.textContent = '🔄 立即调查（恢复）'; }
+      // P0010.2.2 — the "立即调查（恢复）" button is a RECOVERY control only,
+      // NOT a normal primary entry. In the normal flow (no investigation
+      // yet / failed / investigating) the runtime is already self-healing
+      // on its own tick, so the button is hidden. It is shown ONLY when
+      // the runtime is `blocked_runtime_failure` and the operator must
+      // explicitly acknowledge the block to resume.
+      if (btn) {
+        if (invBlockedRuntimeFailure) {
+          btn.style.display = 'block';
+          btn.textContent = '🔄 重试调查（清除阻塞）';
+        } else {
+          btn.style.display = 'none';
+        }
+      }
       // Pattern Engine attribution → projected into right pane as collapsed
       // secondary 信号归因 (never the main body).
       if (decisionContent) {
@@ -2233,6 +2269,48 @@ async function startInvestigation(situationId) {
   const decisionContent = document.getElementById('decisionContent');
   const btn = document.getElementById('startInvestigation_' + escHtml(situationId));
   if (!uEl) return;
+
+  // P0010.2.2 — branch on the button's current text (the only signal we
+  // have at click time without re-querying the API). The button is shown
+  // in two distinct states:
+  //   - "🔄 重试调查（清除阻塞）" → POST /clear-block (operator override,
+  //     resets the failure counter; the next Loop tick drives the
+  //     actual investigation).
+  //   - "🔍 交给 Agent 调查"      → POST /investigate (legacy manual
+  //     trigger, kept for the rare case the operator wants to fire a
+  //     turn immediately without waiting for the Loop).
+  // The previous "🔄 立即调查（恢复）" copy was a contradiction
+  // (the runtime was already recovering) and is gone.
+  var isClearBlock = btn && btn.textContent && btn.textContent.indexOf('清除阻塞') !== -1;
+
+  if (isClearBlock) {
+    uEl.innerHTML = '<p class="muted">⏳ 正在重置失败计数，下一轮 Runtime 调度会驱动新一轮调查...</p>';
+    if (btn) btn.disabled = true;
+    try {
+      const resp = await apiPost('/api/situation/' + encodeURIComponent(situationId) + '/clear-block', {});
+      if (resp && resp.success) {
+        // The next Loop tick (within `tickMs` — default 60s) will
+        // re-investigate. We do NOT fire the investigation directly
+        // from the UI: that would be a second recovery path, which
+        // the runtime is explicitly designed to avoid.
+        uEl.innerHTML = '<p class="muted placeholder">✅ 已清除失败阻塞。Runtime 将自动安排下一轮调查（约 1 分钟内）</p>';
+        if (btn) btn.style.display = 'none';
+      } else {
+        uEl.innerHTML = '<p class="muted placeholder">清除失败阻塞失败' +
+          (resp && resp.error ? ': ' + escHtml(resp.error) : '') + '</p>';
+      }
+    } catch (e) {
+      uEl.innerHTML = '<p class="muted placeholder">清除失败阻塞出错: ' + escHtml(e.message) + '</p>';
+    } finally {
+      if (btn) btn.disabled = false;
+    }
+    return;
+  }
+
+  // Legacy manual investigation path. Kept for the rare operator who
+  // wants to drive a turn immediately without waiting for the Loop's
+  // next tick. The Loop still owns the steady-state cadence; this is
+  // a single-shot override.
   uEl.innerHTML = '<p class="muted">🔍 Agent 正在调查：读取专业知识 → 形成当前判断 → 提出下一个问题 → 检查证据 → 获取所需证据 → 更新判断（可能需要几分钟）...</p>';
   if (decisionPanel) decisionPanel.classList.add('open');
   if (decisionContent) {

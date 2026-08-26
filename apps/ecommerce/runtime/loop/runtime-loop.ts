@@ -10,24 +10,39 @@
 //     ├─ for each due capability: kernel.execute (REAL acquire path)
 //     │                              ↓ (writes Evidence Store)
 //     ├─ runSituationProducer        ↓ (creates/updates Situations)
-//     │
+//     ├─ listRecoverableCandidates   ↓ (P0010.2.2: pre-existing situations
+//     │                              │   needing recovery from prior crash
+//     │                              │   / interrupted turn / retryable fail)
 //     └─ for each candidate: InvestigationPolicy.shouldInvestigate
-//           ├─ investigate → autoInvestigateSituation → materializeWorkItem
-//           └─ skip        → log + continue
+//           ├─ investigate → runInvestigationTurn → materializeWorkItem
+//           ├─ skip        → log + continue
+//           └─ blocked_runtime_failure → log + emit investigation_blocked
+//                                       (operator must POST /clear-block)
 //
 // The Loop NEVER branches on business state itself. It only owns cadence
 // and the mutex. Business decisions live in:
-//   - InvestigationPolicy (skip-vs-investigate)
+//   - InvestigationPolicy (skip-vs-investigate, includes blocked threshold)
 //   - runSituationProducer (deterministic situation creation)
-//   - autoInvestigateSituation (the actual Hermes turn)
+//   - listRecoverableCandidates (deterministic recovery scan)
+//   - runInvestigationTurn (the actual Hermes turn + WorkItem materialize)
 //
 // Strict boundary (per user: "不能让 Scheduler 本身变成业务编排器"):
 //   The Loop does NOT call `materializeWorkItem` directly. It calls
-//   `autoInvestigateSituation`, which is the same code path as the manual
+//   `runInvestigationTurn`, which is the same code path as the manual
 //   POST /api/situation/:id/investigate route. To make WorkItem creation
 //   real and idempotent for BOTH paths, the route's `runInvestigationTurn`
 //   end-of-function is wired to call `materializeWorkItem` after a
 //   successful investigation (single call site).
+//
+// P0010.2.2 — Self-healing recovery: the Loop is the single recovery path.
+// `listRecoverableCandidates` runs on every tick and is the only mechanism
+// that drives pre-existing open situations (no parallel startup-time
+// autoInvestigatePending chain). The investigation's `blocked` state
+// (>= 3 consecutive failures with no operator override) requires an
+// explicit POST /api/situation/:id/clear-block to resume — this is the
+// only blocking condition the runtime enforces. Other blocking conditions
+// (capability boundary, explicit human defer, sustained failure) are
+// owned by the policy, not the loop.
 //
 // No setTimeout-based reconnect, no event bus, no wake engine, no
 // durable job queue, no adaptive scheduler, no dynamic cron generation
@@ -52,9 +67,16 @@ import {
   type PolicyDecision,
 } from './investigation-policy.js';
 import { createLoopLogger, type LoopEvent } from './loop-events.js';
+import {
+  listRecoverableCandidates,
+  DEFAULT_MAX_CONSECUTIVE_FAILURES,
+  type RecoveryOptions,
+  type RecoverableSituation,
+} from './recovery-candidates.js';
 import { HermesSessionClient } from '#platform/runtime/hermes/index.js';
-import { runInvestigationTurn } from '#platform/server/routes/situation-chat.js';
+import { runInvestigationTurn, markInvestigation } from '#platform/server/routes/situation-chat.js';
 import type { InvestigationTurnResult } from '#platform/server/routes/situation-chat.js';
+import { loadInvestigationFromLearningContext } from '#app/experience/learning-context-producer.js';
 
 const DEFAULT_TICK_MS = 60_000;
 const DEFAULT_SHOP_ID = 'jd_shop_001';
@@ -80,6 +102,15 @@ export interface RuntimeLoopOptions {
   onEvent?: (event: LoopEvent) => void;
   /** Optional: skip starting the loop on construction (for tests). */
   autoStart?: boolean;
+  /**
+   * P0010.2.2 — Recovery scan options. The Loop calls
+   * `listRecoverableCandidates(db, recoveryOptions)` on every tick to
+   * pick up situations the producer did NOT emit (process restart,
+   * interrupted turn, retryable failure). Defaults are inherited from
+   * `./recovery-candidates.ts`. Pass only the fields you want to
+   * override; the rest fall back to the production defaults.
+   */
+  recoveryOptions?: RecoveryOptions;
 }
 
 export interface LoopTickSummary {
@@ -100,7 +131,7 @@ export interface LoopState {
   tickCount: number;
 }
 
-const isPolicyInvestigate = (d: PolicyDecision): d is { kind: 'investigate'; reason: 'new_situation' | 'meaningful_new_evidence' } =>
+const isPolicyInvestigate = (d: PolicyDecision): d is { kind: 'investigate'; reason: 'new_situation' | 'meaningful_new_evidence' | 'recovery_no_investigation' | 'recovery_interrupted' | 'recovery_failed_retryable' } =>
   d.kind === 'investigate';
 
 export interface RuntimeLoop {
@@ -174,7 +205,11 @@ export const createRuntimeLoop = (options: RuntimeLoopOptions): RuntimeLoop => {
     }
   };
 
-  const investigate = async (situationId: string, reason: 'new_situation' | 'meaningful_new_evidence', latestContentHash: string | null): Promise<void> => {
+  const investigate = async (
+    situationId: string,
+    reason: 'new_situation' | 'meaningful_new_evidence' | 'recovery_no_investigation' | 'recovery_interrupted' | 'recovery_failed_retryable',
+    latestContentHash: string | null,
+  ): Promise<void> => {
     logger.emit({ kind: 'investigation_triggered', situationId, reason });
     const situation = loadSituation(db, situationId);
     if (!situation) {
@@ -196,6 +231,25 @@ export const createRuntimeLoop = (options: RuntimeLoopOptions): RuntimeLoop => {
         latestContentHash ?? undefined,
       );
       if (!result.ok) {
+        // P0010.2.2 — track the consecutive-failure counter on the
+        // investigation marker so the next tick can decide whether
+        // retrying again is worth it. We read the prior counter off
+        // the marker (canonical source), increment, and stamp it back
+        // via markInvestigation. This is the Loop's authoritative
+        // view of "how many retries have we burned on this situation"
+        // — the operator's clear-block route resets it via the same
+        // mechanism.
+        const priorInv = loadInvestigationFromLearningContext(db, situationId);
+        const priorCount =
+          typeof (priorInv as { consecutiveFailures?: unknown } | null)?.consecutiveFailures === 'number'
+            ? ((priorInv as { consecutiveFailures: number }).consecutiveFailures)
+            : 0;
+        markInvestigation(db, situation, {
+          status: 'failed',
+          error: result.error ?? 'investigation returned not-ok',
+          ...(latestContentHash ? { evidenceContentHash: latestContentHash } : {}),
+          consecutiveFailures: priorCount + 1,
+        });
         logger.emit({
           kind: 'investigation_failed',
           situationId,
@@ -203,12 +257,36 @@ export const createRuntimeLoop = (options: RuntimeLoopOptions): RuntimeLoop => {
         });
         return;
       }
+      // P0010.2.2 — success resets the counter to 0. Without this, a
+      // single transient blip would leave a partial counter on the
+      // marker that would later block the situation after N-1 more
+      // (unrelated) failures.
+      markInvestigation(db, situation, {
+        status: 'completed',
+        ...(latestContentHash ? { evidenceContentHash: latestContentHash } : {}),
+        consecutiveFailures: 0,
+      });
       logger.emit({ kind: 'investigation_completed', situationId });
       // WorkItem is materialized inside runInvestigationTurn's route
       // wiring (single call site covers both Loop and manual POSTs).
       // Nothing to do here.
     } catch (err) {
+      // Same counter bookkeeping on a thrown error (the common case
+      // when hermes is unreachable: connect fails, collectTurn rejects,
+      // etc.). The thrown path is structurally identical to the
+      // result.ok === false path from the block-threshold perspective.
       const message = err instanceof Error ? err.message : String(err);
+      const priorInv = loadInvestigationFromLearningContext(db, situationId);
+      const priorCount =
+        typeof (priorInv as { consecutiveFailures?: unknown } | null)?.consecutiveFailures === 'number'
+          ? ((priorInv as { consecutiveFailures: number }).consecutiveFailures)
+          : 0;
+      markInvestigation(db, situation, {
+        status: 'failed',
+        error: message,
+        ...(latestContentHash ? { evidenceContentHash: latestContentHash } : {}),
+        consecutiveFailures: priorCount + 1,
+      });
       logger.emit({ kind: 'investigation_failed', situationId, error: message });
     } finally {
       try {
@@ -261,6 +339,37 @@ export const createRuntimeLoop = (options: RuntimeLoopOptions): RuntimeLoop => {
       candidateIds.add(s.situationId);
     }
 
+    // P0010.2.2 — Recovery scan. P0010.2's loop only re-evaluated situations
+    // the producer just emitted; pre-existing open situations whose
+    // investigation was never run, was interrupted (process died mid-turn),
+    // or was retryable (failed but below the threshold) were silently
+    // ignored. The recovery scan picks those up on EVERY tick (not just
+    // startup), so a process restart / hermes restart / mid-tick crash
+    // self-heals the next tick.
+    const recoveryOptions: RecoveryOptions = {
+      ...(options.recoveryOptions ?? {}),
+      excludeIds: candidateIds,
+    };
+    const recovered: RecoverableSituation[] = listRecoverableCandidates(db, recoveryOptions);
+    const recoveryHints = new Map<string, { kind: RecoverableSituation['recoveryKind']; consecutiveFailures: number }>();
+    for (const r of recovered) {
+      candidateIds.add(r.situationId);
+      recoveryHints.set(r.situationId, {
+        kind: r.recoveryKind,
+        consecutiveFailures: r.consecutiveFailures,
+      });
+    }
+    if (recovered.length > 0) {
+      // Distinct event from `situations_updated` (producer output) so
+      // operators can tell apart "new situations the world produced" from
+      // "situations the runtime is recovering from a prior crash".
+      logger.emit({
+        kind: 'recovery_candidates_found',
+        count: recovered.length,
+        kinds: recovered.map((r) => r.recoveryKind),
+      });
+    }
+
     // The policy compares CONTENT_HASH, not wall clock. Compute the max
     // content_hash over the latest evidence records (across platforms /
     // data types / shops — the worst-case "any new evidence is meaningful"
@@ -268,12 +377,22 @@ export const createRuntimeLoop = (options: RuntimeLoopOptions): RuntimeLoop => {
     // the underlying metric actually moved, not when a re-acquisition wrote
     // a new `acquired_at` to disk).
     const latestContentHash = readLatestContentHash();
+    const maxConsecutiveFailures = recoveryOptions.maxConsecutiveFailures ?? DEFAULT_MAX_CONSECUTIVE_FAILURES;
     for (const situationId of candidateIds) {
+      const hint = recoveryHints.get(situationId);
       const decision = policy.shouldInvestigate({
         situationId,
         latestContentHash,
         waitingOnHuman: isWaitingOnHuman(db, situationId),
+        ...(hint ? { recoveryHint: hint.kind, consecutiveFailures: hint.consecutiveFailures } : {}),
+        maxConsecutiveFailures,
       });
+      if (decision.kind === 'skip' && decision.reason === 'blocked_runtime_failure') {
+        const count = hint?.consecutiveFailures ?? maxConsecutiveFailures;
+        logger.emit({ kind: 'investigation_blocked', situationId, consecutiveFailures: count });
+        investigationsSkipped++;
+        continue;
+      }
       if (isPolicyInvestigate(decision)) {
         await investigate(situationId, decision.reason, latestContentHash);
         investigationsTriggered++;
@@ -396,6 +515,8 @@ const formatLoopEventFallback = (e: LoopEvent): string => {
     case 'investigation_skipped': return `[loop] investigation skipped situation=${e.situationId} reason=${e.reason}`;
     case 'investigation_completed': return `[loop] investigation completed situation=${e.situationId}`;
     case 'investigation_failed': return `[loop] investigation failed situation=${e.situationId} error=${e.error}`;
+    case 'recovery_candidates_found': return `[loop] recovery eligible count=${e.count} kinds=${e.kinds.join(',')}`;
+    case 'investigation_blocked': return `[loop] investigation BLOCKED situation=${e.situationId} consecutiveFailures=${e.consecutiveFailures} — operator must POST /api/situation/:id/clear-block to resume`;
     case 'output_created': return `[loop] output created ${e.outputId} for situation=${e.situationId}`;
     case 'tick_done': return `[loop] tick done capabilities=${e.capabilities} situations=${e.situations} investigations=${e.investigations} outputs=${e.outputs}`;
     case 'loop_started': return `[loop] loop started capabilities=${e.capabilities.join(',')} tickMs=${e.tickMs}`;

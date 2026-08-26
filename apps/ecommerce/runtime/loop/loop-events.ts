@@ -10,10 +10,47 @@ export type LoopEvent =
   | { kind: 'acquisition_succeeded'; capability: string; evidenceCount: number }
   | { kind: 'acquisition_failed'; capability: string; error: string }
   | { kind: 'situations_updated'; created: number; skipped: number; createdIds: string[] }
-  | { kind: 'investigation_triggered'; situationId: string; reason: 'new_situation' | 'meaningful_new_evidence' }
+  | {
+      kind: 'investigation_triggered';
+      situationId: string;
+      reason:
+        | 'new_situation'
+        | 'meaningful_new_evidence'
+        | 'recovery_no_investigation'
+        | 'recovery_interrupted'
+        | 'recovery_failed_retryable';
+    }
   | { kind: 'investigation_skipped'; situationId: string; reason: SkipReason }
   | { kind: 'investigation_completed'; situationId: string }
   | { kind: 'investigation_failed'; situationId: string; error: string }
+  /**
+   * P0010.2.2 — emitted when the Loop's recovery scan finds pre-existing
+   * situations that need Agent attention (no_investigation /
+   * failed_retryable / interrupted). Distinct from `situations_updated`
+   * which is reserved for the producer's current-tick output — recovery
+   * is about catching up to a prior process run, not the world moving
+   * forward. The `kinds` array lets operators see at a glance whether
+   * the backlog is mostly "never investigated" vs "Hermes was down".
+   */
+  | {
+      kind: 'recovery_candidates_found';
+      count: number;
+      kinds: Array<'no_investigation' | 'failed_retryable' | 'interrupted'>;
+    }
+  /**
+   * P0010.2.2 — emitted when InvestigationPolicy returns
+   * `blocked_runtime_failure`. The operator must explicitly
+   * POST /api/situation/:id/clear-block to resume. Distinct from
+   * `investigation_skipped` because blocked = operator attention required,
+   * not a normal "no change" case. The Loop also stamps the
+   * `consecutiveFailures` count so the operator can see how close the
+   * situation was to unblocking itself before the threshold tripped.
+   */
+  | {
+      kind: 'investigation_blocked';
+      situationId: string;
+      consecutiveFailures: number;
+    }
   | { kind: 'output_created'; situationId: string; outputId: string }
   | { kind: 'tick_done'; capabilities: number; situations: number; investigations: number; outputs: number }
   | { kind: 'loop_started'; capabilities: string[]; tickMs: number }
@@ -24,7 +61,8 @@ export type SkipReason =
   | 'no_meaningful_change'
   | 'waiting_human'
   | 'already_investigated'
-  | 'no_situation';
+  | 'no_situation'
+  | 'blocked_runtime_failure';
 
 /**
  * Create a tagged event logger. The Loop uses one of these for the
@@ -70,6 +108,10 @@ const formatLoopEvent = (e: LoopEvent): string => {
       return `[loop] investigation completed situation=${e.situationId}`;
     case 'investigation_failed':
       return `[loop] investigation failed situation=${e.situationId} error=${e.error}`;
+    case 'recovery_candidates_found':
+      return `[loop] recovery eligible count=${e.count} kinds=${e.kinds.join(',')}`;
+    case 'investigation_blocked':
+      return `[loop] investigation BLOCKED situation=${e.situationId} consecutiveFailures=${e.consecutiveFailures} — operator must POST /api/situation/:id/clear-block to resume`;
     case 'output_created':
       return `[loop] output created ${e.outputId} for situation=${e.situationId}`;
     case 'tick_done':
