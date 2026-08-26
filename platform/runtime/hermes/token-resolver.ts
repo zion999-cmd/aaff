@@ -3,14 +3,27 @@
 //
 // Resolution priority (highest first):
 //   1. The `HERMES_DASHBOARD_SESSION_TOKEN` env var in the agentFabric process —
-//      operator-pinned, survives `hermes serve` restarts as long as the operator
-//      re-exports before starting the serve.
-//   2. Auto-discover from the running `hermes serve` process listening on the
-//      port derived from the URL (default 9119). Reads the serve process's env
-//      via `lsof` + `ps eww` (macOS) or `lsof` + `/proc/<pid>/environ` (Linux).
+//      historical name; the agentFabric → `/api/ws` upgrade authenticates via
+//      `?token=<value>`.
+//   2. The `HERMES_GATEWAY_TOKEN` env var in the agentFabric process — the
+//      canonical variable `hermes serve` exports to its subprocesses. This is
+//      the variable that actually appears in `ps eww -p <hermes-serve-pid>`
+//      in dev. P0010.2.4 (ADR-060) adds this fallback because
+//      HERMES_DASHBOARD_SESSION_TOKEN was missing in dev even though
+//      `hermes serve` was up and `auth_required:false`.
+//      — operator-pinned, survives `hermes serve` restarts as long as the
+//        operator re-exports before starting the serve.
+//   3. Auto-discover from the running `hermes serve` process listening on
+//      the port derived from the URL (default 9119). Reads the serve
+//      process's env via `lsof` + `ps eww` (macOS) or `lsof` +
+//      `/proc/<pid>/environ` (Linux). Auto-discovery checks
+//      HERMES_DASHBOARD_SESSION_TOKEN first, then HERMES_GATEWAY_TOKEN.
 //
-// Neither path throws. All subprocess failures fall through to `undefined` and
-// the caller's existing "Missing token" error path applies.
+// None of the paths throws. All subprocess failures fall through to
+// `undefined` and the caller's existing "Missing token" error path
+// applies — BUT the session client also runs an `/api/health` probe
+// (see session-client.ts#probeAuthRequired); when the running Hermes
+// reports `auth_required: false`, the token is bypassed entirely.
 //
 // IMPORTANT: This module must NEVER log the token value, never include it in
 // error messages, and never propagate it across process boundaries (no HTTP
@@ -43,6 +56,38 @@ interface CacheEntry {
 }
 let cache: CacheEntry | null = null;
 
+export const ENV_TOKEN_NAMES = {
+  /** Historical name — used by the agentFabric `/api/ws` upgrade contract. */
+  dashboard: 'HERMES_DASHBOARD_SESSION_TOKEN',
+  /** Canonical name exported by `hermes serve` to its subprocesses. */
+  gateway: 'HERMES_GATEWAY_TOKEN',
+} as const;
+
+/** Pick the first non-empty operator-pinned env var, in priority order. */
+const resolveFromOperatorEnv = (): { token: string | undefined; source: 'env-dashboard' | 'env-gateway' | null } => {
+  const fromDashboard = process.env[ENV_TOKEN_NAMES.dashboard];
+  if (fromDashboard && fromDashboard.length > 0) {
+    return { token: fromDashboard, source: 'env-dashboard' };
+  }
+  const fromGateway = process.env[ENV_TOKEN_NAMES.gateway];
+  if (fromGateway && fromGateway.length > 0) {
+    return { token: fromGateway, source: 'env-gateway' };
+  }
+  return { token: undefined, source: null };
+};
+
+export interface ResolveHermesTokenResult {
+  /** The resolved token. `undefined` when no source returned a value. */
+  token: string | undefined;
+  /** Where the token came from. `null` when nothing was found. */
+  source:
+    | 'env-dashboard'
+    | 'env-gateway'
+    | 'auto-dashboard'
+    | 'auto-gateway'
+    | null;
+}
+
 /**
  * Resolve the Hermes dashboard session token. Returns `undefined` if no source
  * is available.
@@ -56,10 +101,10 @@ export async function resolveHermesSessionToken(
 ): Promise<string | undefined> {
   const port = parsePort(options.url) ?? 9119;
 
-  // (1) Operator-pinned env var wins. Never cached, never auto-refreshed.
-  const fromEnv = process.env.HERMES_DASHBOARD_SESSION_TOKEN;
-  if (fromEnv && fromEnv.length > 0) {
-    return fromEnv;
+  // (1) Operator-pinned env vars win. Never cached, never auto-refreshed.
+  const fromOperator = resolveFromOperatorEnv();
+  if (fromOperator.token !== undefined) {
+    return fromOperator.token;
   }
 
   // (2) Auto-discover from the running hermes serve.
@@ -67,8 +112,32 @@ export async function resolveHermesSessionToken(
     return cache.token;
   }
   const discovered = await discoverFromRunningServe(port);
-  cache = { port, token: discovered };
-  return discovered;
+  cache = { port, token: discovered.token };
+  return discovered.token;
+}
+
+/**
+ * Like `resolveHermesSessionToken` but also returns the source of the token.
+ * Used by the session client to surface a structured `HermesConnectInfo`
+ * log entry (P0010.2.4 audit A). Operator-pinned tokens are never logged
+ * (the source is logged, the value is not).
+ */
+export async function resolveHermesSessionTokenWithSource(
+  options: ResolveOptions = {},
+): Promise<ResolveHermesTokenResult> {
+  const port = parsePort(options.url) ?? 9119;
+
+  const fromOperator = resolveFromOperatorEnv();
+  if (fromOperator.token !== undefined) {
+    return { token: fromOperator.token, source: fromOperator.source };
+  }
+
+  if (!options.forceRefresh && cache && cache.port === port) {
+    return { token: cache.token, source: cache.token ? 'auto-dashboard' : null };
+  }
+  const discovered = await discoverFromRunningServe(port);
+  cache = { port, token: discovered.token };
+  return { token: discovered.token, source: discovered.source };
 }
 
 /**
@@ -83,13 +152,24 @@ export function resetTokenCache(): void {
   cache = null;
 }
 
-async function discoverFromRunningServe(port: number): Promise<string | undefined> {
+async function discoverFromRunningServe(
+  port: number,
+): Promise<{ token: string | undefined; source: 'auto-dashboard' | 'auto-gateway' | null }> {
   const pid = await findListenPid(port);
-  if (!pid) return undefined;
+  if (!pid) return { token: undefined, source: null };
   const env = await readProcessEnv(pid);
-  if (!env) return undefined;
-  const token = env['HERMES_DASHBOARD_SESSION_TOKEN'];
-  return token && token.length > 0 ? token : undefined;
+  if (!env) return { token: undefined, source: null };
+  // Try both names; prefer the historical (HERMES_DASHBOARD_SESSION_TOKEN)
+  // so behavior on environments that already export it is unchanged.
+  const dashboard = env[ENV_TOKEN_NAMES.dashboard];
+  if (dashboard && dashboard.length > 0) {
+    return { token: dashboard, source: 'auto-dashboard' };
+  }
+  const gateway = env[ENV_TOKEN_NAMES.gateway];
+  if (gateway && gateway.length > 0) {
+    return { token: gateway, source: 'auto-gateway' };
+  }
+  return { token: undefined, source: null };
 }
 
 async function findListenPid(port: number): Promise<number | undefined> {

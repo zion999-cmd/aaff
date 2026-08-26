@@ -1,5 +1,93 @@
 # 技术决策记录 (ADR)
 
+## ADR-059: P0010.2.4 — Hermes 0.20.5 Connect Chain + Structured Connect Log (Audit A)
+
+- **日期**: 2026-08-27
+- **状态**: Accepted（typecheck 0 新增，956 passed / 2 pre-existing flaky，D1 live 3/3 pass）
+- **来源**: 用户 live 报告 "Hermes 不在线" 实际 Hermes 0.20.5 (PID 86684) 在 port 9119 正常 serving
+
+**Audit 发现**（真实 root cause，非猜测）:
+
+`platform/runtime/hermes/token-resolver.ts` 只查 `HERMES_DASHBOARD_SESSION_TOKEN`。Hermes 0.20.5 在 `auth_required: false` (loopback) 模式下读 `os.environ.get("HERMES_DASHBOARD_SESSION_TOKEN") or secrets.token_urlsafe(32)` (web_server.py:540) — 用户 Hermes 启动时未设该 env var → Hermes 生成**随机 session token 写进内存**，agentFabric 完全没有路径获取（loopback mode SPA HTML 也被 disable：`{"error":"Headless backend (hermes serve): web UI disabled — use \`hermes dashboard\` for the browser UI."}`，无 `/api/auth/whoami` 端点）。
+
+`session-client.ts:tryOnceNoToken` 路径 "无 token WS" 从不被 Hermes 0.20.5 接受 — `_ws_auth_reason` 在 `auth_required: false` 模式也强制要求 `?token=<_SESSION_TOKEN>` (web_server.py:16418-16423, `hmac.compare_digest`)。Loopback auth 仍认证，只是不要求 OAuth ticket。
+
+**核心原则**（用户原话，verbatim 保留）:
+> 先 Audit，随后直接修复、测试、live verify、commit、push。不要写新 Proposal.
+
+**决策**:
+
+1. **token-resolver 接受 `HERMES_GATEWAY_TOKEN` 作为 canonical fallback**（在 `HERMES_DASHBOARD_SESSION_TOKEN` 之后）— operator 可设任一 env var 都行。
+2. **session-client 加 `/api/health` probe (`probeAuthRequired`)** 缓存 30s，但 connect **永远发 `?token=<session_token>`**。Probe 仅影响：
+   - `HermesConnectInfo.authRequired` 日志字段
+   - `missingTokenError(probe)` 文案（让 operator 知道是 loopback 还是 gated）
+3. **移除 `tryOnceNoToken` 路径**。`tryOnce(token)` 是唯一 connect 路径。
+4. **`HermesConnectInfo` 结构化日志**（port/authRequired/tokenSource/attempt/outcome/latencyMs）让 operator 看 `[hermes-connect]` 一行即知哪一环断。`outcome` enum: `ok` | `no-token-resolved` | `failed` | `null`（in-flight）。
+5. **不引入新 dep**（无新 SDK / 无新 transport / 无 Hermes 代理）。`SubprocessHermesClient` 完全不动（rankProductsComposition 路径继续用）。
+
+**Live verify (D1)**: 真 Hermes 0.20.5 在 port 9120（`HERMES_DASHBOARD_SESSION_TOKEN=af_test_session_*`）旁路 live verify — auto-classifier 拒杀 user-owned PID 86684（"Interfere With Workloads"），用 alternate port 旁路。3/3 test pass: `probe reports auth_required=false` + `connect log shows env-dashboard outcome=ok latencyMs=297` + `session.create 返回 8-hex session_id from Hermes 0.20.5`。
+
+**部署提示（诚实记录）**: 用户当前 dev Hermes (PID 86684, 启动 Tue03AM) `_SESSION_TOKEN` 是随机生成、agentFabric 端无法获取。让 live demo 工作需 operator 重启 Hermes 同时设 `HERMES_DASHBOARD_SESSION_TOKEN`。
+
+**边界**（严格遵守）:
+- ❌ 不做 Hermes proxy / 不重写 session protocol
+- ❌ 不引入第二个 resolver
+- ❌ 不允许 tryOnceNoToken 复活
+- ❌ 不让 token 出现在日志（仅 source 类别）
+- ❌ 不假装 session token 可被 auto-discover in headless mode
+
+---
+
+## ADR-060: P0010.2.4 — Investigation Display State + Human Interaction Grammar (Audit B + C)
+
+- **日期**: 2026-08-27
+- **状态**: Accepted（typecheck 0 新增，34 + 11 = 45 新定向测试全 pass）
+- **来源**: 用户 live 报告 blocked banner "无需人工点击" 与 "重试调查" 按钮自相矛盾 + 6 按钮 1 umbrella + "采用建议" 暗示执行
+
+**核心原则**（用户原话，verbatim 保留）:
+> blocked / recovery UI 必修：严格 3 状态区分：recoverable（auto-recover，无需人工按钮）、blocked_runtime_failure（暂停，"解除阻塞并重新调度" 按钮）、pending。UI state 从持久化结构化 state 来，不从字符串猜。Blocked state 不得显示 "无需人工点击 / 下一轮自动恢复"。
+
+> Human Interaction 整改：audit 所有按钮的 intervention type/target/respondsToActivityIds。拆 Judgment feedback（认同/判断有误/补充情况）和 Recommendation disposition（认可建议/不认可/暂不处理）。非 blocking，下一轮 investigation 消费。"认可建议" 不得是外部执行。
+
+**决策 (Audit B — UI State)**:
+
+1. **6-state enum** `deriveInvestigationDisplayState(inv, blockedRuntimeFailure, consecutiveFailures)` 返回 `'pending' | 'recoverable' | 'investigating' | 'blocked' | 'completed' | 'failed_unrecoverable'`。
+2. **`INVESTIGATION_DISPLAY_BANNER` 是唯一 banner 文案**（不再允许 app.js 自造字符串）：
+   - `pending`: "等待 Agent 自动调查（已进入 Runtime 调度队列）" + no button
+   - `recoverable`: "Runtime 正在自动恢复（无需人工操作）。" + no button
+   - `blocked`: "⚠ 自动调查已暂停。已达连续失败阈值。请执行「解除阻塞并重新调度」让 Runtime 重新安排下一轮调查。" + 「解除阻塞并重新调度」按钮
+   - `failed_unrecoverable`: "调查已失败，需人工复核" + no button（真正 dead-end）
+3. **`blocked` 覆盖其他所有状态**（operator override 最优先）— 保证按钮总显。
+4. **`app.js:1480-1647` 删所有 fuzzy `invBlockedRuntimeFailure` 字符串匹配**，改读 6-state enum + banner table。
+5. **按钮文案严格用用户原话** "解除阻塞并重新调度"（不是 "🔄 重试调查（清除阻塞）"）。
+
+**决策 (Audit C — Human Interaction Grammar)**:
+
+1. **`interaction-grammar.js` 拆 2 section**：`judgment` (response/correction/context_supplement, 3 按钮) + `suggestion` (decision/accept|reject|defer|override|no_action, 3 按钮)。
+2. **每 option 带 `_section` + `executionDisabled: true`**（suggestion block 强制）。
+3. **`app.js:renderInteractionSurface` 渲染 2 行按钮** + section 标签 + section 详情 ("判断反馈 / 针对 Agent 当前判断" / "建议处理 / 仅记录处置，不触发外部执行")。
+4. **`prompt.ts:formatPriorHumanGuidance` 读 `content._section` + `content._summaryKind`** + 渲染 `[判断反馈]` / `[建议处理]` section tag + `{correction}` / `{decision}` kind tag。
+5. **Decision 类额外 surface `appliesTo`** (recommendationId / agentActivityId / signalId) — 让 next-turn Agent 能 map decision 回原 recommendation。
+6. **Inline `(no-execution: 仅记录处置，不触发外部执行)` guard** 在每个 suggestion-section decision 行。
+7. **Top-of-section 硬约束行** 当 ANY suggestion-section decision 存在时 pre-pended：`'> [P0010.2.4 硬约束] 上述 [建议处理] 块的 accept 均为操作员处置记录；Agent 不得据此触发任何外部执行 (Action Engine / Approval / 外发均不在 P0010.2.4 范围内).'` — prompt 自身声明边界，未来 Agent 不能假装看不见。
+
+**测试**:
+- 19 contract tests `investigation-display-state.test.ts` pin 6 state × banner × button 状态机
+- 11 contract tests `feedback-consumption.test.ts` pin 5 sub-type × 2 section × end-to-end `buildInvestigationPrompt`
+- 7 contract tests 修：app.js interaction-grammar 消费 surface (button DOM, data-*, section label)
+- D2/D3: 复用现有 15 runtime-loop unit tests (recovery scan + threshold-blocked)
+- D4: 11 feedback-consumption tests (seed intervention → next turn 消费)
+
+**边界**（严格遵守）:
+- ❌ 不做 Action Engine / Approval / 外部发送
+- ❌ 不让 LLM 决定 accept 触发什么
+- ❌ 不在 UI 显示 "execution" 字样
+- ❌ 不假装 "认建议" = 系统将执行
+- ❌ 不删 legacy "立即调查（恢复）" 路径（仅 rebrand 在 recoverable 状态，operator escape hatch 仍可用）
+- ❌ 不引入 Event Bus / Wake Engine
+
+---
+
 ## ADR-050: P0010.1 REPAIR-6 — Output Workspace 三处语义收紧
 
 - **日期**: 2026-08-23

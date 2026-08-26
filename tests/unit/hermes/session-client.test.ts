@@ -9,7 +9,19 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 // `vi.resetModules()` / `vi.doMock()` to drive the auto-discover path.
 vi.mock('#platform/runtime/hermes/token-resolver.js', () => ({
   resolveHermesSessionToken: vi.fn().mockResolvedValue(undefined),
+  // P0010.2.4 — session-client now reads source-of-truth through
+  // `resolveHermesSessionTokenWithSource` for the structured connect log.
+  // The mock delegates to the legacy `resolveHermesSessionToken` so
+  // existing tests that set `resolveTokenMock.mockResolvedValue('x')`
+  // continue to drive both paths.
+  resolveHermesSessionTokenWithSource: vi.fn(async (...args: unknown[]) => {
+    const token = (await (resolveTokenMock as (...a: unknown[]) => Promise<unknown>)(...args)) as
+      | string
+      | undefined;
+    return { token, source: token ? ('auto-dashboard' as const) : null };
+  }),
   resetTokenCache: () => undefined,
+  ENV_TOKEN_NAMES: { dashboard: 'HERMES_DASHBOARD_SESSION_TOKEN', gateway: 'HERMES_GATEWAY_TOKEN' },
 }));
 
 import { HermesSessionClient } from '#platform/runtime/hermes/index.js';
@@ -66,13 +78,26 @@ class MockWebSocket {
  * queue so the WebSocket constructor runs. This helper drives connect() to
  * that point and returns both the in-flight WebSocket and the original
  * promise so tests can await its resolution/rejection.
+ *
+ * P0010.2.4: connect() now also probes `/api/health` first (audit A —
+ * the dev case where Hermes exports `auth_required: false` and we should
+ * skip the token entirely). The probe is stubbed by `beforeEach` to
+ * report `auth_required: true` so the existing tests continue to drive
+ * the token path. We need ≥3 microtask flushes: probe → resolveToken →
+ * tryOnce → new WebSocket.
  */
 async function beginConnect(client: HermesSessionClient): Promise<{ ws: MockWebSocket; connectPromise: Promise<void> }> {
   const connectPromise = client.connect();
-  // 2 microtask flushes: 1) resolveToken() settles 2) tryOnce starts and
-  // calls `new WebSocket(...)` synchronously.
-  await Promise.resolve();
-  await Promise.resolve();
+  // Wait for the WebSocket to actually be constructed. The connect path
+  // is now: probeAuthRequired (fetch + .json) → resolveToken → tryOnce
+  // → new WebSocket, which is 4+ microtask flushes. Use vi.waitFor
+  // (real-time polling) so we don't depend on the exact microtask count.
+  await vi.waitFor(
+    () => {
+      expect(MockWebSocket.instances.length).toBeGreaterThan(0);
+    },
+    { timeout: 1000 },
+  );
   const ws = MockWebSocket.instances[MockWebSocket.instances.length - 1]!;
   return { ws, connectPromise };
 }
@@ -83,6 +108,19 @@ describe('HermesSessionClient', () => {
   beforeEach(() => {
     MockWebSocket.instances = [];
     vi.stubGlobal('WebSocket', MockWebSocket);
+    // P0010.2.4 — stub the auth probe so it reports `auth_required: true`
+    // (default; matches a token-required Hermes). This keeps the existing
+    // tests focused on the token + retry path, while the auth-probe
+    // behavior is covered separately in
+    // `tests/contract/hermes-auth-probe.test.ts`.
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        json: () => Promise.resolve({ ok: true, auth_required: true }),
+      }),
+    );
     // Default: a token is available via env (matches a correctly-configured deploy).
     process.env.HERMES_DASHBOARD_SESSION_TOKEN = 'test-secret';
     resolveTokenMock.mockReset();
@@ -96,6 +134,10 @@ describe('HermesSessionClient', () => {
   it('connect opens a WebSocket to /api/ws and appends ?token=', async () => {
     const client = new HermesSessionClient({ url: 'ws://localhost:9119/api/ws', token: 'explicit-secret' });
     const connectPromise = client.connect();
+    // 4 microtask flushes: probeAuthRequired (fetch + .json) →
+    // resolveToken (callerToken path) → tryOnce → new WebSocket.
+    await Promise.resolve();
+    await Promise.resolve();
     await Promise.resolve();
     await Promise.resolve();
     const ws = MockWebSocket.instances[0]!;

@@ -124,3 +124,47 @@ export function flattenRespondsToActivityIds(
   type: string,
   content: { respondsTo?: { agentActivityIds?: unknown[] } } | null | undefined,
 ): string[];
+
+// ---- P0010.2.4 (ADR-060 audit B) — Investigation display state ----
+
+/**
+ * Six-state enum the investigation panel collapses into. Replaces the
+ * fuzzy `invStatus === 'investigating' / invBlockedRuntimeFailure /
+ * invStatus === 'failed' / else` chain that used to contradict itself
+ * in the UI ("auto-recover, no human" while a clear-block button was
+ * shown). The runtime reads this single value; the banner map below is
+ * the only place operator-facing copy is defined.
+ */
+export type InvestigationDisplayState =
+  | 'pending'
+  | 'recoverable'
+  | 'investigating'
+  | 'blocked'
+  | 'completed'
+  | 'failed_unrecoverable';
+
+/**
+ * Pure: maps the structured `investigation` block + the runtime's
+ * `blockedRuntimeFailure` flag + the failure counter to exactly one of
+ * the six states. Operator override (`blockedRuntimeFailure === true`)
+ * wins over everything else so the "解除阻塞并重新调度" button is
+ * guaranteed to show.
+ */
+export function deriveInvestigationDisplayState(
+  investigation: { status?: string } | null | undefined,
+  blockedRuntimeFailure: boolean,
+  consecutiveFailures: number,
+): InvestigationDisplayState;
+
+export interface InvestigationDisplayBanner {
+  headline: string;
+  detail: string;
+  /** Show the "解除阻塞并重新调度" clear-block button (only in `blocked`). */
+  showClearBlock: boolean;
+  /** Show the legacy "立即调查" button (only in `recoverable`). */
+  showLegacyStart: boolean;
+}
+
+export const INVESTIGATION_DISPLAY_BANNER: Readonly<
+  Record<InvestigationDisplayState, InvestigationDisplayBanner>
+>;

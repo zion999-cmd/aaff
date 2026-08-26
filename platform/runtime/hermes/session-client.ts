@@ -24,7 +24,12 @@
 //
 // Uses Node's built-in WHATWG WebSocket (no external dependency).
 
-import { resetTokenCache, resolveHermesSessionToken } from './token-resolver.js';
+import {
+  resetTokenCache,
+  resolveHermesSessionTokenWithSource,
+  ENV_TOKEN_NAMES,
+  type ResolveHermesTokenResult,
+} from './token-resolver.js';
 
 // ---- Types ----
 
@@ -73,6 +78,165 @@ type PendingRequest = {
 };
 
 /**
+ * Structured log emitted on every connect attempt. Used by the runtime-loop
+ * tick to surface "what we did to talk to Hermes" in the dev log, and by
+ * P0010.2.4 live-verify cases to prove the production chain is healthy
+ * (or to localize the failure when it isn't).
+ *
+ * Never includes the actual token value.
+ */
+export interface HermesConnectInfo {
+  url: string;
+  port: number;
+  /** Where the token came from. May be `null` if resolution failed (no
+   *  env-var set and auto-discover returned no token). */
+  tokenSource: ResolveHermesTokenResult['source'];
+  authRequired: boolean;
+  /** Set when the auth probe failed and we fell back to token-required. */
+  probeFailed?: boolean;
+  /** Connect outcome — `null` when connect() resolves. */
+  outcome: 'ok' | 'no-token-resolved' | 'failed' | null;
+  /** Human-readable error (no token value). */
+  error?: string;
+  /** ms since connect() started. */
+  latencyMs: number;
+  attempt: 1 | 2;
+}
+
+/** Optional structured logger; defaults to `console.info`. */
+export type HermesConnectLogger = (info: HermesConnectInfo) => void;
+
+let defaultConnectLogger: HermesConnectLogger = (info) => {
+  // eslint-disable-next-line no-console
+  console.info(
+    `[hermes-connect] port=${info.port} authRequired=${info.authRequired} ` +
+      `tokenSource=${info.tokenSource} attempt=${info.attempt} ` +
+      `outcome=${info.outcome} latencyMs=${info.latencyMs}` +
+      (info.error ? ` error=${info.error}` : ''),
+  );
+};
+
+export function setHermesConnectLogger(logger: HermesConnectLogger | null): void {
+  defaultConnectLogger =
+    logger ??
+    ((info) => {
+      // eslint-disable-next-line no-console
+      console.info(
+        `[hermes-connect] port=${info.port} authRequired=${info.authRequired} ` +
+          `tokenSource=${info.tokenSource} attempt=${info.attempt} ` +
+          `outcome=${info.outcome} latencyMs=${info.latencyMs}` +
+          (info.error ? ` error=${info.error}` : ''),
+      );
+    });
+}
+
+// ---- /api/health probe ----
+
+interface HermesHealthResponse {
+  ok: boolean;
+  version?: string;
+  auth_required?: boolean;
+  [key: string]: unknown;
+}
+
+/** Per-port cache: server name + auth_required, plus a "probe failed" flag. */
+interface HealthCacheEntry {
+  port: number;
+  authRequired: boolean;
+  probeFailed: boolean;
+  cachedAt: number;
+}
+const healthCache: Map<number, HealthCacheEntry> = (globalThis as {
+  __hermesHealthCache?: Map<number, HealthCacheEntry>;
+}).__hermesHealthCache ??= new Map();
+
+const HEALTH_PROBE_TIMEOUT_MS = 3_000;
+/** Reuse the probe result for this many ms before re-probing. */
+const HEALTH_PROBE_TTL_MS = 30_000;
+
+/**
+ * Probe Hermes' HTTP `/api/health` to learn whether the running serve
+ * actually requires a session token. Hermes 0.20.x ships an
+ * `auth_required: false` mode for dev; without this probe, the session
+ * client would refuse to connect on every dev box that has Hermes up
+ * but no operator-exported token (P0010.2.4 audit A).
+ *
+ * Result is cached per-port for `HEALTH_PROBE_TTL_MS`. A failed probe is
+ * cached as `probeFailed=true, authRequired=true` so we fall back to the
+ * "require token" path rather than silently connecting to an
+ * unauthenticated Hermes we couldn't reach.
+ */
+export async function probeAuthRequired(
+  url: string,
+  options: { forceRefresh?: boolean } = {},
+): Promise<{ authRequired: boolean; probeFailed: boolean }> {
+  const port = parsePortFromUrl(url) ?? 9119;
+  const cached = healthCache.get(port);
+  if (!options.forceRefresh && cached && Date.now() - cached.cachedAt < HEALTH_PROBE_TTL_MS) {
+    return { authRequired: cached.authRequired, probeFailed: cached.probeFailed };
+  }
+  const httpUrl = urlToHttp(url);
+  const ac = new AbortController();
+  const timer = setTimeout(() => ac.abort(), HEALTH_PROBE_TIMEOUT_MS);
+  try {
+    const resp = await fetch(httpUrl, { signal: ac.signal });
+    if (!resp.ok) {
+      const entry: HealthCacheEntry = {
+        port,
+        authRequired: true,
+        probeFailed: true,
+        cachedAt: Date.now(),
+      };
+      healthCache.set(port, entry);
+      return { authRequired: true, probeFailed: true };
+    }
+    const body = (await resp.json()) as HermesHealthResponse;
+    const authRequired = body.auth_required !== false; // default to required
+    const entry: HealthCacheEntry = {
+      port,
+      authRequired,
+      probeFailed: false,
+      cachedAt: Date.now(),
+    };
+    healthCache.set(port, entry);
+    return { authRequired, probeFailed: false };
+  } catch {
+    const entry: HealthCacheEntry = {
+      port,
+      authRequired: true,
+      probeFailed: true,
+      cachedAt: Date.now(),
+    };
+    healthCache.set(port, entry);
+    return { authRequired: true, probeFailed: true };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/** Clear the per-port health cache (used by the retry path). */
+export function resetHealthCache(): void {
+  healthCache.clear();
+}
+
+function urlToHttp(wsUrl: string): string {
+  // ws://localhost:9119/api/ws → http://localhost:9119/api/health
+  const replaced = wsUrl.replace(/^ws(s)?:\/\//, 'http$1://');
+  return replaced.replace(/\/api\/ws\/?$/, '/api/health');
+}
+
+function parsePortFromUrl(url: string): number | undefined {
+  try {
+    const u = new URL(url);
+    if (!u.port) return undefined;
+    const n = Number.parseInt(u.port, 10);
+    return Number.isFinite(n) && n > 0 ? n : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
  * Thrown when a connect-time authentication failure indicates the token is
  * stale or wrong (handshake rejected, server close before open, or auto-retry
  * also failed). Carries no token value — messages must NEVER include the
@@ -113,27 +277,111 @@ export class HermesSessionClient {
    * Connect to Hermes serve /api/ws. Resolves when the socket opens.
    *
    * Token resolution happens here, lazily:
-   *   1. Resolve a candidate token (callerToken > env > auto-discover).
-   *   2. tryOnce(token). If it fails, reset the auto-discover cache and try
-   *      a fresh candidate — but only if the failure wasn't a deliberate
-   *      close() and the prior token was NOT callerToken/env-pinned
-   *      (operator-pinned tokens are never auto-replaced).
+   *   1. Probe `/api/health` → if `auth_required: false`, skip the token
+   *      entirely and connect without `?token=`. This is the common case
+   *      for a dev `hermes serve` (P0010.2.4 audit A).
+   *   2. If auth is required, resolve a candidate token
+   *      (callerToken > env-var > auto-discover).
+   *   3. tryOnce(token). If it fails, reset the auto-discover cache and
+   *      try a fresh candidate — but only if the failure wasn't a
+   *      deliberate close() and the prior token was NOT callerToken /
+   *      env-pinned (operator-pinned tokens are never auto-replaced).
+   *
+   * Every attempt emits a structured `HermesConnectInfo` log (see
+   * `defaultConnectLogger`) so live verification can prove the production
+   * chain is healthy without leaking the token value.
    */
   async connect(): Promise<void> {
     this.closedByUser = false;
-    const resolveToken = (): Promise<string | undefined> => {
-      if (this.callerToken) return Promise.resolve(this.callerToken);
-      if (process.env.HERMES_DASHBOARD_SESSION_TOKEN) {
-        return Promise.resolve(process.env.HERMES_DASHBOARD_SESSION_TOKEN);
-      }
-      return resolveHermesSessionToken({ url: this.url });
+    const port = parsePortFromUrl(this.url) ?? 9119;
+    const startedAt = Date.now();
+    const log = (info: Partial<HermesConnectInfo> & { attempt: 1 | 2 }): void => {
+      const merged: HermesConnectInfo = {
+        url: this.url,
+        port,
+        tokenSource: info.tokenSource ?? null,
+        authRequired: info.authRequired ?? false,
+        outcome: info.outcome ?? null,
+        latencyMs: Date.now() - startedAt,
+        attempt: info.attempt,
+      };
+      if (info.probeFailed !== undefined) merged.probeFailed = info.probeFailed;
+      if (info.error !== undefined) merged.error = info.error;
+      defaultConnectLogger(merged);
     };
 
-    const token = await resolveToken();
-    if (!token) throw this.missingTokenError();
+    // (1) Probe whether auth is required. This is used as log metadata +
+    // to choose the actionable error message; the connect itself ALWAYS
+    // sends `?token=<session_token>`. P0010.2.4 (live verify D1) —
+    // Hermes 0.20.5's `_ws_auth_reason` (web_server.py:16418-16423)
+    // requires `?token=<_SESSION_TOKEN>` even in `auth_required: false`
+    // (loopback) mode. The "no token at all" path the original probe
+    // suggested turns out to be wrong: loopback still authenticates, it
+    // just doesn't require an OAuth ticket. So the probe only tells us
+    // which path the token should come from (env-var or auto-discover),
+    // not whether to send one.
+    const probe = await probeAuthRequired(this.url);
 
-    const firstErr = await this.tryOnce(token).catch((err: unknown) => err);
-    if (!(firstErr instanceof Error)) return; // first tryOnce resolved
+    // (2) Resolve a candidate token: callerToken > env-var > auto-discover.
+    const resolveToken = (): Promise<ResolveHermesTokenResult> => {
+      if (this.callerToken) {
+        return Promise.resolve({ token: this.callerToken, source: 'env-dashboard' });
+      }
+      // P0010.2.4 — direct env-var read here, INDEPENDENT of the
+      // resolver mock. This preserves the pre-P0010.2.4 behaviour where
+      // `process.env.HERMES_DASHBOARD_SESSION_TOKEN` was consulted
+      // before the resolver. Tests that set the env var but mock the
+      // resolver to return undefined rely on this direct read.
+      const envDashboard = process.env[ENV_TOKEN_NAMES.dashboard];
+      if (envDashboard) {
+        return Promise.resolve({ token: envDashboard, source: 'env-dashboard' });
+      }
+      const envGateway = process.env[ENV_TOKEN_NAMES.gateway];
+      if (envGateway) {
+        return Promise.resolve({ token: envGateway, source: 'env-gateway' });
+      }
+      return resolveHermesSessionTokenWithSource({ url: this.url });
+    };
+
+    const first = await resolveToken();
+    if (!first.token) {
+      log({
+        attempt: 1,
+        authRequired: probe.authRequired,
+        probeFailed: probe.probeFailed,
+        tokenSource: first.source,
+        outcome: 'no-token-resolved',
+        error: 'no_token_found',
+      });
+      throw this.missingTokenError(probe);
+    }
+    log({
+      attempt: 1,
+      authRequired: probe.authRequired,
+      probeFailed: probe.probeFailed,
+      tokenSource: first.source,
+      outcome: null,
+    });
+
+    const firstErr = await this.tryOnce(first.token).catch((err: unknown) => err);
+    if (!(firstErr instanceof Error)) {
+      log({
+        attempt: 1,
+        authRequired: probe.authRequired,
+        probeFailed: probe.probeFailed,
+        tokenSource: first.source,
+        outcome: 'ok',
+      });
+      return;
+    }
+    log({
+      attempt: 1,
+      authRequired: probe.authRequired,
+      probeFailed: probe.probeFailed,
+      tokenSource: first.source,
+      outcome: 'failed',
+      error: firstErr.message,
+    });
 
     if (this.closedByUser) throw firstErr;
 
@@ -141,22 +389,38 @@ export class HermesSessionClient {
     // did, clear the cache so the retry re-shells-out to the running serve
     // (handles `hermes serve` restarts and token rotation).
     // Operator-pinned tokens (callerToken or env var) are NEVER auto-replaced.
-    const tokenIsAutoDiscovered =
-      !this.callerToken && !process.env.HERMES_DASHBOARD_SESSION_TOKEN;
+    const tokenIsAutoDiscovered = !this.callerToken && !first.source?.startsWith('env-');
     if (tokenIsAutoDiscovered) resetTokenCache();
 
     const fresh = await resolveToken();
-    if (!fresh) {
+    if (!fresh.token) {
       throw new Error(
         `Hermes connect failed (${firstErr.message}); auto-re-resolve also returned no token. ` +
-          `If HERMES_DASHBOARD_SESSION_TOKEN is set in the agentFabric env, refresh it to match the ` +
-          `value in the running 'hermes serve' process; otherwise verify 'hermes serve' is up ` +
-          `on ${this.url}.`,
+          `If ${ENV_TOKEN_NAMES.dashboard} or ${ENV_TOKEN_NAMES.gateway} is set in the agentFabric env, ` +
+          `refresh it to match the value in the running 'hermes serve' process; otherwise verify ` +
+          `'hermes serve' is up on ${this.url} with auth_required=${probe.authRequired ? 'true' : 'false'}.`,
       );
     }
 
-    const secondErr = await this.tryOnce(fresh).catch((err: unknown) => err);
-    if (!(secondErr instanceof Error)) return;
+    const secondErr = await this.tryOnce(fresh.token).catch((err: unknown) => err);
+    if (!(secondErr instanceof Error)) {
+      log({
+        attempt: 2,
+        authRequired: probe.authRequired,
+        probeFailed: probe.probeFailed,
+        tokenSource: fresh.source,
+        outcome: 'ok',
+      });
+      return;
+    }
+    log({
+      attempt: 2,
+      authRequired: probe.authRequired,
+      probeFailed: probe.probeFailed,
+      tokenSource: fresh.source,
+      outcome: 'failed',
+      error: secondErr.message,
+    });
 
     throw new Error(
       `Hermes connect failed twice. First: ${firstErr.message}. ` +
@@ -201,6 +465,30 @@ export class HermesSessionClient {
       };
       ws.onmessage = (msg) => this.handleMessage(msg);
     });
+  }
+
+  /**
+   * P0010.2.4 — error when no token is available. Now takes the probe
+   * result so the message can mention whether the running Hermes is in
+   * `auth_required: false` (loopback) mode, in which case the operator
+   * must still set one of the env vars (or have `hermes serve` running
+   * for auto-discover) — Hermes 0.20.5 authenticates the WebSocket
+   * upgrade in both modes.
+   */
+  private missingTokenError(probe: { authRequired: boolean; probeFailed: boolean }): HermesAuthError {
+    const modeHint = probe.probeFailed
+      ? ' (could not probe /api/health; assuming auth_required)'
+      : probe.authRequired
+        ? ' (Hermes reports auth_required=true)'
+        : ' (Hermes reports auth_required=false; loopback mode still requires ?token=)';
+    return new HermesAuthError(
+      'missing_token',
+      `Missing Hermes dashboard session token${modeHint}. Either (a) export ` +
+        `${ENV_TOKEN_NAMES.dashboard} or ${ENV_TOKEN_NAMES.gateway} in the agentFabric process env ` +
+        `to match the value used by 'hermes serve', or (b) start 'hermes serve' (defaults to port 9119) ` +
+        `so the token can be auto-discovered from its process env. ` +
+        `See platform/runtime/hermes/token-resolver.ts for details.`,
+    );
   }
 
   /** Subscribe to streamed events (message.delta, message.complete, tool.*, etc.). */
@@ -249,17 +537,6 @@ export class HermesSessionClient {
     this.closedByUser = true;
     this.ws?.close();
     this.ws = null;
-  }
-
-  private missingTokenError(): HermesAuthError {
-    return new HermesAuthError(
-      'missing_token',
-      'Missing Hermes dashboard session token. Either (a) export ' +
-        'HERMES_DASHBOARD_SESSION_TOKEN in the agentFabric process env to match ' +
-        'the value used by `hermes serve`, or (b) start `hermes serve` (defaults ' +
-        'to port 9119) so the token can be auto-discovered from its process env. ' +
-        'See platform/runtime/hermes/token-resolver.ts for details.',
-    );
   }
 
   // ---- Internals ----

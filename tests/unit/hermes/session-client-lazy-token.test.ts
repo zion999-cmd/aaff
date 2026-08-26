@@ -11,7 +11,20 @@ const resetCacheMock = vi.fn();
 
 vi.mock('#platform/runtime/hermes/token-resolver.js', () => ({
   resolveHermesSessionToken: (...args: unknown[]) => (resolveTokenMock as (...a: unknown[]) => unknown)(...args),
+  // P0010.2.4 — session-client now reads source-of-truth through
+  // `resolveHermesSessionTokenWithSource` for the structured connect log.
+  // The legacy `resolveHermesSessionToken` mock above is kept so the
+  // existing assertions still pass; the WithSource variant is a
+  // passthrough that returns `{ token, source }` so the connect log
+  // has a real source value.
+  resolveHermesSessionTokenWithSource: async (...args: unknown[]) => {
+    const token = (await (resolveTokenMock as (...a: unknown[]) => Promise<unknown>)(...args)) as
+      | string
+      | undefined;
+    return Promise.resolve({ token, source: token ? ('auto-dashboard' as const) : null });
+  },
   resetTokenCache: () => resetCacheMock(),
+  ENV_TOKEN_NAMES: { dashboard: 'HERMES_DASHBOARD_SESSION_TOKEN', gateway: 'HERMES_GATEWAY_TOKEN' },
 }));
 
 import { HermesSessionClient } from '#platform/runtime/hermes/index.js';
@@ -59,12 +72,24 @@ interface ConnectHandle {
 
 /** Start a connect() and yield to the microtask queue until the WebSocket
  *  has been constructed. Returns both the in-flight WS and the original
- *  promise so tests can await its resolution/rejection. */
+ *  promise so tests can await its resolution/rejection.
+ *
+ *  P0010.2.4: connect() now also probes `/api/health` first (audit A).
+ *  The probe is stubbed by `beforeEach` to report `auth_required: true`
+ *  so the existing tests keep driving the token + retry path. We need
+ *  ≥3 microtask flushes: probe → resolveToken → tryOnce → new WebSocket. */
 async function beginConnect(client: HermesSessionClient): Promise<ConnectHandle> {
   const connectPromise = client.connect();
-  // 2 microtask flushes: resolveToken() → tryOnce → new WebSocket.
-  await Promise.resolve();
-  await Promise.resolve();
+  // Wait for the WebSocket to actually be constructed. The connect path
+  // is now: probeAuthRequired (fetch + .json) → resolveToken → tryOnce
+  // → new WebSocket, which is 4+ microtask flushes. Use vi.waitFor
+  // (real-time polling) so we don't depend on the exact microtask count.
+  await vi.waitFor(
+    () => {
+      expect(MockWebSocket.instances.length).toBeGreaterThan(0);
+    },
+    { timeout: 1000 },
+  );
   const ws = MockWebSocket.instances[MockWebSocket.instances.length - 1]!;
   return { ws, connectPromise };
 }
@@ -72,10 +97,15 @@ async function beginConnect(client: HermesSessionClient): Promise<ConnectHandle>
 /** Wait for the retry path to construct a second WebSocket after an
  *  emitError / emitCloseBeforeOpen. */
 async function waitForRetry(): Promise<void> {
-  // 3 microtask flushes: catch handler → resolveToken() → new WebSocket.
-  await Promise.resolve();
-  await Promise.resolve();
-  await Promise.resolve();
+  // P0010.2.4 — the retry path now is: catch handler → resolveToken() →
+  // new WebSocket. We poll for a second instance to avoid depending on
+  // the exact microtask count.
+  await vi.waitFor(
+    () => {
+      expect(MockWebSocket.instances.length).toBeGreaterThanOrEqual(2);
+    },
+    { timeout: 1000 },
+  );
 }
 
 // ---- Tests ----
@@ -84,6 +114,18 @@ describe('HermesSessionClient — lazy token + retry-once (P0010.2)', () => {
   beforeEach(() => {
     MockWebSocket.instances = [];
     vi.stubGlobal('WebSocket', MockWebSocket);
+    // P0010.2.4 — stub the auth probe to report `auth_required: true`
+    // (the token-required path these tests exercise). The
+    // `auth_required: false` probe path is covered in
+    // `tests/contract/hermes-auth-probe.test.ts`.
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        json: () => Promise.resolve({ ok: true, auth_required: true }),
+      }),
+    );
     resolveTokenMock.mockReset();
     resetCacheMock.mockReset();
     delete process.env.HERMES_DASHBOARD_SESSION_TOKEN;
@@ -178,7 +220,12 @@ describe('HermesSessionClient — lazy token + retry-once (P0010.2)', () => {
     const { ws: first, connectPromise } = await beginConnect(client);
     first.emitError('stale rejected');
     await expect(connectPromise).rejects.toThrow(/auto-re-resolve also returned no token/);
-    await expect(connectPromise).rejects.toThrow(/If HERMES_DASHBOARD_SESSION_TOKEN is set/);
+    // P0010.2.4 — the actionable error mentions both `HERMES_DASHBOARD_SESSION_TOKEN`
+    // and `HERMES_GATEWAY_TOKEN` (P0008.3 → P0010.2.4 token-name expansion).
+    // Match either variant of the operator hint.
+    await expect(connectPromise).rejects.toThrow(
+      /If HERMES_(DASHBOARD_SESSION|GATEWAY)_TOKEN/,
+    );
     // No second WebSocket is constructed when the retry path cannot get a token.
     expect(MockWebSocket.instances).toHaveLength(1);
   });

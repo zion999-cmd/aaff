@@ -21,6 +21,13 @@ import {
   deriveSituationLifecycle,
   SITUATION_LIFECYCLE_LABEL,
   INVESTIGATION_STATUS_LABEL,
+  // P0010.2.4 (ADR-060 audit B) — Investigation display state + banners.
+  // Replaces the fuzzy `invBlockedRuntimeFailure` string-match logic that
+  // used to contradict itself ("auto-recover, no human action" while a
+  // clear-block button was shown). All 6 states + their banner copy
+  // live in presentation.js — app.js only reads the state and renders.
+  deriveInvestigationDisplayState,
+  INVESTIGATION_DISPLAY_BANNER,
   deriveObservationCommitment,
   getSourcePopoverData,
   renderSourcePopoverHtml,
@@ -1601,46 +1608,38 @@ async function loadSituationDetail(situationId) {
       }
       if (btn) btn.style.display = 'none';
     } else {
-      // Honest non-completed states — NEVER old Pattern impersonating Understanding.
-      // The MAIN body is the Agent lifecycle (what it will produce), not Signal
-      // attribution. Pattern Engine stays as a collapsed 信号归因 in the Trace.
+      // P0010.2.4 (ADR-060 audit B) — Single source of truth for the
+      // banner copy + button visibility. Replaces the previous
+      // invStatus / invBlockedRuntimeFailure string-match block that
+      // contradicted itself when a Situation was blocked.
+      //
+      // The runtime drives the state via `deriveInvestigationDisplayState`;
+      // the banner copy + showClearBlock flag come from
+      // INVESTIGATION_DISPLAY_BANNER (presentation.js). NO inline string
+      // matches here.
       const willShow = '<div class="muted" style="font-size:0.75rem;margin-top:6px">完成后将显示：当前判断 / 已确认 / 当前假设 / 还不知道 / 下一步调查 / 建议</div>';
+      const displayState = deriveInvestigationDisplayState(
+        invData,
+        invBlockedRuntimeFailure,
+        invConsecutiveFailures,
+      );
+      const banner = INVESTIGATION_DISPLAY_BANNER[displayState] || INVESTIGATION_DISPLAY_BANNER.pending;
       if (uEl) {
-        if (invStatus === 'investigating') {
-          uEl.innerHTML = '<p class="muted">🔍 Agent 正在调查此 Situation（读取知识 → 提出下一问题 → 获取证据 → 更新判断），完成后自动更新此页面...</p>' + willShow;
-        } else if (invBlockedRuntimeFailure) {
-          // P0010.2.2 — operator-attention surface. The runtime has
-          // retried 3 times without success (and there is no
-          // accept/reject/override decision that resets the counter).
-          // Show the recovery button so the operator can acknowledge
-          // the block and resume the auto-recovery path.
-          uEl.innerHTML = '<p class="muted" style="color:var(--warning)">⚠ 自动调查连续失败 ' + escHtml(String(invConsecutiveFailures)) +
-            ' 次 — 需要检查 Runtime / Hermes 是否可用。<br/><small>点击下方按钮可手动重置失败计数，让 Runtime 调度下一轮调查。</small></p>' + willShow;
-        } else if (invStatus === 'failed') {
-          // P0010.1 Productization: humanize the raw error string in business mode.
-          // P0010.2.2 — keep the "auto-recover on next tick" copy; the button
-          // is hidden in this state because the runtime IS already recovering.
-          var humanReason = humanizeError(invData?.error, state.panelMode);
-          uEl.innerHTML = '<p class="muted" style="color:var(--warning)">⚠ ' + escHtml(humanReason) +
-            '。<br/><small>系统会在下一轮 Runtime 调度中自动恢复调查，无需人工点击。</small></p>' + willShow;
-        } else {
-          // P0010.2.2 — no investigation yet. The situation is in the
-          // Loop's recovery queue (or the producer's next-tick output);
-          // the operator does NOT need to click anything for the
-          // runtime to drive it.
-          uEl.innerHTML = '<p class="muted placeholder">等待 Agent 自动调查（已进入 Runtime 调度队列）。</p>' + willShow;
-        }
+        // Blocked state uses warning color; others use muted.
+        var colorCss = displayState === 'blocked' ? 'color:var(--warning)' : '';
+        uEl.innerHTML =
+          '<p class="muted" style="' + colorCss + '">' + banner.headline +
+          (banner.detail ? '<br/><small>' + banner.detail + '</small>' : '') +
+          '</p>' + willShow;
       }
-      // P0010.2.2 — the "立即调查（恢复）" button is a RECOVERY control only,
-      // NOT a normal primary entry. In the normal flow (no investigation
-      // yet / failed / investigating) the runtime is already self-healing
-      // on its own tick, so the button is hidden. It is shown ONLY when
-      // the runtime is `blocked_runtime_failure` and the operator must
-      // explicitly acknowledge the block to resume.
       if (btn) {
-        if (invBlockedRuntimeFailure) {
+        if (banner.showClearBlock) {
+          // P0010.2.4 — explicit "解除阻塞并重新调度" copy. The button
+          // is ONLY ever shown in the blocked state. It posts to
+          // /clear-block which resets the failure counter and lets the
+          // next Loop tick re-investigate.
           btn.style.display = 'block';
-          btn.textContent = '🔄 重试调查（清除阻塞）';
+          btn.textContent = '解除阻塞并重新调度';
         } else {
           btn.style.display = 'none';
         }
@@ -2322,17 +2321,18 @@ async function startInvestigation(situationId) {
   const btn = document.getElementById('startInvestigation_' + escHtml(situationId));
   if (!uEl) return;
 
-  // P0010.2.2 — branch on the button's current text (the only signal we
-  // have at click time without re-querying the API). The button is shown
-  // in two distinct states:
-  //   - "🔄 重试调查（清除阻塞）" → POST /clear-block (operator override,
+  // P0010.2.4 (ADR-060) — branch on the button's current text (the
+  // only signal we have at click time without re-querying the API).
+  // The button is shown in two distinct states:
+  //   - "解除阻塞并重新调度" → POST /clear-block (operator override,
   //     resets the failure counter; the next Loop tick drives the
-  //     actual investigation).
-  //   - "🔍 交给 Agent 调查"      → POST /investigate (legacy manual
+  //     actual investigation). Shown ONLY in the `blocked` display
+  //     state.
+  //   - "🔍 交给 Agent 调查"  → POST /investigate (legacy manual
   //     trigger, kept for the rare case the operator wants to fire a
-  //     turn immediately without waiting for the Loop).
-  // The previous "🔄 立即调查（恢复）" copy was a contradiction
-  // (the runtime was already recovering) and is gone.
+  //     turn immediately without waiting for the Loop). The previous
+  //     "🔄 立即调查（恢复）" copy was a contradiction
+  //     (the runtime was already recovering) and is gone.
   var isClearBlock = btn && btn.textContent && btn.textContent.indexOf('清除阻塞') !== -1;
 
   if (isClearBlock) {
@@ -2398,19 +2398,48 @@ async function startInvestigation(situationId) {
   }
 }
 
+// P0010.2.4 (ADR-060 audit C) — Render the interaction surface as TWO
+// clearly-labeled button rows:
+//   - "判断反馈" (judgment feedback)     — non-blocking
+//   - "建议处理" (recommendation disposition) — non-blocking, NEVER
+//     triggers external execution
+//
+// The grouped options come from `window.groupOptionsBySection()`
+// (defined in interaction-grammar.js, which is the single source of
+// truth for the 6 buttons). Each row reads its label from
+// `INTERACTION_SECTIONS[section].label`.
+//
+// We index into the flat `INTERACTION_OPTIONS` array (not the grouped
+// objects) when calling `handleIntervention` so downstream code keeps
+// using a single canonical lookup.
 function renderInteractionSurface(situationId) {
-  var sectionLabels = { judgment: 'Agent 判断', suggestion: 'Agent 建议', action: '你准备怎么处理？' };
+  var groups = (window.groupOptionsBySection && window.groupOptionsBySection())
+    || { judgment: [], suggestion: [] };
+  var sections = window.INTERACTION_SECTIONS || {};
   var options = window.INTERACTION_OPTIONS || [];
   var html = '<div class="interaction-surface">';
-  Object.keys(sectionLabels).forEach(function(section) {
-    var sectionOptions = options.filter(function(o) { return o.section === section; });
+  // Iterate in a fixed, section-driven order so the UI never depends
+  // on the insertion order of object keys (which is not guaranteed).
+  ['judgment', 'suggestion'].forEach(function(section) {
+    var sectionOptions = groups[section] || [];
     if (sectionOptions.length === 0) return;
-    html += '<div class="interaction-group">' +
-      '<span class="interaction-label">' + sectionLabels[section] + '</span>' +
+    var meta = sections[section] || { label: section, detail: '' };
+    html += '<div class="interaction-group" data-section="' + escHtml(section) + '">' +
+      '<div class="interaction-group-label">' +
+        '<span class="interaction-label">' + escHtml(meta.label) + '</span>' +
+        (meta.detail ? '<span class="interaction-detail muted">' + escHtml(meta.detail) + '</span>' : '') +
+      '</div>' +
       '<div class="interaction-buttons">';
     sectionOptions.forEach(function(o) {
       var idx = options.indexOf(o);
-      html += '<button class="interaction-btn" onclick="handleIntervention(\'' + situationId + '\', ' + idx + ')">' + escHtml(o.label) + '</button>';
+      if (idx < 0) return;
+      // data-* attributes let a future test or accessibility layer
+      // assert that the suggestion row carries executionDisabled=true.
+      html += '<button class="interaction-btn" data-section="' + escHtml(section) + '"' +
+        ' data-grammar="' + escHtml(o.grammarType) + '"' +
+        ' data-execution-disabled="' + (o.executionDisabled === true ? 'true' : 'false') + '"' +
+        ' onclick="handleIntervention(\'' + situationId + '\', ' + idx + ')">' +
+        escHtml(o.label) + '</button>';
     });
     html += '</div></div>';
   });
@@ -2420,6 +2449,14 @@ function renderInteractionSurface(situationId) {
 
 // Handle an interaction button click: prompt for text if required, then submit
 // the structured intervention (grammar content + summary).
+//
+// P0010.2.4 (ADR-060 audit C) — every produced intervention is explicitly
+// non-blocking on the UI side. The runtime never pauses on account of a
+// judgment/suggestion click; the next Loop tick proceeds normally. The
+// structured `content.executionDisabled` and `content.decision` fields
+// are passed through to the server so the producer / consumer contract
+// is honored end-to-end (see formatPriorHumanGuidance in
+// apps/ecommerce/runtime/investigation/prompt.ts).
 function handleIntervention(situationId, optionIndex) {
   var option = (window.INTERACTION_OPTIONS || [])[optionIndex];
   if (!option) return;
@@ -2444,6 +2481,13 @@ function handleIntervention(situationId, optionIndex) {
     }
   }
   var summary = window.buildInterventionSummary(option, text);
+  // Forward the section + summaryKind so the server (and the next-turn
+  // consumer) can read them. P0010.2.4 hard scope: the "accept" branch
+  // on a suggestion-section intervention records the operator's
+  // disposition; it MUST NOT trigger external execution. `section` and
+  // `summaryKind` are carried as content metadata for the producer.
+  content._section = option.section || null;
+  content._summaryKind = option.summaryKind || null;
   submitStructuredIntervention(situationId, option.grammarType, summary, content);
 }
 

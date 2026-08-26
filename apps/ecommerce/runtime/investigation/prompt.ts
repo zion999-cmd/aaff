@@ -34,6 +34,17 @@ export const formatSituationEvidence = (ctx: LearningContext | null): string => 
  * override either side. response / decision are feedback on the Agent's
  * prior output, not factual constraints on Evidence.
  *
+ * P0010.2.4 (ADR-060 audit C) — the consumer must also expose:
+ *   - the section ("judgment" | "suggestion") the operator was responding
+ *     to, so the next turn can distinguish "I disagree with your reading"
+ *     from "I'm not acting on your recommendation";
+ *   - the executionDisabled invariant for any decision/suggestion
+ *     intervention — a hard re-affirmation that the operator's `accept`
+ *     records a disposition and does NOT trigger external execution;
+ *   - the appliesTo target (recommendationId / agentActivityId) when
+ *     present, so the Agent can map a decision back to the prior output
+ *     it was responding to.
+ *
  * Type-specific payload shape (per InterventionContentSchema):
  *   response           — evaluation: agree | disagree | partial | uncertain
  *                         (feedback, NOT a factual constraint on Evidence)
@@ -42,8 +53,10 @@ export const formatSituationEvidence = (ctx: LearningContext | null): string => 
  *   context_supplement — information the system cannot observe
  *                         (important human input, weigh with Evidence)
  *   decision           — accept | reject | defer | override | no_action
- *                         (feedback, NOT a factual constraint on Evidence)
- *   action_intent      — skipped here: outbound action is NOT a current slice
+ *                         (feedback on a prior recommendation; executionDisabled
+ *                          MUST be honored — no external action is implied)
+ *   (P0010.1 ADR-047 removed `action_intent` from the union; outbound
+ *    action is no longer a current guidance input.)
  *
  * Returns a single string starting with a "(no prior human guidance)" sentinel
  * when there are no interventions, so the section is always present and the
@@ -55,16 +68,36 @@ export const formatPriorHumanGuidance = (ctx: LearningContext | null): string =>
     return '(no prior human guidance — this is the first investigation turn)';
   }
 
+  // P0010.2.4 — once we have surfaced any decision-section intervention,
+  // we emit a hard guard line so the next-turn Agent never reads
+  // `decision === 'accept'` as a cue for external execution.
+  let sawSuggestionDecision = false;
+
   const lines: string[] = [];
   for (const i of interventions) {
     const content = (i.content ?? {}) as Record<string, unknown>;
     const when = (i.timestamp || '').slice(0, 16);
+    // P0010.2.4 — read the section the operator was responding to.
+    // The UI writes `content._section`; the schema accepts arbitrary
+    // keys on the `content` record (`z.record(z.string(), z.unknown())`),
+    // so this round-trips end-to-end.
+    const section = (content['_section'] as string | undefined) ?? null;
+    const summaryKind = (content['_summaryKind'] as string | undefined) ?? null;
+    const sectionLabel =
+      section === 'judgment' ? '判断反馈'
+      : section === 'suggestion' ? '建议处理'
+      : null;
+    if (section === 'suggestion' && i.type === 'decision') {
+      sawSuggestionDecision = true;
+    }
+    const sectionTag = sectionLabel ? `[${sectionLabel}] ` : '';
+    const kindTag = summaryKind ? `{${summaryKind}} ` : '';
     switch (i.type) {
       case 'response': {
         const eval_ = (content['evaluation'] as string) || 'unspecified';
         const rationale = content['rationale'] as string | undefined;
         lines.push(
-          `- [${when}] 用户对 Agent ${eval_}` +
+          `- [${when}] ${sectionTag}${kindTag}用户对 Agent ${eval_}` +
             (rationale ? ` — 理由: ${rationale}` : ''),
         );
         break;
@@ -73,7 +106,7 @@ export const formatPriorHumanGuidance = (ctx: LearningContext | null): string =>
         const correction = (content['correction'] as string) || '(no correction text)';
         const correctedValue = content['correctedValue'];
         lines.push(
-          `- [${when}] 用户纠正: ${correction}` +
+          `- [${when}] ${sectionTag}${kindTag}用户纠正: ${correction}` +
             (correctedValue !== undefined ? ` (正确值: ${JSON.stringify(correctedValue)})` : ''),
         );
         break;
@@ -82,26 +115,55 @@ export const formatPriorHumanGuidance = (ctx: LearningContext | null): string =>
         const information = (content['information'] as string) || '(no information text)';
         const aspect = (content['supplements'] as Record<string, unknown> | undefined)?.['situationAspect'] as string | undefined;
         lines.push(
-          `- [${when}] 用户补充${aspect ? ` (${aspect})` : ''}: ${information}`,
+          `- [${when}] ${sectionTag}${kindTag}用户补充${aspect ? ` (${aspect})` : ''}: ${information}`,
         );
         break;
       }
       case 'decision': {
         const decision = (content['decision'] as string) || 'unspecified';
         const rationale = content['rationale'] as string | undefined;
+        // P0010.2.4 — surface the `appliesTo` target so the Agent can map
+        // a decision back to the prior recommendation/agent-activity it
+        // was responding to. This is the only path by which the next
+        // turn can know "which suggestion was accepted".
+        const appliesTo = content['appliesTo'] as
+          | { agentActivityId?: string; recommendationId?: string; signalId?: string }
+          | undefined;
+        const targetParts: string[] = [];
+        if (appliesTo?.recommendationId) targetParts.push(`recommendation=${appliesTo.recommendationId}`);
+        if (appliesTo?.agentActivityId) targetParts.push(`agentActivity=${appliesTo.agentActivityId}`);
+        if (appliesTo?.signalId) targetParts.push(`signal=${appliesTo.signalId}`);
+        const targetStr = targetParts.length ? ` (目标: ${targetParts.join('; ')})` : '';
+        // P0010.2.4 — for any decision intervention originating in the
+        // suggestion section, re-affirm the executionDisabled invariant
+        // inline. The Agent MUST NOT interpret `accept` as execution
+        // intent. Action Engine / Approval / external sending are
+        // explicitly out of scope for P0010.2.4.
+        const execGuard =
+          section === 'suggestion' ? ' (no-execution: 仅记录处置，不触发外部执行)' : '';
         lines.push(
-          `- [${when}] 用户已决定: ${decision}` +
+          `- [${when}] ${sectionTag}${kindTag}用户已决定: ${decision}${targetStr}${execGuard}` +
             (rationale ? ` — 理由: ${rationale}` : ''),
         );
         break;
       }
-      case 'action_intent':
-        // Outbound action — explicitly out of scope of P0010.1 inbound feedback.
-        lines.push(`- [${when}] 用户曾表达行动意图 (outbound action — not a current guidance input)`);
-        break;
+      // P0010.1 Final Repair (ADR-047) — `action_intent` is removed from
+      // the discriminated union of `type`, so this case is now
+      // unreachable at the type level. Kept here as a comment so a
+      // future contributor who re-introduces it knows the consumer
+      // contract: outbound action is NOT a current guidance input.
       default:
         lines.push(`- [${when}] 用户输入 (${i.type}): ${i.summary || ''}`);
     }
+  }
+  // P0010.2.4 — when ANY suggestion-section decision has been recorded,
+  // prepend a guard line so the next-turn Agent is told up-front that
+  // the operator's `accept` is a disposition, not an execution cue.
+  if (sawSuggestionDecision) {
+    lines.unshift(
+      '> [P0010.2.4 硬约束] 上述 [建议处理] 块中的所有 `accept` 均为操作员处置记录；' +
+        'Agent 不得据此触发任何外部执行（Action Engine / Approval / 外发均不在 P0010.2.4 范围内）。',
+    );
   }
   return lines.join('\n');
 };

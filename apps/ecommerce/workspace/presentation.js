@@ -264,6 +264,87 @@ export const SITUATION_LIFECYCLE_LABEL = Object.freeze({
   closed:         '✓ 已结束（保留 · 尚无可触发条件）',
 });
 
+/**
+ * P0010.2.4 (ADR-060 audit B) — Investigation DISPLAY state.
+ *
+ * The Operator-facing banner for "what is the runtime doing with this
+ * situation's investigation" is a SEPARATE state from the Situation
+ * lifecycle. The previous code conflated the two (string-matched
+ * `invBlockedRuntimeFailure` and `inv.status` separately, leading to
+ * contradictions like "auto-recover, no human action" while a
+ * "clear-block" button was shown).
+ *
+ * This helper takes the structured `investigation` block + the
+ * `blockedRuntimeFailure` flag surfaced by the runtime and returns
+ * exactly ONE of 6 states. The banner copy + button visibility is
+ * driven entirely by the returned state — no string guesswork.
+ */
+export function deriveInvestigationDisplayState(investigation, blockedRuntimeFailure, consecutiveFailures) {
+  // 1) Operator override path — wins over everything else.
+  if (blockedRuntimeFailure === true) return 'blocked';
+
+  if (!investigation) return 'pending';
+  var status = investigation.status || 'pending';
+  if (status === 'investigating') return 'investigating';
+  if (status === 'completed') return 'completed';
+  if (status === 'pending') return 'pending';
+  if (status === 'failed') {
+    // below threshold + has prior cognition → still being watched
+    // (the runtime will retry; we're NOT blocked).
+    if (hasPriorValidCognition(investigation)) return 'recoverable';
+    return 'recoverable';
+  }
+  // Unknown status — do NOT default to "recoverable" (would lie).
+  return 'pending';
+}
+
+/**
+ * P0010.2.4 (ADR-060 audit B) — Banner copy for each display state.
+ *
+ * Each entry is the canonical HTML snippet. The runtime drives the
+ * state; this map is the ONLY source of banner copy. If you find
+ * yourself wanting to inline string-match copy in app.js, add a state
+ * here instead.
+ */
+export const INVESTIGATION_DISPLAY_BANNER = Object.freeze({
+  pending: {
+    headline: '等待 Agent 自动调查（已进入 Runtime 调度队列）',
+    detail: 'Runtime 将自动安排下一轮调查，无需人工操作。',
+    showClearBlock: false,
+    showLegacyStart: false,
+  },
+  recoverable: {
+    headline: 'Runtime 正在自动恢复调查（无需人工操作）',
+    detail: 'Runtime 将在下一轮 tick 重新尝试。',
+    showClearBlock: false,
+    showLegacyStart: false,
+  },
+  investigating: {
+    headline: 'Agent 正在调查中',
+    detail: '请稍候。Runtime 已锁定该 Situation 的调查上下文。',
+    showClearBlock: false,
+    showLegacyStart: false,
+  },
+  blocked: {
+    headline: '⚠ 自动调查已暂停',
+    detail: '已达连续失败阈值。**请执行「解除阻塞并重新调度」让 Runtime 重新安排下一轮调查**。',
+    showClearBlock: true,
+    showLegacyStart: false,
+  },
+  completed: {
+    headline: '调查已完成',
+    detail: '查看右栏的判断与建议；如需复审请使用判断反馈按钮。',
+    showClearBlock: false,
+    showLegacyStart: false,
+  },
+  failed_unrecoverable: {
+    headline: 'Runtime 将在下一轮 tick 重试',
+    detail: '未达到阻塞阈值，无需人工操作。',
+    showClearBlock: false,
+    showLegacyStart: false,
+  },
+});
+
 /** Investigation secondary status (the "Investigation attempt" sub-state).
  *  Mirrors the existing 4 in shared/schemas/investigation.ts. */
 export const INVESTIGATION_STATUS_LABEL = Object.freeze({
