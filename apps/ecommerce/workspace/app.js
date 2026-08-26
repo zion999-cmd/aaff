@@ -2229,6 +2229,7 @@ function renderCurrentUnderstanding(container, inv) {
   // precondition) strictly require `status === 'completed'`. The prior
   // valid cognition is still shown in the Understanding surface (with
   // a "最新调查未完成" hint) — only the button is suppressed.
+  const rec = inv.recommendation;
   if (inv.status !== 'completed') {
     // Latest attempt is not a completed investigation. Show the prior
     // valid cognition (if any) and an honest state hint, but do NOT
