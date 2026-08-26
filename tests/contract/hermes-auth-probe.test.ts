@@ -1,11 +1,21 @@
 // P0010.2.4 (ADR-060) — Contract test for `probeAuthRequired`.
 //
-// Pins the behavior of the `/api/health` probe that decides whether the
-// session client should connect with a token or skip it entirely:
-//   - `auth_required: false` → connect without token (dev / Hermes 0.20.x)
-//   - `auth_required: true`  → require token resolution
-//   - probe failure (HTTP error / network error) → treat as `auth_required: true`
-//     (we don't silently connect to an unauthenticated Hermes we couldn't reach)
+// Pins the behavior of the `/api/health` probe. The probe is **diagnostic
+// only**: its `auth_required` result does NOT control whether the WS
+// upgrade sends `?token=`. Hermes 0.20.5's `_ws_auth_reason` (web_server.py
+// :16313-16427) validates `?token=<_SESSION_TOKEN>` in BOTH `auth_required:
+// true` AND `auth_required: false` (loopback) modes. The probe's role is
+// limited to:
+//   - log metadata (the `authRequired` field in `HermesConnectInfo`)
+//   - the actionable missing-token error message
+//
+// Probe behavior pinned here:
+//   - `auth_required: false` → probe returns authRequired=false (informational)
+//   - `auth_required: true`  → probe returns authRequired=true
+//   - missing `auth_required` field → defaults to true (safe-by-default)
+//   - probe failure (HTTP error / network error) → treat as
+//     `auth_required: true, probeFailed: true` (we don't assume
+//     unauthenticated when we can't reach the server)
 //   - per-port cache (TTL 30s) — second call within TTL does not re-fetch
 //   - `forceRefresh: true` bypasses the cache
 //
@@ -57,7 +67,7 @@ beforeEach(() => {
   resetHealthCache();
 });
 
-describe('probeAuthRequired — auth_required: false (the dev case)', () => {
+describe('probeAuthRequired — auth_required: false (loopback / dev case)', () => {
   it('returns authRequired=false for Hermes that exports auth_required:false', async () => {
     const r = await probeAuthRequired(`ws://127.0.0.1:${port}/api/ws`);
     expect(r.authRequired).toBe(false);

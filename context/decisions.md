@@ -1419,3 +1419,137 @@ Runtime Kernel 不属于 HermesAgent 内部。它是 agentFabric 的公共执行
   - `tests/unit/workspace/timeline-proxy-annotation.test.ts` (NEW, G-2)
 
 - **Next**: NONE per user spec. The slice explicitly stops here. P0010.3 / Terminal Lifecycle / Resolution Engine / Final Outcome / Situation Archive / any of the forbidden list remain out of scope until the user reviews this commit and approves the next move.
+
+## ADR-061: P0010.2.4 Review Repair — Token Cache Honesty, Recommendation appliesTo Gap, Display-State Honesty, "feedback ≠ wake" Boundary
+
+- **日期**: 2026-08-27
+- **状态**: Accepted（typecheck 19 baseline, 0 新增；961 passed / 2 pre-existing flaky；D1 live 3/3 pass）
+- **来源**: 用户对 4c47461 ("P0010.2.4 Production Hermes Investigation + Human Interaction Repair") 的 review。Reviewer 找到 3 个 P0 + 1 个 P1 + 1 个 doc/code 矛盾，结论 "不能直接 PASS"。本 ADR 修复。
+
+**Reviewer findings + 修复**:
+
+### P0-1: `HERMES_GATEWAY_TOKEN` 不应该是 `/api/ws` session token 的 fallback
+
+**Reviewer 的诊断**:
+> token-resolver.ts 把 HERMES_DASHBOARD_SESSION_TOKEN fallback 到 HERMES_GATEWAY_TOKEN，但 audit 说明自己又写 "_SESSION_TOKEN 是 HERMES_DASHBOARD_SESSION_TOKEN || secrets.token_urlsafe(32)"，没有任何源码级证据 gateway token === _SESSION_TOKEN。live verify 用的是 dashboard token，不是 gateway token。所以 gateway fallback 没被真实 Hermes 验证。
+
+**Source-level proof**:
+- `hermes_cli/web_server.py:540`: `_SESSION_TOKEN = os.environ.get("HERMES_DASHBOARD_SESSION_TOKEN") or secrets.token_urlsafe(32)` — 只读 HERMES_DASHBOARD_SESSION_TOKEN。
+- `hermes_cli/web_server.py:16418-16423`: `_ws_auth_reason` 永远 `hmac.compare_digest(token.encode(), _SESSION_TOKEN.encode())`。
+- 整个 hermes_cli/web_server.py **无** `HERMES_GATEWAY_TOKEN` 引用。
+- 整个 hermes-agent 仓库唯一引用 `HERMES_GATEWAY_TOKEN` 的位置：`optional-skills/migration/openclaw-migration/scripts/openclaw_to_hermes.py:2566` — 那是 HTTP gateway 服务的 credential，**不是** `_SESSION_TOKEN`。
+
+**结论**: gateway fallback 是错误实现。Operator 设了 gateway token 走 `/api/ws` 会被 Hermes `_ws_auth_reason` 拒（403），但错误信息看起来像 "wrong token" 而不是真正的 "Hermes 内存里随机 token，我们读不到"。
+
+**修复**:
+1. `token-resolver.ts` 删除 `HERMES_GATEWAY_TOKEN` 路径。`ENV_TOKEN_NAMES` 只剩 `dashboard: 'HERMES_DASHBOARD_SESSION_TOKEN'`。
+2. `session-client.ts:connect` 的 `resolveToken()` 只查 dashboard env var + auto-discover。
+3. `discoverFromRunningServe` 不再 fallback 到 gateway 名字（只 dashboard）。
+4. 错误消息和 `missingTokenError` 文案不再 mention gateway token。
+5. `ResolveHermesTokenResult.source` 简化成 `env-dashboard | auto-dashboard | null`。
+
+### P0-1b: token cache 必须存真实 source，structured log 不得撒谎
+
+**Reviewer 的诊断**:
+> token-resolver 的 cache 只缓存 token，不缓存 source。`resolveHermesSessionTokenWithSource()` 命中 cache 时无论原来是 auto-dashboard 还是 auto-gateway，都返回 auto-dashboard。structured log 在 cache 命中后会报告错误 tokenSource。
+
+**修复**:
+1. `CacheEntry` 扩展为 `{ port, token, source }`，source 永远跟 token 一起写入。
+2. `resolveHermesSessionTokenWithSource` cache hit 返回 `cache.source`，不是 hardcoded `'auto-dashboard'`。
+3. `tests/unit/hermes/token-resolver-gateway.test.ts` 新增 `cache hit preserves the real auto-dashboard source` regression test。
+4. 整个测试文件重写：删除所有 `HERMES_GATEWAY_TOKEN` 接受路径测试；新增 2 个 regression test 证明 gateway token 在 env / serve env / `/proc` / 任何地方都**不被接受**。
+
+### P0-2: Recommendation schema 没有 stable ID，"decision 能 map 回原 recommendation" 是 test-only fake ID
+
+**Reviewer 的诊断**:
+> prompt.ts 新增 appliesTo.recommendationId / agentActivityId / signalId。声称"让下一轮 Agent 知道用户是在回应哪一条 recommendation"。但生产 UI 的 buildInterventionContent 对 decision 实际写的是 content.appliesTo = {}。整个 diff 没看到后续代码给它填真实 recommendationId。测试手工构造 appliesTo: { recommendationId: 'rec_abc123' }，证明 formatter 能打印它。
+
+**Schema-level proof**:
+- `shared/schemas/investigation.ts:55-65`: `RecommendationSchema = { recommendation, rationale, expectedOutcome, risks, prerequisites, humanNeeded }` — **无 id 字段**。
+- `shared/schemas/learning-context.ts:201-205`: `DecisionContentSchema.appliesTo = { agentActivityId?, recommendationId?, signalId? }` — schema 允许填，但 workspace 没源。
+- `shared/schemas/learning-context.ts:171-176`: `CorrectionContentSchema.corrects` 有 `signalId / agentActivityId / metricName / observationId` — 同样无 recommendationId。
+- `shared/schemas/learning-context.ts:186-189`: `ContextSupplementContentSchema.supplements` 有 `observationId / situationAspect` — 同样无 recommendationId。
+
+**结论**: workspace 没有源填 `appliesTo.recommendationId`；之前的"已完成 target mapping"宣称是 test-only 能力冒充 production 能力。
+
+**修复**:
+1. `interaction-grammar.js:buildInterventionContent` 注释明确写"workspace 不预填 appliesTo（Recommendation schema 无 id 字段）。当前是 [no-target-bound]"。
+2. `prompt.ts:formatPriorHumanGuidance` 当 `appliesTo` 为空时 render `[no-target-bound — 当前 schema 不支持绑定到具体 Recommendation]`。
+3. `tests/unit/investigation/feedback-consumption.test.ts`:
+   - 把所有 `recommendationId: 'rec_abc123'` / `'rec_xyz'` 加 `SYNTHETIC_` 前缀，明确标注是 synthetic test data（future case once Recommendation 获得 id）。
+   - 新增 2 个 test pin 生产行为：空 `appliesTo` → `[no-target-bound]` 文本，不 fabricate `recommendation=` / `agentActivity=`。
+4. 在 handoff.md 明确记录 "Recommendation 缺 id 是 blocker"。
+
+### P1: Investigation Display 有 dead state，`consecutiveFailures` 假装是 input
+
+**Reviewer 的诊断**:
+> deriveInvestigationDisplayState 宣称 6-state，实际 failed 永远返回 recoverable，failed_unrecoverable 没 return path，consecutiveFailures 参数没使用。**banner detail 里有 `**…**` markdown 但 app.js 是 textContent 渲染，UI 大概率显示字面 `**`**。
+
+**修复**:
+1. `InvestigationDisplayState` 从 6-state 收到 5-state：`pending / recoverable / investigating / blocked / completed`。删除 `failed_unrecoverable`（dead branch，无 return path）。
+2. `consecutiveFailures` 现在**真用**了：`INVESTIGATION_DISPLAY_BANNER.blocked.detail` 是 function 形式 `(consecutiveFailures, threshold) => string`。app.js 调用它传入实际 counter，让 operator 看到"已连续失败 5 次（阈值 3）"。
+3. `presentation.d.ts` 的 `detail` 类型扩展为 `string | ((n, t) => string)`，反映这个新形态。
+4. `INVESTIGATION_DISPLAY_BANNER.blocked.detail` 移除字面 `**...**`（app.js 的 textContent 路径会显示成 `*`），改成 plain text。
+5. `tests/unit/workspace/investigation-display-state.test.ts`:
+   - 删除 `failed_unrecoverable` 相关 assertions
+   - 新增 3 个 test pin blocked detail 是 function（typeof check + counter render + NaN/0 fallback）
+   - 新增 test 验证 `app.js` 调用 `typeof banner.detail === 'function'` path
+   - 新增 test 验证 `**` markdown 不在任何 banner detail path
+
+### Doc/code 矛盾清理
+
+**Reviewer 的诊断**:
+> session-client.ts 的 connect JSDoc 仍写 `auth_required:false → skip token / connect without token`，但下面实现和新审计已改成 "Hermes 0.20.5 无论 auth_required true/false，WS 都必须带 token"。token-resolver.ts 顶部注释也还有"auth_required:false 时 token bypass"的旧描述。测试 hermes-auth-probe.test.ts 的文件头同样写"false → connect without token"。
+
+**修复**:
+1. `session-client.ts:connect` JSDoc 重写为：probe 是 diagnostic only，Hermes 0.20.5 永远要求 `?token=<_SESSION_TOKEN>`。
+2. `session-client.ts:probeAuthRequired` JSDoc 重写为同样意思。
+3. `token-resolver.ts` 顶部注释删除 "auth_required:false 时 token bypass" 旧描述，改成"运行时把 token 写入 _SESSION_TOKEN，agentFabric 必须用同一 env var 才能读"。
+4. `tests/contract/hermes-auth-probe.test.ts` 文件头注释重写为"diagnostic only"语义。
+5. `tests/unit/hermes/session-client.test.ts` 和 `session-client-lazy-token.test.ts` 的 mock `ENV_TOKEN_NAMES` 删 `gateway` key。
+
+### 用户的额外问题: feedback ≠ wake
+
+**Reviewer 的诊断**:
+> feedback 被 Agent 消费 ≠ feedback 自动触发重新调查。P0010.2.4 主要证明"下一次调查发生时能读到反馈"，没看到 Human Intervention 写入后主动让 Runtime 把对应 Situation 重新列为 investigation candidate 的新 wiring。如果 P0010.2.2 已经通过其他机制把 intervention 视为 meaningful change，那可以 PASS；否则这仍是一个潜在断腿。
+
+**Source-level proof**:
+- `apps/ecommerce/runtime/loop/investigation-policy.ts:97-153`: 5 步决策树（no_evidence → waiting_human → blocked → new_situation → meaningful_new_evidence via contentHash change → legacy fallback）。**没有** "human intervention 触发" 这条。
+- `apps/ecommerce/runtime/loop/recovery-candidates.ts`: 恢复 scan 拣选 `no_investigation` / `failed_retryable` / `interrupted` — 都不是 intervention 触发。
+- `humanInterventions[]` **唯一**消费点：`apps/ecommerce/runtime/investigation/prompt.ts:formatPriorHumanGuidance` (P0007.2) — 出现在下一轮 `buildInvestigationPrompt` 里。
+
+**结论**: 当前确实没有 "intervention writes → Runtime re-evaluate" 的 wiring。Wake Engine / Event Bus 是后续 P0010.2.5+ 的事。
+
+**修复**:
+1. `prompt.ts:formatPriorHumanGuidance` JSDoc 新增"P0010.2.4 review repair — explicit feedback ≠ wake"段落，明确写：
+   - 写 human intervention **不会** 自己唤醒 Runtime loop
+   - Loop 重评估 only when (a) producer's contentHash change 或 (b) recovery scan 拣选
+   - Intervention 只在下一轮**自然** investigation turn 才被消费
+   - 若 operator 想让 feedback 立刻生效，必须等下一轮 contentHash change 或 recovery tick
+   - **不**声称 feedback loop 已闭合，直到 Wake Engine / Event Bus 存在
+2. `handoff.md` 的 Risks / known limits 段记录这条限制。
+
+**新测试**:
+- `tests/unit/hermes/token-resolver-gateway.test.ts` (重写) — 9 test pin "只 HERMES_DASHBOARD_SESSION_TOKEN，gateway 永远不接受"
+- `tests/unit/workspace/investigation-display-state.test.ts` (扩展) — +5 test pin 5-state contract + function detail form
+- `tests/unit/investigation/feedback-consumption.test.ts` (扩展) — +2 test pin production empty-appliesTo path
+- `tests/contract/hermes-auth-probe.test.ts` (header 重写) — pin diagnostic-only 语义
+
+**Live verify**:
+- D1 真 Hermes 0.20.5 (port 9120, `HERMES_DASHBOARD_SESSION_TOKEN=af_test_session_1787770893`) 重跑 — 3/3 pass，证明 review-repair 后 connect chain 仍然工作。
+
+**Files changed**:
+- `platform/runtime/hermes/token-resolver.ts` (P0-1, P0-1b)
+- `platform/runtime/hermes/session-client.ts` (P0-1, doc cleanup)
+- `platform/runtime/hermes/index.ts` (no source change, re-exports auto-update)
+- `apps/ecommerce/workspace/interaction-grammar.js` (P0-2 comment)
+- `apps/ecommerce/workspace/presentation.js` (P1)
+- `apps/ecommerce/workspace/presentation.d.ts` (P1)
+- `apps/ecommerce/workspace/app.js` (P1 detail function form)
+- `apps/ecommerce/runtime/investigation/prompt.ts` (P0-2 + feedback≠wake comment)
+- `tests/unit/hermes/token-resolver-gateway.test.ts` (重写)
+- `tests/unit/hermes/session-client.test.ts` (ENV_TOKEN_NAMES mock)
+- `tests/unit/hermes/session-client-lazy-token.test.ts` (ENV_TOKEN_NAMES mock + error message)
+- `tests/contract/hermes-auth-probe.test.ts` (header comment)
+- `tests/unit/workspace/investigation-display-state.test.ts` (扩展)
+- `tests/unit/investigation/feedback-consumption.test.ts` (扩展)

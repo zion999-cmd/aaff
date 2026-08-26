@@ -1,13 +1,25 @@
-// P0010.2.4 (ADR-060) — Token-resolver extensions:
-//   1. `HERMES_GATEWAY_TOKEN` env var is now accepted as a canonical fallback
-//      (Hermes 0.20.x exports this name, not `HERMES_DASHBOARD_SESSION_TOKEN`).
-//   2. `resolveHermesSessionTokenWithSource` returns the source of the token
-//      so the session-client's structured `HermesConnectInfo` log can be
-//      emitted without leaking the token value.
+// P0010.2.4 (ADR-060) + P0010.2.4 review repair (ADR-061) —
+// Token-resolver tests.
+//
+// Pinned contract (post-review-repair):
+//   1. The ONLY env var that maps to Hermes' `_SESSION_TOKEN` is
+//      `HERMES_DASHBOARD_SESSION_TOKEN` (Hermes 0.20.5
+//      `web_server.py:540`). `HERMES_GATEWAY_TOKEN` was previously
+//      accepted as a fallback; that was WRONG — it is the credential for
+//      Hermes' separate HTTP gateway service, not the WS session token.
+//      Sending it on `/api/ws` would 403, and the error would look like
+//      "wrong token" instead of the real "Hermes generated an in-memory
+//      random token we can't read" cause. ADR-061 removed the gateway
+//      path entirely.
+//   2. `resolveHermesSessionTokenWithSource` returns the source so the
+//      session-client's structured `HermesConnectInfo` log can be emitted
+//      without leaking the token value.
+//   3. The auto-discovery cache stores the source so a cache hit returns
+//      the real source (not a hardcoded `auto-dashboard`).
 //
 // These tests build on the existing `tests/unit/hermes/token-resolver.test.ts`
-// infrastructure (mocks for child_process and fs/promises) and only add the
-// new env-var paths and the WithSource assertions.
+// infrastructure (mocks for child_process and fs/promises) and cover the
+// new WithSource path + the cache-source-honesty contract.
 
 import { vi, describe, it, expect, beforeEach, afterEach } from 'vitest';
 
@@ -32,7 +44,6 @@ import {
 } from '#platform/runtime/hermes/token-resolver.js';
 
 const ENV_DASHBOARD = ENV_TOKEN_NAMES.dashboard;
-const ENV_GATEWAY = ENV_TOKEN_NAMES.gateway;
 
 interface ExecFileArgs {
   file: unknown;
@@ -72,18 +83,15 @@ function mockLinuxProcEnv(env: Record<string, string>): void {
   readFileMock.mockResolvedValueOnce(Buffer.from(text, 'utf8'));
 }
 
-describe('P0010.2.4 — HERMES_GATEWAY_TOKEN env-var fallback', () => {
+describe('P0010.2.4 — HERMES_DASHBOARD_SESSION_TOKEN is the single canonical env var', () => {
   let originalDashboard: string | undefined;
-  let originalGateway: string | undefined;
   let originalPlatform: NodeJS.Platform;
 
   beforeEach(() => {
     execFileMock.mockReset();
     readFileMock.mockReset();
     originalDashboard = process.env[ENV_DASHBOARD];
-    originalGateway = process.env[ENV_GATEWAY];
     delete process.env[ENV_DASHBOARD];
-    delete process.env[ENV_GATEWAY];
     originalPlatform = process.platform;
     resetTokenCache();
   });
@@ -91,80 +99,83 @@ describe('P0010.2.4 — HERMES_GATEWAY_TOKEN env-var fallback', () => {
   afterEach(() => {
     if (originalDashboard === undefined) delete process.env[ENV_DASHBOARD];
     else process.env[ENV_DASHBOARD] = originalDashboard;
-    if (originalGateway === undefined) delete process.env[ENV_GATEWAY];
-    else process.env[ENV_GATEWAY] = originalGateway;
     Object.defineProperty(process, 'platform', { value: originalPlatform, configurable: true });
   });
 
-  it('HERMES_GATEWAY_TOKEN is accepted when HERMES_DASHBOARD_SESSION_TOKEN is unset', async () => {
-    process.env[ENV_GATEWAY] = 'gateway-secret';
+  it('returns the dashboard env var when set', async () => {
+    process.env[ENV_DASHBOARD] = 'dashboard-secret';
     const result = await resolveHermesSessionToken();
-    expect(result).toBe('gateway-secret');
+    expect(result).toBe('dashboard-secret');
     expect(execFileMock).not.toHaveBeenCalled();
   });
 
-  it('HERMES_DASHBOARD_SESSION_TOKEN still wins when both are set (priority preserved)', async () => {
-    process.env[ENV_DASHBOARD] = 'dashboard-secret';
-    process.env[ENV_GATEWAY] = 'gateway-secret';
+  it('does NOT accept HERMES_GATEWAY_TOKEN as a session token (regression)', async () => {
+    // Set only HERMES_GATEWAY_TOKEN (the HTTP gateway credential) and
+    // confirm resolveHermesSessionToken does NOT pick it up.
+    process.env.HERMES_GATEWAY_TOKEN = 'gateway-secret';
+    // Make sure no serve is discoverable on 9119.
+    setExecResponse((c) => c.file === 'lsof', { stdout: '' });
     const result = await resolveHermesSessionToken();
-    expect(result).toBe('dashboard-secret');
+    expect(result).toBeUndefined();
+    delete process.env.HERMES_GATEWAY_TOKEN;
   });
 
-  it('empty HERMES_GATEWAY_TOKEN falls through to auto-discovery', async () => {
-    process.env[ENV_GATEWAY] = '';
-    Object.defineProperty(process, 'platform', { value: 'darwin', configurable: true });
-    mockLsofPid('79723');
-    mockDarwinPsEnv({ [ENV_DASHBOARD]: 'serve-dashboard' });
-    const result = await resolveHermesSessionToken();
-    expect(result).toBe('serve-dashboard');
-  });
-
-  it('auto-discovers HERMES_GATEWAY_TOKEN from running serve on macOS when dashboard is missing', async () => {
-    Object.defineProperty(process, 'platform', { value: 'darwin', configurable: true });
-    mockLsofPid('79723');
-    mockDarwinPsEnv({
-      [ENV_GATEWAY]: 'serve-gateway',
-      PATH: '/usr/bin:/bin',
-    });
-    const result = await resolveHermesSessionToken();
-    expect(result).toBe('serve-gateway');
-  });
-
-  it('prefers HERMES_DASHBOARD_SESSION_TOKEN over HERMES_GATEWAY_TOKEN in serve env (back-compat)', async () => {
+  it('auto-discovers HERMES_DASHBOARD_SESSION_TOKEN from running serve on macOS', async () => {
     Object.defineProperty(process, 'platform', { value: 'darwin', configurable: true });
     mockLsofPid('79723');
     mockDarwinPsEnv({
       [ENV_DASHBOARD]: 'serve-dashboard',
-      [ENV_GATEWAY]: 'serve-gateway',
+      PATH: '/usr/bin:/bin',
     });
     const result = await resolveHermesSessionToken();
     expect(result).toBe('serve-dashboard');
   });
 
-  it('auto-discovers HERMES_GATEWAY_TOKEN from /proc on Linux when dashboard is missing', async () => {
+  it('does NOT auto-discover HERMES_GATEWAY_TOKEN from serve env (regression)', async () => {
+    Object.defineProperty(process, 'platform', { value: 'darwin', configurable: true });
+    mockLsofPid('79723');
+    mockDarwinPsEnv({
+      HERMES_GATEWAY_TOKEN: 'serve-gateway',
+      PATH: '/usr/bin:/bin',
+    });
+    // No dashboard token in serve env — resolver should NOT pick the
+    // gateway value.
+    const result = await resolveHermesSessionToken();
+    expect(result).toBeUndefined();
+  });
+
+  it('auto-discovers HERMES_DASHBOARD_SESSION_TOKEN from /proc on Linux', async () => {
     Object.defineProperty(process, 'platform', { value: 'linux', configurable: true });
     mockLsofPid('4242');
     mockLinuxProcEnv({
-      [ENV_GATEWAY]: 'proc-gateway',
+      [ENV_DASHBOARD]: 'proc-dashboard',
       HOME: '/root',
     });
     const result = await resolveHermesSessionToken();
-    expect(result).toBe('proc-gateway');
+    expect(result).toBe('proc-dashboard');
+  });
+
+  it('does NOT auto-discover HERMES_GATEWAY_TOKEN from /proc (regression)', async () => {
+    Object.defineProperty(process, 'platform', { value: 'linux', configurable: true });
+    mockLsofPid('4242');
+    mockLinuxProcEnv({
+      HERMES_GATEWAY_TOKEN: 'proc-gateway',
+      HOME: '/root',
+    });
+    const result = await resolveHermesSessionToken();
+    expect(result).toBeUndefined();
   });
 });
 
-describe('P0010.2.4 — resolveHermesSessionTokenWithSource', () => {
+describe('P0010.2.4 review repair (ADR-061) — resolveHermesSessionTokenWithSource', () => {
   let originalDashboard: string | undefined;
-  let originalGateway: string | undefined;
   let originalPlatform: NodeJS.Platform;
 
   beforeEach(() => {
     execFileMock.mockReset();
     readFileMock.mockReset();
     originalDashboard = process.env[ENV_DASHBOARD];
-    originalGateway = process.env[ENV_GATEWAY];
     delete process.env[ENV_DASHBOARD];
-    delete process.env[ENV_GATEWAY];
     originalPlatform = process.platform;
     resetTokenCache();
   });
@@ -172,8 +183,6 @@ describe('P0010.2.4 — resolveHermesSessionTokenWithSource', () => {
   afterEach(() => {
     if (originalDashboard === undefined) delete process.env[ENV_DASHBOARD];
     else process.env[ENV_DASHBOARD] = originalDashboard;
-    if (originalGateway === undefined) delete process.env[ENV_GATEWAY];
-    else process.env[ENV_GATEWAY] = originalGateway;
     Object.defineProperty(process, 'platform', { value: originalPlatform, configurable: true });
   });
 
@@ -181,12 +190,6 @@ describe('P0010.2.4 — resolveHermesSessionTokenWithSource', () => {
     process.env[ENV_DASHBOARD] = 'a';
     const r = await resolveHermesSessionTokenWithSource();
     expect(r).toEqual({ token: 'a', source: 'env-dashboard' });
-  });
-
-  it('returns source=env-gateway when only HERMES_GATEWAY_TOKEN is set', async () => {
-    process.env[ENV_GATEWAY] = 'b';
-    const r = await resolveHermesSessionTokenWithSource();
-    expect(r).toEqual({ token: 'b', source: 'env-gateway' });
   });
 
   it('returns source=auto-dashboard when auto-discovery finds HERMES_DASHBOARD_SESSION_TOKEN', async () => {
@@ -197,14 +200,6 @@ describe('P0010.2.4 — resolveHermesSessionTokenWithSource', () => {
     expect(r).toEqual({ token: 'c', source: 'auto-dashboard' });
   });
 
-  it('returns source=auto-gateway when auto-discovery finds only HERMES_GATEWAY_TOKEN', async () => {
-    Object.defineProperty(process, 'platform', { value: 'darwin', configurable: true });
-    mockLsofPid('79723');
-    mockDarwinPsEnv({ [ENV_GATEWAY]: 'd' });
-    const r = await resolveHermesSessionTokenWithSource();
-    expect(r).toEqual({ token: 'd', source: 'auto-gateway' });
-  });
-
   it('returns token=undefined, source=null when nothing is found', async () => {
     Object.defineProperty(process, 'platform', { value: 'darwin', configurable: true });
     setExecResponse((c) => c.file === 'lsof', { stdout: '' });
@@ -213,28 +208,36 @@ describe('P0010.2.4 — resolveHermesSessionTokenWithSource', () => {
     expect(r.source).toBeNull();
   });
 
-  it('cached auto-discovery uses source=auto-dashboard on cache hit', async () => {
+  it('cache hit preserves the real auto-dashboard source (regression: no longer hardcoded)', async () => {
     Object.defineProperty(process, 'platform', { value: 'darwin', configurable: true });
     mockLsofPid('79723');
     mockDarwinPsEnv({ [ENV_DASHBOARD]: 'cached' });
     const first = await resolveHermesSessionTokenWithSource();
     expect(first.source).toBe('auto-dashboard');
-    // Second call should not re-shell-out.
+    // Second call should not re-shell-out AND should return the real
+    // cached source (not a hardcoded `auto-dashboard`). This was the
+    // P0010.2.4 review bug: the previous cache only stored the token,
+    // not the source, so the structured log lied on every cache hit.
     const second = await resolveHermesSessionTokenWithSource();
     expect(second).toEqual({ token: 'cached', source: 'auto-dashboard' });
     expect(execFileMock).toHaveBeenCalledTimes(2); // lsof + ps on the first call only
   });
 
-  it('returns the value via the legacy `resolveHermesSessionToken` (string only) for back-compat', async () => {
-    process.env[ENV_GATEWAY] = 'legacy-string';
-    const r = await resolveHermesSessionToken();
-    expect(r).toBe('legacy-string');
+  it('cached source survives a forceRefresh: false second call', async () => {
+    Object.defineProperty(process, 'platform', { value: 'darwin', configurable: true });
+    mockLsofPid('79723');
+    mockDarwinPsEnv({ [ENV_DASHBOARD]: 'cached-once' });
+    const a = await resolveHermesSessionTokenWithSource();
+    expect(a).toEqual({ token: 'cached-once', source: 'auto-dashboard' });
+    const b = await resolveHermesSessionTokenWithSource({ forceRefresh: false });
+    expect(b).toEqual({ token: 'cached-once', source: 'auto-dashboard' });
   });
 });
 
-describe('P0010.2.4 — ENV_TOKEN_NAMES export', () => {
-  it('exposes the two canonical env var names', () => {
+describe('P0010.2.4 review repair (ADR-061) — ENV_TOKEN_NAMES only exposes dashboard', () => {
+  it('exposes HERMES_DASHBOARD_SESSION_TOKEN as the only env var name', () => {
     expect(ENV_TOKEN_NAMES.dashboard).toBe('HERMES_DASHBOARD_SESSION_TOKEN');
-    expect(ENV_TOKEN_NAMES.gateway).toBe('HERMES_GATEWAY_TOKEN');
+    // The `gateway` key was removed in ADR-061.
+    expect(Object.keys(ENV_TOKEN_NAMES)).toEqual(['dashboard']);
   });
 });

@@ -45,6 +45,24 @@ export const formatSituationEvidence = (ctx: LearningContext | null): string => 
  *     present, so the Agent can map a decision back to the prior output
  *     it was responding to.
  *
+ * P0010.2.4 review repair (ADR-061) — explicit "feedback ≠ wake" note:
+ *   Writing a human intervention does NOT itself wake the Runtime loop.
+ *   The Loop's investigation policy (apps/ecommerce/runtime/loop/
+ *   investigation-policy.ts) re-evaluates a situation only when EITHER
+ *   the producer's new contentHash differs from the prior sidecar
+ *   (`meaningful_new_evidence`) OR the recovery scan picks the
+ *   situation up as `failed_retryable` / `interrupted` / `no_investigation`.
+ *   Human interventions are NOT a wake signal. They are only consumed by
+ *   the next investigation turn that happens to fire for some other
+ *   reason. This is the only path by which a human correction,
+ *   supplement, or decision reaches the next Agent. If the operator
+ *   wants their feedback to take effect *now*, they must wait for
+ *   the next natural investigation turn (or the next producer tick
+ *   that changes the contentHash). The Wake Engine / Event Bus that
+ *   would let an intervention trigger an immediate re-investigation is
+ *   explicitly out of scope for P0010.2.4. We do NOT claim the feedback
+ *   loop is closed until such a wake mechanism exists.
+ *
  * Type-specific payload shape (per InterventionContentSchema):
  *   response           — evaluation: agree | disagree | partial | uncertain
  *                         (feedback, NOT a factual constraint on Evidence)
@@ -122,10 +140,18 @@ export const formatPriorHumanGuidance = (ctx: LearningContext | null): string =>
       case 'decision': {
         const decision = (content['decision'] as string) || 'unspecified';
         const rationale = content['rationale'] as string | undefined;
-        // P0010.2.4 — surface the `appliesTo` target so the Agent can map
-        // a decision back to the prior recommendation/agent-activity it
-        // was responding to. This is the only path by which the next
-        // turn can know "which suggestion was accepted".
+        // P0010.2.4 review repair (ADR-061) — the `appliesTo` target
+        // surface is preserved for future schema support, but the
+        // CURRENT production workspace cannot populate it: the
+        // `Recommendation` schema (shared/schemas/investigation.ts:55-65)
+        // has no stable id field. We render `[no-target-bound]` when
+        // the target is empty so the Agent explicitly sees that the
+        // decision is not bound to a specific recommendation — it is a
+        // general disposition for the situation's current state, not
+        // a yes/no on a particular suggestion. Once Recommendation
+        // gains an id, `buildInterventionContent` will be updated to
+        // accept it and this surface will switch to
+        // `recommendation=<id>` automatically.
         const appliesTo = content['appliesTo'] as
           | { agentActivityId?: string; recommendationId?: string; signalId?: string }
           | undefined;
@@ -133,7 +159,9 @@ export const formatPriorHumanGuidance = (ctx: LearningContext | null): string =>
         if (appliesTo?.recommendationId) targetParts.push(`recommendation=${appliesTo.recommendationId}`);
         if (appliesTo?.agentActivityId) targetParts.push(`agentActivity=${appliesTo.agentActivityId}`);
         if (appliesTo?.signalId) targetParts.push(`signal=${appliesTo.signalId}`);
-        const targetStr = targetParts.length ? ` (目标: ${targetParts.join('; ')})` : '';
+        const targetStr = targetParts.length
+          ? ` (目标: ${targetParts.join('; ')})`
+          : ' (目标: [no-target-bound — 当前 schema 不支持绑定到具体 Recommendation])';
         // P0010.2.4 — for any decision intervention originating in the
         // suggestion section, re-affirm the executionDisabled invariant
         // inline. The Agent MUST NOT interpret `accept` as execution

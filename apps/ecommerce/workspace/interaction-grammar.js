@@ -51,7 +51,19 @@ var INTERACTION_SECTIONS = {
   suggestion: { label: '建议处理',   detail: '针对 Agent 给出的建议（仅记录，不触发外部执行）' },
 };
 
-/** Build the type-specific structured content per InterventionContentSchema. */
+/**
+ * Build the type-specific structured content per InterventionContentSchema.
+ *
+ * P0010.2.4 review repair (ADR-061) — the `decision` branch no longer
+ * pre-fills `content.appliesTo = {}`. The current `Recommendation` schema
+ * (shared/schemas/investigation.ts:55-65) has NO stable id field, so
+ * the workspace cannot bind a decision intervention to a specific
+ * recommendation without fabricating an identifier. Until the
+ * Recommendation schema gains an id, decision interventions carry an
+ * empty `appliesTo` and the next-turn prompt renders
+ * `[no-target-bound]`. Recording this gap here so the next reviewer
+ * does not re-add the fake binding.
+ */
 function buildInterventionContent(option, text) {
   var content = { type: option.grammarType };
   // P0010.2.4 — every produced intervention is non-blocking by default.
@@ -73,6 +85,13 @@ function buildInterventionContent(option, text) {
       break;
     case 'decision':
       content.decision = option.decision || 'accept';
+      // `appliesTo` is intentionally NOT pre-populated. The workspace
+      // has no source of `recommendationId` (the Recommendation schema
+      // has no id field). When the call site has a real target it
+      // should pass it in as a second arg via the future
+      // `buildDecisionInterventionContent(option, text, appliesTo)`
+      // entrypoint. For now, this empty object signals
+      // "no-target-bound" to the next-turn prompt.
       content.appliesTo = {};
       if (text) content.rationale = text;
       // P0010.2.4 — explicit re-affirmation that decision interventions

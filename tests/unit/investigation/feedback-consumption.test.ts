@@ -1,4 +1,5 @@
-// P0010.2.4 (ADR-060 audit C) — Human feedback consumption contract.
+// P0010.2.4 (ADR-060 audit C) + P0010.2.4 review repair (ADR-061) —
+// Human feedback consumption contract.
 //
 // Pin: for every intervention kind the UI can produce
 // (response / correction / context_supplement / decision), the next
@@ -19,8 +20,17 @@
 //     line so the next-turn Agent is told up-front that operator
 //     `accept` is a disposition, NOT an execution cue;
 //   - `appliesTo.{recommendationId|agentActivityId|signalId}` is
-//     surfaced so the Agent can map a decision back to the prior
-//     output it was responding to.
+//     surfaced when present. The current production workspace
+//     (`apps/ecommerce/workspace/interaction-grammar.js`) does NOT
+//     populate `appliesTo` because the `Recommendation` schema
+//     (shared/schemas/investigation.ts:55-65) has no stable id field.
+//     The two tests below exercise the formatter in BOTH shapes:
+//       (a) populated appliesTo — verifies the formatter renders
+//           `recommendation=<id>; agentActivity=<id>` correctly when
+//           a target is supplied;
+//       (b) empty appliesTo — verifies the formatter renders the
+//           honest `[no-target-bound]` text when no target is
+//           supplied. This is the current production case.
 
 import { describe, it, expect } from 'vitest';
 import {
@@ -110,6 +120,14 @@ describe('P0010.2.4 — context_supplement text round-trips into the next-turn p
 });
 
 describe('P0010.2.4 — decision/accept on a recommendation is consumed with appliesTo + no-execution guard', () => {
+  // NOTE — P0010.2.4 review repair (ADR-061):
+  // The `appliesTo` values used here are SYNTHETIC TEST DATA. The
+  // current production workspace cannot populate `appliesTo` because
+  // the `Recommendation` schema (shared/schemas/investigation.ts:55-65)
+  // has no stable id field. These tests verify the formatter's behavior
+  // WHEN a target is supplied — the future case once Recommendation
+  // gains an id. The "empty appliesTo" path (current production) is
+  // covered in the next describe block.
   it('emits a no-execution guard line AND the appliesTo target for an accept decision', () => {
     const intervention: HumanIntervention = {
       interventionId: 'int_d_acc_1',
@@ -119,7 +137,7 @@ describe('P0010.2.4 — decision/accept on a recommendation is consumed with app
       content: {
         type: 'decision',
         decision: 'accept',
-        appliesTo: { recommendationId: 'rec_abc123', agentActivityId: 'act_xyz789' },
+        appliesTo: { recommendationId: 'SYNTHETIC_rec_abc123', agentActivityId: 'SYNTHETIC_act_xyz789' },
         rationale: '先按这个思路推进',
         _section: 'suggestion',
         _summaryKind: 'decision',
@@ -136,8 +154,8 @@ describe('P0010.2.4 — decision/accept on a recommendation is consumed with app
     // Inline no-execution guard on the decision line
     expect(out).toContain('no-execution');
     // appliesTo target surfaces
-    expect(out).toContain('recommendation=rec_abc123');
-    expect(out).toContain('agentActivity=act_xyz789');
+    expect(out).toContain('recommendation=SYNTHETIC_rec_abc123');
+    expect(out).toContain('agentActivity=SYNTHETIC_act_xyz789');
     // rationale surfaces
     expect(out).toContain('先按这个思路推进');
     // The decision value itself surfaces
@@ -153,7 +171,7 @@ describe('P0010.2.4 — decision/accept on a recommendation is consumed with app
       content: {
         type: 'decision',
         decision: 'reject',
-        appliesTo: { recommendationId: 'rec_abc123' },
+        appliesTo: { recommendationId: 'SYNTHETIC_rec_abc123' },
         rationale: '成本太高',
         _section: 'suggestion',
         _summaryKind: 'decision',
@@ -165,7 +183,7 @@ describe('P0010.2.4 — decision/accept on a recommendation is consumed with app
     expect(out).toContain('reject');
     expect(out).toContain('no-execution');
     expect(out).toMatch(/P0010\.2\.4 硬约束/);
-    expect(out).toContain('recommendation=rec_abc123');
+    expect(out).toContain('recommendation=SYNTHETIC_rec_abc123');
   });
 
   it('emits the no-execution guard for decision/defer too', () => {
@@ -177,7 +195,7 @@ describe('P0010.2.4 — decision/accept on a recommendation is consumed with app
       content: {
         type: 'decision',
         decision: 'defer',
-        appliesTo: { recommendationId: 'rec_abc123' },
+        appliesTo: { recommendationId: 'SYNTHETIC_rec_abc123' },
         _section: 'suggestion',
         _summaryKind: 'decision',
       },
@@ -213,6 +231,64 @@ describe('P0010.2.4 — decision/accept on a recommendation is consumed with app
     // no hard constraint line, no inline no-execution
     expect(out).not.toMatch(/P0010\.2\.4 硬约束/);
     expect(out).not.toMatch(/no-execution/);
+  });
+});
+
+describe('P0010.2.4 review repair (ADR-061) — production decision with empty appliesTo renders [no-target-bound]', () => {
+  // The current production workspace leaves `appliesTo = {}` because
+  // the Recommendation schema has no id. The formatter must honestly
+  // mark this as "no-target-bound" instead of fabricating a target.
+  it('emits [no-target-bound] text when appliesTo is empty (the production case)', () => {
+    const intervention: HumanIntervention = {
+      interventionId: 'int_d_empty_1',
+      situationId: SIT_ID,
+      actor: { id: 'operator_1', role: 'operator' },
+      type: 'decision',
+      content: {
+        type: 'decision',
+        decision: 'accept',
+        appliesTo: {},
+        rationale: '先按这个思路推进',
+        _section: 'suggestion',
+        _summaryKind: 'decision',
+      },
+      timestamp: NOW,
+      summary: '已纳入考量: 先按这个思路推进',
+    } as unknown as HumanIntervention;
+    const out = formatPriorHumanGuidance(makeContext([intervention]));
+    // The honest marker
+    expect(out).toContain('no-target-bound');
+    // Does NOT fabricate any recommendation= or agentActivity=
+    expect(out).not.toMatch(/recommendation=/);
+    expect(out).not.toMatch(/agentActivity=/);
+    // Still surfaces the decision and section guard
+    expect(out).toContain('[建议处理]');
+    expect(out).toContain('accept');
+    expect(out).toContain('no-execution');
+    expect(out).toMatch(/P0010\.2\.4 硬约束/);
+  });
+
+  it('emits [no-target-bound] for decision/reject with empty appliesTo (production case)', () => {
+    const intervention: HumanIntervention = {
+      interventionId: 'int_d_empty_rej',
+      situationId: SIT_ID,
+      actor: { id: 'operator_1', role: 'operator' },
+      type: 'decision',
+      content: {
+        type: 'decision',
+        decision: 'reject',
+        appliesTo: {},
+        rationale: '成本太高',
+        _section: 'suggestion',
+        _summaryKind: 'decision',
+      },
+      timestamp: NOW,
+      summary: '暂不采用: 成本太高',
+    } as unknown as HumanIntervention;
+    const out = formatPriorHumanGuidance(makeContext([intervention]));
+    expect(out).toContain('no-target-bound');
+    expect(out).toContain('reject');
+    expect(out).toContain('no-execution');
   });
 });
 
@@ -266,7 +342,7 @@ describe('P0010.2.4 — section distinction: judgment vs suggestion', () => {
       content: {
         type: 'decision',
         decision: 'accept',
-        appliesTo: { recommendationId: 'rec_xyz' },
+        appliesTo: { recommendationId: 'SYNTHETIC_rec_xyz' },
         _section: 'suggestion',
         _summaryKind: 'decision',
       },
@@ -314,7 +390,7 @@ describe('P0010.2.4 — buildInvestigationPrompt surfaces human feedback end-to-
         content: {
           type: 'decision',
           decision: 'accept',
-          appliesTo: { recommendationId: 'rec_xyz' },
+          appliesTo: { recommendationId: 'SYNTHETIC_rec_xyz' },
           _section: 'suggestion',
           _summaryKind: 'decision',
         },

@@ -24,7 +24,9 @@ vi.mock('#platform/runtime/hermes/token-resolver.js', () => ({
     return Promise.resolve({ token, source: token ? ('auto-dashboard' as const) : null });
   },
   resetTokenCache: () => resetCacheMock(),
-  ENV_TOKEN_NAMES: { dashboard: 'HERMES_DASHBOARD_SESSION_TOKEN', gateway: 'HERMES_GATEWAY_TOKEN' },
+  // P0010.2.4 review repair (ADR-061) — `gateway` key removed; the
+  // session client now consults ONLY HERMES_DASHBOARD_SESSION_TOKEN.
+  ENV_TOKEN_NAMES: { dashboard: 'HERMES_DASHBOARD_SESSION_TOKEN' },
 }));
 
 import { HermesSessionClient } from '#platform/runtime/hermes/index.js';
@@ -220,12 +222,11 @@ describe('HermesSessionClient — lazy token + retry-once (P0010.2)', () => {
     const { ws: first, connectPromise } = await beginConnect(client);
     first.emitError('stale rejected');
     await expect(connectPromise).rejects.toThrow(/auto-re-resolve also returned no token/);
-    // P0010.2.4 — the actionable error mentions both `HERMES_DASHBOARD_SESSION_TOKEN`
-    // and `HERMES_GATEWAY_TOKEN` (P0008.3 → P0010.2.4 token-name expansion).
-    // Match either variant of the operator hint.
-    await expect(connectPromise).rejects.toThrow(
-      /If HERMES_(DASHBOARD_SESSION|GATEWAY)_TOKEN/,
-    );
+    // P0010.2.4 (post ADR-061) — the actionable error mentions
+    // `HERMES_DASHBOARD_SESSION_TOKEN` only. The earlier gateway-token
+    // expansion was rolled back because HERMES_GATEWAY_TOKEN is the
+    // HTTP gateway credential, not the WS session token.
+    await expect(connectPromise).rejects.toThrow(/If HERMES_DASHBOARD_SESSION_TOKEN/);
     // No second WebSocket is constructed when the retry path cannot get a token.
     expect(MockWebSocket.instances).toHaveLength(1);
   });

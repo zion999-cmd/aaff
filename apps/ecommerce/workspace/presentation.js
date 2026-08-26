@@ -265,7 +265,8 @@ export const SITUATION_LIFECYCLE_LABEL = Object.freeze({
 });
 
 /**
- * P0010.2.4 (ADR-060 audit B) — Investigation DISPLAY state.
+ * P0010.2.4 (ADR-060 audit B) + P0010.2.4 review repair (ADR-061) —
+ * Investigation DISPLAY state.
  *
  * The Operator-facing banner for "what is the runtime doing with this
  * situation's investigation" is a SEPARATE state from the Situation
@@ -276,11 +277,40 @@ export const SITUATION_LIFECYCLE_LABEL = Object.freeze({
  *
  * This helper takes the structured `investigation` block + the
  * `blockedRuntimeFailure` flag surfaced by the runtime and returns
- * exactly ONE of 6 states. The banner copy + button visibility is
+ * exactly ONE of 5 states. The banner copy + button visibility is
  * driven entirely by the returned state — no string guesswork.
+ *
+ * State precedence (highest first):
+ *   1. `blockedRuntimeFailure === true` → `'blocked'` (operator override wins).
+ *      This is the only state that ever shows the "解除阻塞并重新调度"
+ *      button. The `consecutiveFailures` counter is part of the
+ *      threshold-crossing decision (the runtime already emitted
+ *      `investigation_blocked` when it crossed the line) and is
+ *      surfaced in the banner's detail text.
+ *   2. `investigation == null` → `'pending'` (no investigation ever run).
+ *   3. `status === 'investigating'` → `'investigating'`.
+ *   4. `status === 'completed'` → `'completed'`.
+ *   5. `status === 'failed'` → `'recoverable'`. The runtime's recovery
+ *      candidates logic
+ *      (apps/ecommerce/runtime/loop/recovery-candidates.ts) gates this
+ *      on `consecutiveFailures < maxConsecutiveFailures` (default 3).
+ *      When the threshold is crossed, the runtime emits
+ *      `investigation_blocked` and sets `blockedRuntimeFailure=true`,
+ *      so we land back in the `blocked` state.
+ *   6. otherwise → `'pending'`.
+ *
+ * P0010.2.4 review repair (ADR-061): the previous 6-state enum included
+ * a `failed_unrecoverable` member that was never returned by any code
+ * path (the runtime either keeps retrying → `recoverable`, or trips the
+ * threshold → `blocked`). The dead member is removed; the contract now
+ * matches the actual state machine.
+ *
+ * `consecutiveFailures` is an INPUT but is only used to enrich the
+ * `blocked` banner's detail text with the actual count. The state
+ * itself is determined by `blockedRuntimeFailure`, not by the counter.
  */
 export function deriveInvestigationDisplayState(investigation, blockedRuntimeFailure, consecutiveFailures) {
-  // 1) Operator override path — wins over everything else.
+  // (1) Operator override path — wins over everything else.
   if (blockedRuntimeFailure === true) return 'blocked';
 
   if (!investigation) return 'pending';
@@ -289,9 +319,8 @@ export function deriveInvestigationDisplayState(investigation, blockedRuntimeFai
   if (status === 'completed') return 'completed';
   if (status === 'pending') return 'pending';
   if (status === 'failed') {
-    // below threshold + has prior cognition → still being watched
-    // (the runtime will retry; we're NOT blocked).
-    if (hasPriorValidCognition(investigation)) return 'recoverable';
+    // Below threshold + may or may not have prior cognition — the
+    // runtime will retry. We are NOT blocked.
     return 'recoverable';
   }
   // Unknown status — do NOT default to "recoverable" (would lie).
@@ -327,19 +356,24 @@ export const INVESTIGATION_DISPLAY_BANNER = Object.freeze({
   },
   blocked: {
     headline: '⚠ 自动调查已暂停',
-    detail: '已达连续失败阈值。**请执行「解除阻塞并重新调度」让 Runtime 重新安排下一轮调查**。',
+    // P0010.2.4 review repair (ADR-061) — the detail is a FUNCTION
+    // that takes `(consecutiveFailures, threshold)` and returns the
+    // operator-facing message. We removed the literal `**…**` markdown
+    // (the workspace renders detail via textContent, not innerHTML, so
+    // the asterisks were showing as literal characters). app.js calls
+    // this with the live counter so the operator sees the actual
+    // count and threshold instead of a hard-coded "已连续失败 N 次".
+    detail: function (consecutiveFailures, threshold) {
+      var n = Number.isFinite(consecutiveFailures) ? consecutiveFailures : 0;
+      var t = Number.isFinite(threshold) && threshold > 0 ? threshold : 3;
+      return '已连续失败 ' + n + ' 次（阈值 ' + t + '）。请执行「解除阻塞并重新调度」让 Runtime 重新安排下一轮调查。';
+    },
     showClearBlock: true,
     showLegacyStart: false,
   },
   completed: {
     headline: '调查已完成',
     detail: '查看右栏的判断与建议；如需复审请使用判断反馈按钮。',
-    showClearBlock: false,
-    showLegacyStart: false,
-  },
-  failed_unrecoverable: {
-    headline: 'Runtime 将在下一轮 tick 重试',
-    detail: '未达到阻塞阈值，无需人工操作。',
     showClearBlock: false,
     showLegacyStart: false,
   },

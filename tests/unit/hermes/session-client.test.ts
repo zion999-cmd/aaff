@@ -21,7 +21,9 @@ vi.mock('#platform/runtime/hermes/token-resolver.js', () => ({
     return { token, source: token ? ('auto-dashboard' as const) : null };
   }),
   resetTokenCache: () => undefined,
-  ENV_TOKEN_NAMES: { dashboard: 'HERMES_DASHBOARD_SESSION_TOKEN', gateway: 'HERMES_GATEWAY_TOKEN' },
+  // P0010.2.4 review repair (ADR-061) — `gateway` key removed; the
+  // session client now consults ONLY HERMES_DASHBOARD_SESSION_TOKEN.
+  ENV_TOKEN_NAMES: { dashboard: 'HERMES_DASHBOARD_SESSION_TOKEN' },
 }));
 
 import { HermesSessionClient } from '#platform/runtime/hermes/index.js';

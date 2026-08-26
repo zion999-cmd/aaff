@@ -156,15 +156,20 @@ const HEALTH_PROBE_TTL_MS = 30_000;
 
 /**
  * Probe Hermes' HTTP `/api/health` to learn whether the running serve
- * actually requires a session token. Hermes 0.20.x ships an
- * `auth_required: false` mode for dev; without this probe, the session
- * client would refuse to connect on every dev box that has Hermes up
- * but no operator-exported token (P0010.2.4 audit A).
+ * reports `auth_required: true` or `auth_required: false`.
+ *
+ * IMPORTANT: the probe result is **diagnostic only**. It does NOT
+ * control whether the WebSocket upgrade sends `?token=`. Hermes 0.20.5
+ * (web_server.py:_ws_auth_reason) validates `?token=<_SESSION_TOKEN>` in
+ * BOTH modes — loopback (`auth_required: false`) only skips the OAuth
+ * ticket, not the session token. The connect path always sends a
+ * token; the probe only changes the log metadata and the missing-token
+ * error message.
  *
  * Result is cached per-port for `HEALTH_PROBE_TTL_MS`. A failed probe is
- * cached as `probeFailed=true, authRequired=true` so we fall back to the
- * "require token" path rather than silently connecting to an
- * unauthenticated Hermes we couldn't reach.
+ * cached as `probeFailed=true, authRequired=true` so we treat the
+ * server as auth-required rather than assuming a non-authenticated
+ * mode we couldn't reach.
  */
 export async function probeAuthRequired(
   url: string,
@@ -277,11 +282,16 @@ export class HermesSessionClient {
    * Connect to Hermes serve /api/ws. Resolves when the socket opens.
    *
    * Token resolution happens here, lazily:
-   *   1. Probe `/api/health` → if `auth_required: false`, skip the token
-   *      entirely and connect without `?token=`. This is the common case
-   *      for a dev `hermes serve` (P0010.2.4 audit A).
-   *   2. If auth is required, resolve a candidate token
-   *      (callerToken > env-var > auto-discover).
+   *   1. Probe `/api/health`. The result is used as **log metadata** and to
+   *      choose the actionable error message — it does NOT control whether
+   *      we send `?token=`. Hermes 0.20.5's `_ws_auth_reason`
+   *      (web_server.py:16313-16427) requires `?token=<_SESSION_TOKEN>` on
+   *      the WS upgrade in BOTH `auth_required: true` AND `auth_required: false`
+   *      (loopback) modes. The probe's `auth_required` field only describes
+   *      whether an OAuth ticket is required in addition to the session token.
+   *   2. Resolve a candidate token: callerToken > env-var > auto-discover.
+   *      The only env var we accept is `HERMES_DASHBOARD_SESSION_TOKEN`
+   *      (Hermes 0.20.5 reads the same name; see web_server.py:540).
    *   3. tryOnce(token). If it fails, reset the auto-discover cache and
    *      try a fresh candidate — but only if the failure wasn't a
    *      deliberate close() and the prior token was NOT callerToken /
@@ -310,35 +320,25 @@ export class HermesSessionClient {
       defaultConnectLogger(merged);
     };
 
-    // (1) Probe whether auth is required. This is used as log metadata +
-    // to choose the actionable error message; the connect itself ALWAYS
-    // sends `?token=<session_token>`. P0010.2.4 (live verify D1) —
-    // Hermes 0.20.5's `_ws_auth_reason` (web_server.py:16418-16423)
-    // requires `?token=<_SESSION_TOKEN>` even in `auth_required: false`
-    // (loopback) mode. The "no token at all" path the original probe
-    // suggested turns out to be wrong: loopback still authenticates, it
-    // just doesn't require an OAuth ticket. So the probe only tells us
-    // which path the token should come from (env-var or auto-discover),
-    // not whether to send one.
+    // (1) Probe Hermes' /api/health. The result is used as log metadata +
+    // to choose the actionable error message. It does NOT change whether
+    // we send `?token=` — see probeAuthRequired() JSDoc above.
     const probe = await probeAuthRequired(this.url);
 
     // (2) Resolve a candidate token: callerToken > env-var > auto-discover.
+    //
+    // P0010.2.4 review repair (ADR-061): the only env var we accept is
+    // `HERMES_DASHBOARD_SESSION_TOKEN`. `HERMES_GATEWAY_TOKEN` was removed
+    // because it is the credential for Hermes' separate HTTP gateway
+    // service, not the `_SESSION_TOKEN` that the `/api/ws` upgrade
+    // validates via `hmac.compare_digest` in `web_server.py:16421`.
     const resolveToken = (): Promise<ResolveHermesTokenResult> => {
       if (this.callerToken) {
         return Promise.resolve({ token: this.callerToken, source: 'env-dashboard' });
       }
-      // P0010.2.4 — direct env-var read here, INDEPENDENT of the
-      // resolver mock. This preserves the pre-P0010.2.4 behaviour where
-      // `process.env.HERMES_DASHBOARD_SESSION_TOKEN` was consulted
-      // before the resolver. Tests that set the env var but mock the
-      // resolver to return undefined rely on this direct read.
       const envDashboard = process.env[ENV_TOKEN_NAMES.dashboard];
       if (envDashboard) {
         return Promise.resolve({ token: envDashboard, source: 'env-dashboard' });
-      }
-      const envGateway = process.env[ENV_TOKEN_NAMES.gateway];
-      if (envGateway) {
-        return Promise.resolve({ token: envGateway, source: 'env-gateway' });
       }
       return resolveHermesSessionTokenWithSource({ url: this.url });
     };
@@ -389,14 +389,14 @@ export class HermesSessionClient {
     // did, clear the cache so the retry re-shells-out to the running serve
     // (handles `hermes serve` restarts and token rotation).
     // Operator-pinned tokens (callerToken or env var) are NEVER auto-replaced.
-    const tokenIsAutoDiscovered = !this.callerToken && !first.source?.startsWith('env-');
+    const tokenIsAutoDiscovered = first.source === 'auto-dashboard';
     if (tokenIsAutoDiscovered) resetTokenCache();
 
     const fresh = await resolveToken();
     if (!fresh.token) {
       throw new Error(
         `Hermes connect failed (${firstErr.message}); auto-re-resolve also returned no token. ` +
-          `If ${ENV_TOKEN_NAMES.dashboard} or ${ENV_TOKEN_NAMES.gateway} is set in the agentFabric env, ` +
+          `If ${ENV_TOKEN_NAMES.dashboard} is set in the agentFabric env, ` +
           `refresh it to match the value in the running 'hermes serve' process; otherwise verify ` +
           `'hermes serve' is up on ${this.url} with auth_required=${probe.authRequired ? 'true' : 'false'}.`,
       );
@@ -471,9 +471,9 @@ export class HermesSessionClient {
    * P0010.2.4 — error when no token is available. Now takes the probe
    * result so the message can mention whether the running Hermes is in
    * `auth_required: false` (loopback) mode, in which case the operator
-   * must still set one of the env vars (or have `hermes serve` running
-   * for auto-discover) — Hermes 0.20.5 authenticates the WebSocket
-   * upgrade in both modes.
+   * must still set the env var (or have `hermes serve` running for
+   * auto-discover) — Hermes 0.20.5 authenticates the WebSocket upgrade
+   * in both modes (see web_server.py:_ws_auth_reason).
    */
   private missingTokenError(probe: { authRequired: boolean; probeFailed: boolean }): HermesAuthError {
     const modeHint = probe.probeFailed
@@ -484,7 +484,7 @@ export class HermesSessionClient {
     return new HermesAuthError(
       'missing_token',
       `Missing Hermes dashboard session token${modeHint}. Either (a) export ` +
-        `${ENV_TOKEN_NAMES.dashboard} or ${ENV_TOKEN_NAMES.gateway} in the agentFabric process env ` +
+        `${ENV_TOKEN_NAMES.dashboard} in the agentFabric process env ` +
         `to match the value used by 'hermes serve', or (b) start 'hermes serve' (defaults to port 9119) ` +
         `so the token can be auto-discovered from its process env. ` +
         `See platform/runtime/hermes/token-resolver.ts for details.`,

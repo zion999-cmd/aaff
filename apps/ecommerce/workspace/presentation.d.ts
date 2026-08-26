@@ -128,27 +128,36 @@ export function flattenRespondsToActivityIds(
 // ---- P0010.2.4 (ADR-060 audit B) — Investigation display state ----
 
 /**
- * Six-state enum the investigation panel collapses into. Replaces the
+ * Five-state enum the investigation panel collapses into. Replaces the
  * fuzzy `invStatus === 'investigating' / invBlockedRuntimeFailure /
  * invStatus === 'failed' / else` chain that used to contradict itself
  * in the UI ("auto-recover, no human" while a clear-block button was
  * shown). The runtime reads this single value; the banner map below is
  * the only place operator-facing copy is defined.
+ *
+ * P0010.2.4 review repair (ADR-061): the previous 6-state enum
+ * (`pending / recoverable / investigating / blocked / completed /
+ * failed_unrecoverable`) included a `failed_unrecoverable` member
+ * that no code path ever returned. The dead member is removed; the
+ * contract now matches the actual state machine.
  */
 export type InvestigationDisplayState =
   | 'pending'
   | 'recoverable'
   | 'investigating'
   | 'blocked'
-  | 'completed'
-  | 'failed_unrecoverable';
+  | 'completed';
 
 /**
  * Pure: maps the structured `investigation` block + the runtime's
  * `blockedRuntimeFailure` flag + the failure counter to exactly one of
- * the six states. Operator override (`blockedRuntimeFailure === true`)
+ * the five states. Operator override (`blockedRuntimeFailure === true`)
  * wins over everything else so the "解除阻塞并重新调度" button is
  * guaranteed to show.
+ *
+ * `consecutiveFailures` is an INPUT but is only used to enrich the
+ * `blocked` banner's detail text; the state itself is determined by
+ * `blockedRuntimeFailure`.
  */
 export function deriveInvestigationDisplayState(
   investigation: { status?: string } | null | undefined,
@@ -158,7 +167,13 @@ export function deriveInvestigationDisplayState(
 
 export interface InvestigationDisplayBanner {
   headline: string;
-  detail: string;
+  /**
+   * Either a static string (most states) or a function
+   * `(consecutiveFailures, threshold) => string` (the `blocked` state).
+   * The workspace calls this with the live counter so the operator
+   * sees the actual count instead of a hard-coded "已连续失败 N 次".
+   */
+  detail: string | ((consecutiveFailures: number, threshold: number) => string);
   /** Show the "解除阻塞并重新调度" clear-block button (only in `blocked`). */
   showClearBlock: boolean;
   /** Show the legacy "立即调查" button (only in `recoverable`). */

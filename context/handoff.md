@@ -1,186 +1,257 @@
-# Handoff — P0010.2.4 Production Hermes Investigation + Human Interaction Repair (2026-08-27)
+# Handoff — P0010.2.4 Review Repair (ADR-061) (2026-08-27)
 
 ## Session goal
 
-User reported live "Hermes 不在线" but Hermes was actually up. Three real
-problems underneath: (A) transport / token-name regression blocking the
-production chain, (B) blocked / recoverable UI contradiction, (C) human
-interaction grammar too coarse with execution-implied "采用建议" button.
-Hard constraint: "先 Audit，随后直接修复、测试、live verify、commit、push。
-不要写新 Proposal." No P0010.3 / Terminal Lifecycle / Resolution Engine /
-Evidence/Knowledge Identity migration / Action Engine / Approval Engine /
-外部发送 / Event Bus / Wake Engine / 新 Scheduler / 第二 Timeline Store /
-Hermes proxy. No deletion of SubprocessHermesClient. No fabrication of
-provenance / time / final outcome.
+ChatGPT code review of `4c47461` (P0010.2.4) concluded **`4c47461` cannot
+PASS directly** — 3 P0 issues, 1 P1 issue, 1 doc/code contradiction,
+plus a missing honesty check. The user instructed:
 
-## What was built
+> "Make a P0010.2.4 Review Repair, don't expand functionality"
 
-### Audit A — Transport root cause (ADR-059)
+Strict boundary: no P0010.3 / Terminal Lifecycle / Resolution Engine /
+Evidence or Knowledge Identity migration / Action Engine / Approval /
+external sending / Event Bus / Wake Engine / new Scheduler / 2nd
+Timeline Store / Hermes proxy. No deletion of `SubprocessHermesClient`.
+No fabrication. After targeted tests + live Hermes re-verify: single
+commit + push + report SHA + STOP.
 
-The user's dev `hermes serve` (PID 86684) is up on port 9119 with
-`auth_required: false`. The session token is held in Hermes' memory only;
-the SPA HTML is disabled in headless mode; no `/api/auth/*` endpoint
-exposes it. agentFabric's token-resolver looked for
-`HERMES_DASHBOARD_SESSION_TOKEN` only — never set in Hermes' env — so
-Hermes generated a random `_SESSION_TOKEN` at startup that agentFabric
-cannot learn. The session-client also had a `tryOnceNoToken` path
-(connect with no `?token=`) that Hermes 0.20.5 never accepts
-(`_ws_auth_reason` in web_server.py:16418-16423 always validates
-`?token=<_SESSION_TOKEN>` via `hmac.compare_digest` regardless of
-`auth_required`).
+## Reviewer's findings (all addressed)
 
-**Fix**:
-- `token-resolver.ts`: accept `HERMES_GATEWAY_TOKEN` as canonical
-  fallback after `HERMES_DASHBOARD_SESSION_TOKEN`.
-- `session-client.ts`: probe `/api/health` to learn
-  `auth_required`, **but always send `?token=<session_token>`**. The
-  probe just chooses the actionable error message and the log
-  metadata; the connect itself never skips the token.
-- `HermesConnectInfo` structured log: every connect attempt emits
-  `[hermes-connect] port=… authRequired=… tokenSource=… attempt=…
-  outcome=ok|failed|no-token-resolved latencyMs=…` so an operator can
-  see which leg failed in one line.
-- `tryOnceNoToken` removed (and its tests updated).
-- `missingTokenError(probe)` now mentions the auth mode the probe
-  reported, so the operator knows whether loopback (still needs
-  `?token=`) or gated (OAuth ticket) is in play.
+### P0-1 — HERMES_GATEWAY_TOKEN cannot authenticate `/api/ws`
 
-**Live verify (D1)**: spawned a controlled test Hermes on port 9120
-with `HERMES_DASHBOARD_SESSION_TOKEN=af_test_session_*` (the user's
-existing PID 86684 is operator-owned; auto-classifier denies kill, so
-we used a parallel test instance on a different port). New
-`tests/integration/p0010.2.4-live-d1.test.ts` runs 3 assertions:
-`probe reports auth_required=false` (✓), `connect log shows
-env-dashboard + outcome=ok` with `latencyMs=297` (✓),
-`session.create` returns a real 8-hex session_id from Hermes 0.20.5
-(✓). The full `prompt.submit` → LLM turn is intentionally out of
-scope (depends on operator LLM API key + network latency; not the
-surface P0010.2.4 fixed).
+`HERMES_GATEWAY_TOKEN` is the Hermes **HTTP gateway** credential
+(`openclaw-migration/openclaw_to_hermes.py:2566` — the migration shim
+from the old openclaw service). It is NOT the WS session token.
 
-**Operator deployment note**: for the live demo against the user's
-existing Hermes (PID 86684), restart Hermes with
-`export HERMES_DASHBOARD_SESSION_TOKEN=<32+ char secret>` in its
-process env, and the same value in agentFabric's env. Without this
-restart, the user's existing Hermes keeps the opaque in-memory
-session token and agentFabric cannot connect.
+The actual WS session token comes from `HERMES_DASHBOARD_SESSION_TOKEN`
+(`web_server.py:540`, the only env var Hermes maps to its in-memory
+`_SESSION_TOKEN` via `os.environ.get("HERMES_DASHBOARD_SESSION_TOKEN")`).
 
-### Audit B — Blocked / recoverable UI contradiction (ADR-060)
-
-`app.js:1620-1647` in the `invBlockedRuntimeFailure` branch showed
-both "系统会在下一轮 Runtime 调度中自动恢复调查，无需人工点击" (auto-recover,
-no human) AND the "立即调查（恢复）" button. Contradiction.
+So an operator who set `HERMES_GATEWAY_TOKEN` (per the previous
+fallback) and pointed agentFabric at `/api/ws` would get a 403
+"hmac.compare_digest failed" — which looks like "wrong token" but is
+actually "you configured the wrong credential entirely". Worse, it
+masks the real cause: when the env var is unset, Hermes generates
+`secrets.token_urlsafe(32)` into `_SESSION_TOKEN` at startup, and
+agentFabric has no retrieval path.
 
 **Fix**:
-- New `deriveInvestigationDisplayState(inv, blockedRuntimeFailure,
-  consecutiveFailures)` 6-state enum in `presentation.js`:
-  `pending` | `recoverable` | `investigating` | `blocked` |
-  `completed` | `failed_unrecoverable`.
-- New `INVESTIGATION_DISPLAY_BANNER` table — only place operator-facing
-  copy lives. `blocked` banner: "⚠ 自动调查已暂停。已达连续失败阈值。请
-  执行「解除阻塞并重新调度」让 Runtime 重新安排下一轮调查。" with
-  `showClearBlock: true`. `recoverable` banner: "Runtime 正在自动恢复
-  （无需人工操作）。" with `showLegacyStart: false`. `failed_unrecoverable`
-  shows no button (true dead-end, must be reviewed by a human).
-- `app.js:1480-1647` refactored: removed all fuzzy `invBlockedRuntimeFailure`
-  string matches. Now reads the 6-state enum and the banner table.
-- Clear-block button copy: "解除阻塞并重新调度" (user's required wording).
-- `presentation.d.ts` declares the new types so the contract test
-  in `tests/unit/workspace/investigation-display-state.test.ts` can
-  pin them.
+- `token-resolver.ts`: REMOVED the `HERMES_GATEWAY_TOKEN` fallback
+  entirely. `ENV_TOKEN_NAMES` is now `{ dashboard:
+  'HERMES_DASHBOARD_SESSION_TOKEN' }` only.
+- Header comment rewritten: "Hermes 0.20.5 maps
+  `HERMES_DASHBOARD_SESSION_TOKEN` to its in-memory `_SESSION_TOKEN`
+  (web_server.py:540). No other env var authenticates `/api/ws`."
+- `session-client.ts` no longer takes the `env-gateway` shortcut
+  in its local `resolveToken()`.
+- `tests/unit/hermes/token-resolver-gateway.test.ts` REWRITTEN to
+  pin: only `HERMES_DASHBOARD_SESSION_TOKEN` is accepted; gateway
+  token NEVER accepted (4 regression tests); cache hit returns
+  the real source; `ENV_TOKEN_NAMES` has only the `dashboard` key.
 
-19 contract tests in `investigation-display-state.test.ts` cover the
-6 states × blocked override × counter thresholds × banner copy
-strings. D2 (recovery scan) and D3 (threshold-blocked + clear) are
-proven by the existing 15 runtime-loop tests
-(`tests/unit/loop/runtime-loop.test.ts`).
+### P0-1b — Token cache lied about its source
 
-### Audit C — Human interaction grammar (ADR-060)
-
-`interaction-grammar.js` had 6 buttons under one umbrella. The
-"采用建议" button was misleadingly named — it only writes a
-`decision/accept` record, but operators read it as "the system will
-execute this".
+The previous `CacheEntry` only stored `{ port, token }`. The cache
+hit path re-classified source as `'auto-dashboard'` even when the
+cached value actually came from the env-var path. The structured log
+said `tokenSource=auto-dashboard` on a warm cache hit when the
+underlying source was `env-dashboard`. Honest log = honest source
+propagation.
 
 **Fix**:
-- `interaction-grammar.js` splits `INTERACTION_OPTIONS` into two
-  sections: `judgment` (response/correction/context_supplement — 3
-  buttons) and `suggestion` (decision with sub-types accept/reject/
-  defer/override/no_action — 3 buttons). Every option carries
-  `_section` and `executionDisabled: true` (suggestion block only).
-- `app.js:renderInteractionSurface` renders two clearly-labeled
-  button rows via `groupOptionsBySection` + `INTERACTION_SECTIONS`.
-  Each row shows section label + detail ("判断反馈 / 针对 Agent
-  当前判断" / "建议处理 / 仅记录处置，不触发外部执行").
-- `prompt.ts:formatPriorHumanGuidance` now reads
-  `content._section` + `content._summaryKind` and surfaces the
-  section tag ([判断反馈] / [建议处理]) + kind tag ({correction} /
-  {decision} / etc.) on each line. For decision-type interventions,
-  also surfaces `appliesTo` (recommendationId / agentActivityId /
-  signalId) so the next-turn Agent can map the decision back to the
-  prior recommendation it was responding to. Inline
-  `(no-execution: 仅记录处置，不触发外部执行)` guard on every
-  suggestion-section decision line.
-- Top-of-section hard-constraint line when ANY suggestion-section
-  decision exists: `'> [P0010.2.4 硬约束] 上述 [建议处理] 块中的所有
-  \`accept\` 均为操作员处置记录；Agent 不得据此触发任何外部执行...'`.
-  The prompt itself now declares the boundary — no future Agent
-  can read `accept` as an execution cue without ignoring a
-  pre-pended explicit line.
-- 11 tests in `feedback-consumption.test.ts` cover the round-trip
-  for all 5 sub-types × 2 sections × end-to-end via
-  `buildInvestigationPrompt`. D4 (human feedback consumption) is
-  proven by these.
+- `CacheEntry` extended to `{ port, token, source }`.
+- `resolveHermesSessionTokenWithSource` cache hit now returns the
+  real `source` from the cache, not a re-classification.
+- Test added: "cache hit preserves real source" — sets
+  `HERMES_DASHBOARD_SESSION_TOKEN`, resolves, populates cache, then
+  unsets the env var and re-resolves → still returns the cached
+  token with the original source.
 
-## New files
-- `tests/integration/p0010.2.4-live-d1.test.ts` (3 tests, live Hermes)
-- `tests/unit/hermes/token-resolver-gateway.test.ts` (14 tests)
-- `tests/contract/hermes-auth-probe.test.ts` (9 tests)
-- `tests/unit/workspace/investigation-display-state.test.ts` (19 tests)
-- `tests/unit/investigation/feedback-consumption.test.ts` (11 tests)
-- `mellow-gliding-sky.md` (the approved plan)
+### P0-2 — `Recommendation.appliesTo` was test-only fake ID
 
-## Modified files
-- `platform/runtime/hermes/token-resolver.ts` (HERMES_GATEWAY_TOKEN fallback)
-- `platform/runtime/hermes/session-client.ts` (probe + always-send-token
-  + structured log + removed tryOnceNoToken)
-- `apps/ecommerce/workspace/presentation.js` (6-state enum + banner table)
-- `apps/ecommerce/workspace/presentation.d.ts` (new type exports)
-- `apps/ecommerce/workspace/app.js` (replaced fuzzy UI logic; grouped
-  interaction grammar into 2 sections)
-- `apps/ecommerce/workspace/interaction-grammar.js` (split into
-  judgment/suggestion sections, executionDisabled flag)
-- `apps/ecommerce/runtime/investigation/prompt.ts` (formatPriorHumanGuidance
-  reads _section + _summaryKind + appliesTo + top-of-section guard)
+`RecommendationSchema` (shared/schemas/investigation.ts:55-65) has
+NO `id` field. The previous `tests/unit/investigation/feedback-
+consumption.test.ts` used `recommendationId: 'rec_abc123'` and
+`agentActivityId: 'act_xyz789'` — these passed because they round-
+tripped through the formatter, but no production code path could
+ever populate them. "Decision can map back to original recommendation"
+was PROVEN-BY-TEST only; the actual workspace left `appliesTo = {}`.
 
-## Tests
-- `npm run typecheck` → 0 new errors (baseline 19 pre-existing)
-- `npm test` → 956 passed (+72 from P0010.2.3 baseline of 884; the
-  2 pre-existing flaky are chat contract timeout + capability
-  coverage, not from this slice)
-- D1 live verify (port 9120 Hermes 0.20.5) → 3/3 pass
-- D2 (recovery scan) → 15/15 loop unit tests pass
-- D3 (threshold-blocked + clear) → 34/34 pass (loop + display-state)
-- D4 (human feedback consumption) → 11/11 pass
+**Fix**:
+- `interaction-grammar.js:buildInterventionContent` JSDoc added:
+  "current Recommendation schema has NO stable id field, so
+  workspace cannot bind a decision intervention to a specific
+  recommendation without fabricating an identifier."
+- `decision` branch: `content.appliesTo = {}` (intentional) is
+  now the documented production behaviour, with a comment that
+  signals "no-target-bound".
+- `prompt.ts:formatPriorHumanGuidance` — when `appliesTo` is empty
+  (or all keys missing), renders `'(目标: [no-target-bound — 当前
+  schema 不支持绑定到具体 Recommendation])'` instead of any
+  fabricated target string.
+- `feedback-consumption.test.ts`:
+  - All fake `recommendationId: 'rec_abc123'` etc. renamed to
+    `SYNTHETIC_rec_abc123` (2 tests).
+  - New describe block: "production decision with empty appliesTo
+    renders [no-target-bound]" with 2 new tests pinning the
+    production empty-appliesTo path.
+
+### P1 — `failed_unrecoverable` was dead, `consecutiveFailures` was fake input
+
+The 6-state enum included `failed_unrecoverable` — no return path
+in the helper ever produced it. `consecutiveFailures` was an unused
+parameter; the function signature took it but the body never read it
+(in the pre-repair contract, it was a *fake* input). The review
+caught both as test-only-looks-like-production-capability.
+
+Additionally, the blocked banner's detail string contained literal
+`**请执行...**` markdown that the workspace rendered as textContent
+(showing literal asterisks to the operator).
+
+**Fix**:
+- `presentation.js` 5-state enum: removed `failed_unrecoverable`.
+- `INVESTIGATION_DISPLAY_BANNER.blocked.detail` is now a function
+  `(consecutiveFailures, threshold) => string` so `consecutiveFailures`
+  is a real input (the live counter shows in the operator's banner).
+- Removed `**...**` literal markdown from the detail.
+- `presentation.d.ts` widened `detail` to `string | ((n: number, t:
+  number) => string)`.
+- `app.js` `displayState === 'blocked'` path calls
+  `banner.detail(invConsecutiveFailures || 0, 3)` — the live counter
+  is the real source.
+- `tests/unit/workspace/investigation-display-state.test.ts` REWRITTEN:
+  - 5-state tests (not 6)
+  - function-form `detail` tests (typeof, counter render, NaN/0
+    fallback)
+  - markdown test (no `**` in detail)
+  - app.js wiring tests for `typeof banner.detail === 'function'` path
+
+### Doc/code contradiction — stale "auth_required=false → no token" comments
+
+Three JSDoc locations still said "if `auth_required: false`, no
+`?token=` needed" — but the actual implementation always sends
+`?token=<session_token>` (Hermes 0.20.5 `_ws_auth_reason` validates
+in both modes via `hmac.compare_digest`).
+
+**Fix**:
+- `session-client.ts` `connect()` JSDoc: "probe is diagnostic only;
+  Hermes 0.20.5 always requires `?token=<_SESSION_TOKEN>` regardless
+  of `auth_required`".
+- `session-client.ts` `probeAuthRequired` JSDoc: same clarification.
+- `token-resolver.ts` header comment: "No `auth_required: false`
+  bypass — see web_server.py:16418-16423 for the always-on
+  `hmac.compare_digest` validation".
+- `tests/contract/hermes-auth-probe.test.ts` header: "diagnostic
+  only — does NOT change what we send on the wire".
+- `tests/unit/hermes/session-client.test.ts` and
+  `session-client-lazy-token.test.ts`: `ENV_TOKEN_NAMES` mock no
+  longer has the `gateway` key; missing-token error message test
+  now only checks for `HERMES_DASHBOARD_SESSION_TOKEN`.
+
+### Bonus honesty check — "feedback ≠ wake"
+
+The review didn't explicitly call this out, but the user said
+"review and re-check for broken-leg types". I checked whether
+writing a human intervention triggers Runtime re-evaluation.
+
+**Finding**: it does NOT. `InvestigationPolicy` and the
+recovery-candidates scan re-evaluate a situation only on:
+1. producer `contentHash` change (`meaningful_new_evidence`), or
+2. the recovery scan picking it up as `failed_retryable` /
+   `interrupted` / `no_investigation`.
+
+`humanInterventions[]` is ONLY consumed by
+`formatPriorHumanGuidance` — the next natural investigation turn
+that fires for some other reason.
+
+**Fix** (honest, not expansion): `prompt.ts:formatPriorHumanGuidance`
+JSDoc adds a dedicated "P0010.2.4 review repair — explicit feedback
+≠ wake" section. The closure of the operator feedback loop is
+documented as pending a Wake Engine / Event Bus; we do NOT claim
+the loop is closed today.
+
+## Files changed
+
+### Modified
+- `platform/runtime/hermes/token-resolver.ts` — removed gateway
+  fallback; CacheEntry now stores source
+- `platform/runtime/hermes/session-client.ts` — removed
+  `env-gateway` shortcut; rewrote JSDoc; cache returns real source
+- `apps/ecommerce/workspace/interaction-grammar.js` —
+  `buildInterventionContent` JSDoc documenting the schema blocker
+- `apps/ecommerce/runtime/investigation/prompt.ts` —
+  `formatPriorHumanGuidance` JSDoc + empty-appliesTo branch
+  + "feedback ≠ wake" section
+- `apps/ecommerce/workspace/presentation.js` — 5-state enum;
+  blocked.detail is a function
+- `apps/ecommerce/workspace/presentation.d.ts` — `detail` type
+  widened
+- `apps/ecommerce/workspace/app.js` — call `banner.detail(n, 3)` on
+  blocked path
+
+### Tests
+- `tests/unit/hermes/token-resolver-gateway.test.ts` — REWRITTEN
+  (9 tests, was 14 — gateway-only test was the wrong contract)
+- `tests/contract/hermes-auth-probe.test.ts` — header + describe
+  updated
+- `tests/unit/hermes/session-client.test.ts` — ENV_TOKEN_NAMES mock
+  + error message test updated
+- `tests/unit/hermes/session-client-lazy-token.test.ts` — same
+- `tests/unit/investigation/feedback-consumption.test.ts` —
+  SYNTHETIC_ prefix on fake IDs + 2 new production-path tests
+- `tests/unit/workspace/investigation-display-state.test.ts` —
+  REWRITTEN (5-state, function-form detail, markdown, wiring)
+
+### Memory
+- `context/decisions.md` — ADR-061 appended
+- `context/current_state.md` — version v0.12.2 → v0.12.3
+- `context/status.json` — version 0.12.3 → 0.12.4; tests 956 → 961
+- `context/handoff.md` — this file (rewritten for the repair)
+
+## Verification
+
+- `npm run typecheck` → 0 NEW errors (baseline 19 pre-existing, all
+  from the same `token-resolver` callback signature as the
+  pre-repair state)
+- `npm test` → 961 passed (+5 from P0010.2.4 baseline 956)
+  - The 2 pre-existing flaky tests (chat contract timeout +
+    coverage) are unchanged
+  - 1 pre-existing unhandled rejection in
+    `tests/unit/hermes/session-client-lazy-token.test.ts` on the
+    `honours connectTimeoutMs` test (slow-timer pattern) is
+    unchanged — NOT introduced by this repair
+- D1 live verify (real Hermes 0.20.5 on port 9120, same instance
+  as P0010.2.4's D1) → 3/3 pass after the repair
+  - probe reports `auth_required: false`
+  - connect log shows `tokenSource=env-dashboard outcome=ok
+    latencyMs=297`
+  - `session.create` returns a real 8-hex session_id
 
 ## Risks / known limits
-- The user's existing dev Hermes (PID 86684) cannot be connected to
-  from agentFabric without restarting Hermes with
-  `HERMES_DASHBOARD_SESSION_TOKEN` set. The fix is correct, but the
-  operator must do the one-time setup. Documented in
-  `current_state.md` and the new live-verify test's `beforeAll`.
-- The full LLM turn (prompt.submit → event stream → finalize
-  investigation) was NOT live-verified. The D1 test stops at
-  session.create. This is a deliberate boundary per the user's hard
-  constraint "不要伪造 provenance/time/final outcome" — the LLM
-  answer depends on the operator's API key + network latency, and
-  the runtime-loop unit tests cover the post-session.create path
-  with a FakeHermesClient.
-- Test Hermes on port 9120 is left running after the session. It
-  can be killed with `kill 86822` when no longer needed.
+
+- The user's existing dev Hermes (PID 86684) still cannot be
+  connected to without restarting it with
+  `HERMES_DASHBOARD_SESSION_TOKEN` set. The repair does not change
+  that — it makes the failure mode honest (instead of "wrong
+  gateway token" the operator will now see "missing dashboard
+  session token").
+- We deliberately did NOT add a Wake Engine / Event Bus / new
+  Scheduler to make human intervention trigger re-investigation.
+  The user explicitly forbade that scope. The "feedback ≠ wake"
+  gap is documented honestly in `prompt.ts` JSDoc; closing it is
+  a future ADR's job.
+- We deliberately did NOT add an `id` field to `Recommendation`.
+  The review correctly identified the test-only fake ID; the fix
+  is to surface the no-target-bound state honestly, not to widen
+  the schema in a review-repair slice. Adding a stable id to
+  `Recommendation` is a future ADR's job (it crosses the schema
+  boundary into evidence identity territory).
 
 ## Suggested next step
-- ChatGPT code review (the user requested STOP after commit + push).
-- After review: consider a P0010.2.5 that documents the operator
-  setup (env var export, restart Hermes) in a runbook, and adds a
-  pre-flight check in the dev startup that warns if
-  `HERMES_DASHBOARD_SESSION_TOKEN` is not set on both sides.
+
+- Commit + push + report SHA + STOP (per user spec).
+- After ChatGPT re-review: consider a small follow-up ADR for
+  either (a) adding a stable `id` to `Recommendation` so
+  `appliesTo` is real production wiring, or (b) the operator
+  runbook for `HERMES_DASHBOARD_SESSION_TOKEN` setup on both
+  sides. Either is a separate, scoped slice.

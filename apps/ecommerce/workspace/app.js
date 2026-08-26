@@ -1624,12 +1624,21 @@ async function loadSituationDetail(situationId) {
         invConsecutiveFailures,
       );
       const banner = INVESTIGATION_DISPLAY_BANNER[displayState] || INVESTIGATION_DISPLAY_BANNER.pending;
+      // P0010.2.4 review repair (ADR-061) — the `blocked` state's
+      // detail is a function `(consecutiveFailures, threshold) =>
+      // string`. app.js calls it with the live counter so the operator
+      // sees the actual count instead of a hard-coded placeholder. All
+      // other states have a static `detail` string. Default threshold
+      // matches recovery-candidates.ts DEFAULT_MAX_FAILURES=3.
+      const detailText = typeof banner.detail === 'function'
+        ? banner.detail(invConsecutiveFailures || 0, 3)
+        : banner.detail;
       if (uEl) {
         // Blocked state uses warning color; others use muted.
         var colorCss = displayState === 'blocked' ? 'color:var(--warning)' : '';
         uEl.innerHTML =
           '<p class="muted" style="' + colorCss + '">' + banner.headline +
-          (banner.detail ? '<br/><small>' + banner.detail + '</small>' : '') +
+          (detailText ? '<br/><small>' + detailText + '</small>' : '') +
           '</p>' + willShow;
       }
       if (btn) {
