@@ -75,7 +75,7 @@ import {
   type RecoverableSituation,
 } from './recovery-candidates.js';
 import { HermesSessionClient } from '#platform/runtime/hermes/index.js';
-import { runInvestigationTurn, markInvestigation } from '#platform/server/routes/situation-chat.js';
+import { runInvestigationTurn, markInvestigation, connectWithSituationTrace } from '#platform/server/routes/situation-chat.js';
 import type { InvestigationTurnResult } from '#platform/server/routes/situation-chat.js';
 import { loadInvestigationFromLearningContext } from '#app/experience/learning-context-producer.js';
 
@@ -231,7 +231,14 @@ export const createRuntimeLoop = (options: RuntimeLoopOptions): RuntimeLoop => {
     let hermesSessionId: string | undefined;
     try {
       client = hermesClientFactory();
-      await client.connect();
+      // P0010.2 closure Repair — use the same situation-stamping connect
+      // helper the chat/recommendation routes use, so the right-pane
+      // UI's situation-scoped Trace shows the auto-investigation's
+      // connect state too. Without this, the recovery scan's connect
+      // events were process-level (no situationId) and the operator
+      // never saw "Agent connect started → ok" for the situation they
+      // were looking at.
+      await connectWithSituationTrace(client, situationId);
       const created = await client.createSession({ cwd: workspaceDir, profile: 'default' });
       hermesSessionId = created.sessionId;
       const result: InvestigationTurnResult = await runInvestigationTurn(

@@ -199,6 +199,70 @@ const writeLearningContextToWorkspace = (dir: string, situationId: string, ctx: 
   writeFileSync(resolve(situationsDir, `${situationId}.json`), JSON.stringify(ctx, null, 2), 'utf-8');
 };
 
+/**
+ * P0010.2 closure Repair — connect to the Agent Runtime AND emit
+ * situation-stamped `agent.connect.*` events into the trace buffer.
+ *
+ * Why this is separate from `session-client.ts#defaultConnectLogger`:
+ * the connect logger is process-level and has no `situationId` (a
+ * connect is not bound to any single situation). The right-pane UI
+ * filters the buffer by `situationId`, so the process-level connect
+ * event is invisible to it. This helper stamps `situationId` on the
+ * connect events that the route triggered, so the situation-scoped
+ * right pane shows the actual connect state for THIS investigation.
+ *
+ * Schema-stability note: the helper re-uses the same `agent.connect.*`
+ * kinds the connect logger pushes (no Hermes-specific shape change).
+ * The `situationId` field is already part of the runtime-agnostic
+ * `TraceEvent` schema, so when a non-Hermes Agent Runtime ships, the
+ * same shape carries the correlation. The helper itself is the only
+ * runtime-aware piece (it knows which client method to call); the
+ * events it emits are NOT.
+ */
+// P0010.2 closure Repair — exported so `runtime-loop.ts` (the
+// RuntimeLoop's auto-investigation path) can stamp connect events with
+// the situationId too. The chat/recommendation routes still call it
+// directly via this module; the runtime loop imports the SAME function
+// so the situation-scoped Trace includes every investigation's connect
+// state, not just the ones triggered by an operator click. The helper
+// is runtime-agnostic: it only stamps a situationId on the connect
+// events; the connect method itself belongs to whichever client is
+// passed in (Hermes today; any Agent tomorrow).
+export const connectWithSituationTrace = async (
+  client: SituationChatClient,
+  situationId: string,
+): Promise<void> => {
+  const base = { source: 'agent' as const, situationId };
+  traceBuffer.push(
+    makeTraceEvent({
+      ...base,
+      kind: 'agent.connect.started',
+      summary: 'Agent 开始连接（为本 Situation）',
+    }),
+  );
+  try {
+    await client.connect();
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    traceBuffer.push(
+      makeTraceEvent({
+        ...base,
+        kind: 'agent.connect.failed',
+        summary: 'Agent 连接失败（为本 Situation）：' + message,
+        detail: { error: message },
+      }),
+    );
+    throw err;
+  }
+  traceBuffer.push(
+    makeTraceEvent({
+      ...base,
+      kind: 'agent.connect.ok',
+      summary: 'Agent 已连接（为本 Situation）',
+    }),
+  );
+};
+
 /** Accumulate message.delta text until message.complete, resolve with full reply. */
 export const collectTurn = (client: SituationChatClient, sessionId: string, timeoutMs = 300_000): Promise<string> => {
   return new Promise((resolveTurn, rejectTurn) => {
@@ -535,7 +599,12 @@ export const situationChatRouter = (options: SituationChatOptions): Router => {
         const client = options.clientFactory
           ? options.clientFactory(options.hermesUrl)
           : new HermesSessionClient(options.hermesUrl ? { url: options.hermesUrl } : {});
-        await client.connect();
+        // P0010.2 closure Repair — use the situation-stamping connect
+        // helper so the right-pane UI's situation-scoped Trace sees
+        // this investigation's connect state (the default connect
+        // logger is process-level and would be filtered out by
+        // `situationId`).
+        await connectWithSituationTrace(client, situationId);
         const created = await client.createSession({
           cwd: workspaceDir,
           ...(options.profile ? { profile: options.profile } : {}),
@@ -648,7 +717,12 @@ export const situationChatRouter = (options: SituationChatOptions): Router => {
         const client = options.clientFactory
           ? options.clientFactory(options.hermesUrl)
           : new HermesSessionClient(options.hermesUrl ? { url: options.hermesUrl } : {});
-        await client.connect();
+        // P0010.2 closure Repair — use the situation-stamping connect
+        // helper so the right-pane UI's situation-scoped Trace sees
+        // this investigation's connect state (the default connect
+        // logger is process-level and would be filtered out by
+        // `situationId`).
+        await connectWithSituationTrace(client, situationId);
         const created = await client.createSession({
           cwd: workspaceDir,
           ...(options.profile ? { profile: options.profile } : {}),
@@ -815,7 +889,12 @@ export const situationChatRouter = (options: SituationChatOptions): Router => {
         const client = options.clientFactory
           ? options.clientFactory(options.hermesUrl)
           : new HermesSessionClient(options.hermesUrl ? { url: options.hermesUrl } : {});
-        await client.connect();
+        // P0010.2 closure Repair — use the situation-stamping connect
+        // helper so the right-pane UI's situation-scoped Trace sees
+        // this investigation's connect state (the default connect
+        // logger is process-level and would be filtered out by
+        // `situationId`).
+        await connectWithSituationTrace(client, situationId);
         const created = await client.createSession({
           cwd: workspaceDir,
           ...(options.profile ? { profile: options.profile } : {}),

@@ -9,12 +9,20 @@
 //
 // Strict scope (per Slice 2 spec):
 //   - In-memory ring buffer, NOT persisted. Process restart = empty buffer.
-//     This is exposed explicitly via the `lost: 'on-restart'` API field so
+//     This is exposed explicitly via the `lost: 'lost-on-restart'` API field so
 //     the operator never confuses "no events" with "no activity".
 //   - Does NOT record high-frequency `message.delta` (would flood the
 //     200-event buffer in <1 second of streaming).
 //   - No new table, no Event Bus, no recovery-policy change, no Wake
 //     Engine, no Terminal Lifecycle.
+//
+// P0010.2 closure Repair — added a strictly-monotonic `seq` cursor on every
+// `push()` so the right-pane UI's incremental polling no longer relies on
+// the ambiguous `since >= ts` comparison. Two events in the same
+// millisecond now get distinct `__seq` values, eliminating both the
+// "duplicate on next poll" bug (`>=`) and the "skip on next poll" bug
+// (`>`). The schema is unchanged; `__seq` is an internal cursor attached
+// to the event at `query()` time. Producers never set it.
 //
 // Consumers:
 //   - `loop-events.ts#stdoutSink` pushes runtime-layer events.
@@ -95,6 +103,44 @@ export interface TraceEvent {
 // ---- Ring buffer -------------------------------------------------------
 
 /**
+ * P0010.2 closure Repair — internal slot in the ring buffer. The
+ * `TraceEvent` schema (public API) is unchanged; `seq` is the
+ * implementation's stable cursor so callers can do incremental polling
+ * without missing or duplicating events whose `ts` collides with the
+ * most recent event. A new `seq` is assigned monotonically on every
+ * `push()`. The previous `since >= ts` cursor was ambiguous: it would
+ * re-include the most recent event on the next poll (>=), while
+ * `since > ts` would skip same-millisecond events entirely. The seq
+ * cursor removes the ambiguity because it is strictly monotonic.
+ */
+interface TraceSlot {
+  seq: number;
+  event: TraceEvent;
+}
+
+/**
+ * P0010.2 closure Repair — extend `TraceEvent` with a read-only `__seq`
+ * for UI incremental polling. This is NOT part of the producer's
+ * public schema (the producer never sets it); the buffer attaches it
+ * at `query()` time. The `__` prefix marks it as a buffer-internal
+ * cursor field that producers/consumers should not synthesize.
+ */
+export type TraceEventWithSeq = TraceEvent & { __seq: number };
+
+/**
+ * P0010.2 closure Repair — query result. `events` is the NEWEST-FIRST
+ * `TraceEvent[]` (same shape as before, augmented with `__seq`).
+ * `nextSinceSeq` is the seq of the newest event in this result; the
+ * caller passes it back as `sinceSeq` on the next poll to fetch only
+ * NEW events. `size` and `capacity` are unchanged.
+ */
+export interface TraceQueryResult {
+  events: TraceEventWithSeq[];
+  /** The seq of the newest returned event; pass it back as `sinceSeq`. */
+  nextSinceSeq: number;
+}
+
+/**
  * Bounded FIFO ring buffer. The fixed capacity is the explicit disclosure:
  * once 200 events are stored, the oldest is dropped on each new push. The
  * capacity is intentionally small (200) so the buffer survives a single
@@ -102,10 +148,16 @@ export interface TraceEvent {
  * bound and does NOT keep history across restarts.
  *
  * `query()` returns events NEWEST FIRST so the UI's natural render order
- * (top of pane = most recent) is the cheapest to compose.
+ * (top of pane = most recent) is the cheapest to compose. Each returned
+ * event also carries `__seq` (the buffer's internal sequence id) so the
+ * caller can pass it back as `sinceSeq` on the next poll — the seq is
+ * strictly monotonic so two events with the same ISO 8601 `ts` are
+ * guaranteed to get distinct `__seq` and an exact incremental fetch
+ * (no duplicates, no misses).
  */
 export class TraceRingBuffer {
-  private buf: TraceEvent[] = [];
+  private buf: TraceSlot[] = [];
+  private nextSeq = 1;
 
   constructor(public readonly capacity: number = 200) {
     if (!Number.isFinite(capacity) || capacity <= 0) {
@@ -114,44 +166,70 @@ export class TraceRingBuffer {
   }
 
   /**
-   * Append a new event. When the buffer is at capacity, the oldest event
-   * is dropped (slice + push is faster than head/tail pointer math at this
-   * scale, and the buffer is small).
+   * Append a new event. Assigns a monotonically increasing `seq` for
+   * cursor-based polling. When the buffer is at capacity, the oldest
+   * event is dropped (slice + push is faster than head/tail pointer
+   * math at this scale, and the buffer is small).
+   *
+   * Returns the assigned `seq` so tests can pin the exact cursor.
+   * Production code reads `seq` off the `query()` result instead.
    */
-  push(event: TraceEvent): void {
-    this.buf.push(event);
+  push(event: TraceEvent): number {
+    const seq = this.nextSeq;
+    this.nextSeq += 1;
+    this.buf.push({ seq, event });
     if (this.buf.length > this.capacity) {
       this.buf.splice(0, this.buf.length - this.capacity);
     }
+    return seq;
   }
 
   /**
    * Query the buffer. All filters are AND-combined and optional.
    *
-   *   - `situationId` — keep only events that match (or are situation-less
-   *                      if `situationId` is the literal `'__no_situation__'`).
-   *                      The `__no_situation__` sentinel is reserved for
-   *                      connect events that don't belong to a specific
-   *                      Situation; production code NEVER queries with it.
+   *   - `situationId` — keep only events whose `situationId` matches
+   *                      (or are situation-less for process-level
+   *                      connect events). Omit to see the full stream.
+   *   - `sinceSeq`    — keep only events with `__seq > sinceSeq`. This
+   *                      is the CANONICAL incremental cursor and is
+   *                      unaffected by ISO 8601 timestamp collisions
+   *                      (multiple events in the same millisecond).
    *   - `since`       — keep only events with `ts >= since` (lexicographic
-   *                      ISO 8601 compare is chronological).
+   *                      ISO 8601 compare is chronological). KEPT for
+   *                      backward compatibility with the Slice 2
+   *                      contract; new code should prefer `sinceSeq`.
+   *                      `since` and `sinceSeq` are AND-combined when
+   *                      both are provided.
    *   - `limit`       — return at most this many events, NEWEST FIRST.
    *                      Default: 100 (well below capacity).
    *
-   * Returns a NEW array — callers may mutate freely.
+   * Returns `{ events, nextSinceSeq }`. Each event in `events` is
+   * augmented with a read-only `__seq: number` so the caller can pass
+   * `events[0].__seq` back as `sinceSeq` on the next poll.
    */
-  query(opts: { situationId?: string; since?: string; limit?: number } = {}): TraceEvent[] {
+  query(opts: {
+    situationId?: string;
+    since?: string;
+    sinceSeq?: number;
+    limit?: number;
+  } = {}): TraceQueryResult {
     const limit = opts.limit ?? 100;
     const since = opts.since;
+    const sinceSeq = opts.sinceSeq;
     const situationId = opts.situationId;
-    const filtered = this.buf.filter((e) => {
+    const filtered = this.buf.filter((slot) => {
+      const e = slot.event;
       if (situationId !== undefined && e.situationId !== situationId) return false;
       if (since !== undefined && e.ts < since) return false;
+      if (sinceSeq !== undefined && slot.seq <= sinceSeq) return false;
       return true;
     });
     // Take the LAST `limit` of the filtered list (most recent), then
     // reverse so the caller gets newest-first.
-    return filtered.slice(-limit).reverse();
+    const sliced = filtered.slice(-limit).reverse();
+    const events: TraceEventWithSeq[] = sliced.map((slot) => ({ ...slot.event, __seq: slot.seq }));
+    const nextSinceSeq = events.length > 0 ? events[0]!.__seq : (sinceSeq ?? 0);
+    return { events, nextSinceSeq };
   }
 
   /** Current size (after filtering would still apply at query time). */
@@ -159,14 +237,24 @@ export class TraceRingBuffer {
     return this.buf.length;
   }
 
+  /**
+   * Current value of the next seq that `push()` will assign. Useful
+   * for tests that want to seed a cursor without pushing a real event.
+   * Production code uses `query().nextSinceSeq` instead.
+   */
+  peekNextSeq(): number {
+    return this.nextSeq;
+  }
+
   /** Drop everything. Used by tests; the production code does not call it. */
   clear(): void {
     this.buf = [];
+    this.nextSeq = 1;
   }
 
-  /** Read-only snapshot. Used by tests; the production code queries via `query()`. */
+  /** Read-only snapshot of events (without seq). Used by tests. */
   snapshot(): readonly TraceEvent[] {
-    return this.buf;
+    return this.buf.map((slot) => slot.event);
   }
 }
 
@@ -179,7 +267,7 @@ export class TraceRingBuffer {
  * `GET /api/runtime/loop/events`.
  *
  * A fresh process starts with an empty buffer; the API response
- * surfaces this as `lost: 'on-restart'` so the UI's empty state copy
+ * surfaces this as `lost: 'lost-on-restart'` so the UI's empty state copy
  * is honest ("尚无记录（重启后清空）") instead of implying "no activity".
  */
 export const traceBuffer: TraceRingBuffer = new TraceRingBuffer(200);

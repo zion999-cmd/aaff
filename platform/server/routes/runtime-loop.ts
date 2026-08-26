@@ -86,9 +86,18 @@ export const runtimeLoopRouter = (loop: RuntimeLoop): Router => {
   router.get('/runtime/loop/events', (req, res) => {
     const situationIdRaw = req.query['situationId'];
     const sinceRaw = req.query['since'];
+    const sinceSeqRaw = req.query['sinceSeq'];
     const limitRaw = req.query['limit'];
     const situationId = typeof situationIdRaw === 'string' && situationIdRaw.length > 0 ? situationIdRaw : undefined;
     const since = typeof sinceRaw === 'string' && sinceRaw.length > 0 ? sinceRaw : undefined;
+    // P0010.2 closure Repair — `sinceSeq` is the canonical incremental
+    // cursor (strictly monotonic). The previous `since` (ISO 8601
+    // timestamp) is kept for the Slice 2 contract but the UI should
+    // prefer `sinceSeq` because two events in the same millisecond
+    // would otherwise re-fetch (`since >= ts`) or skip (`since > ts`).
+    const parsedSinceSeq = typeof sinceSeqRaw === 'string' ? Number.parseInt(sinceSeqRaw, 10) : NaN;
+    const sinceSeq =
+      Number.isFinite(parsedSinceSeq) && parsedSinceSeq >= 0 ? parsedSinceSeq : undefined;
     // Hard cap the limit at the buffer capacity. Negative or non-numeric
     // inputs collapse to the default 100.
     const DEFAULT_LIMIT = 100;
@@ -97,16 +106,22 @@ export const runtimeLoopRouter = (loop: RuntimeLoop): Router => {
       Number.isFinite(parsedLimit) && parsedLimit > 0
         ? Math.min(parsedLimit, traceBuffer.capacity)
         : DEFAULT_LIMIT;
-    const events = traceBuffer.query({
+    const result = traceBuffer.query({
       ...(situationId !== undefined ? { situationId } : {}),
       ...(since !== undefined ? { since } : {}),
+      ...(sinceSeq !== undefined ? { sinceSeq } : {}),
       limit: safeLimit,
     });
     const disclosure = traceBufferDisclosure();
     res.json({
       success: true,
       data: {
-        events,
+        events: result.events,
+        // P0010.2 closure Repair — the seq of the newest returned
+        // event. The UI passes this back as `sinceSeq` on the next
+        // poll to fetch only NEW events (no duplicates, no misses for
+        // same-millisecond bursts).
+        nextSinceSeq: result.nextSinceSeq,
         serverTs: nowIso(),
         lost: disclosure.kind,
         capacity: disclosure.capacity,

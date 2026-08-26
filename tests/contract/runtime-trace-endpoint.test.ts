@@ -2,13 +2,17 @@
 // `GET /api/runtime/loop/events`.
 //
 // Pins the wire contract the right-pane UI relies on. Pinned invariants:
-//   - Response envelope: `{ success: true, data: { events, serverTs,
-//     lost, capacity, size } }`.
-//   - `events` is `TraceEvent[]` NEWEST FIRST.
-//   - `lost: 'on-restart'` is the explicit restart disclosure (matches
-//     `traceBufferDisclosure().kind`).
+//   - Response envelope: `{ success: true, data: { events, nextSinceSeq,
+//     serverTs, lost, capacity, size } }`.
+//   - `events` is `TraceEventWithSeq[]` NEWEST FIRST; each event carries
+//     a read-only `__seq: number` cursor.
+//   - `nextSinceSeq` is the seq of the newest returned event; the UI
+//     passes it back as `sinceSeq` on the next poll to fetch only NEW
+//     events (no duplicates, no skips for same-millisecond bursts).
+//   - `lost: 'lost-on-restart'` is the explicit restart disclosure
+//     (matches `traceBufferDisclosure().kind`).
 //   - `capacity` matches the singleton's capacity (200).
-//   - `situationId` + `since` + `limit` filters compose with AND.
+//   - `situationId` + `since` + `sinceSeq` + `limit` filters compose with AND.
 //   - `limit` is hard-capped at capacity (no caller can pull more than
 //     the buffer holds).
 //   - `message.delta` MUST NOT appear (the producer in situation-chat
@@ -80,7 +84,18 @@ describe('GET /api/runtime/loop/events (contract)', () => {
   // caller can compose its own query without repeating the test boilerplate.
   const getEvents = async (query: string = ''): Promise<{
     status: number;
-    body: { success: boolean; data?: { events: unknown[]; serverTs: string; lost: string; capacity: number; size: number }; error?: string };
+    body: {
+      success: boolean;
+      data?: {
+        events: unknown[];
+        nextSinceSeq: number;
+        serverTs: string;
+        lost: string;
+        capacity: number;
+        size: number;
+      };
+      error?: string;
+    };
   }> => {
     const url = base + '/api/runtime/loop/events' + (query ? '?' + query : '');
     const res = await fetch(url);
@@ -99,6 +114,7 @@ describe('GET /api/runtime/loop/events (contract)', () => {
     expect(body.data.size).toBe(0);
     expect(Array.isArray(body.data.events)).toBe(true);
     expect(body.data.events.length).toBe(0);
+    expect(body.data.nextSinceSeq).toBe(0);
     expect(typeof body.data.serverTs).toBe('string');
     expect(body.data.serverTs).toMatch(/^\d{4}-\d{2}-\d{2}T/);
   });
@@ -133,6 +149,52 @@ describe('GET /api/runtime/loop/events (contract)', () => {
     expect(summaries).toEqual(['new', 'boundary']);
   });
 
+  // P0010.2 closure Repair — the seq cursor fixes the
+  // "same-millisecond events re-fetch or skip" bug. The contract is:
+  //   1. The first poll returns ALL events newest-first.
+  //   2. Each event has a `__seq` field (the internal cursor).
+  //   3. `data.nextSinceSeq` is the seq of the newest event.
+  //   4. The next poll passes `sinceSeq=<nextSinceSeq>` and gets back
+  //      ZERO events (no duplicates, no skips).
+  test('sinceSeq cursor: first poll returns all events; second poll with sinceSeq=nextSinceSeq returns 0 events', async () => {
+    const sameTs = '2026-08-22T02:00:00.000Z';
+    traceBuffer.push(makeTraceEvent({ source: 'agent', kind: 'agent.turn.started', summary: 'a', ts: sameTs }));
+    traceBuffer.push(makeTraceEvent({ source: 'agent', kind: 'agent.turn.started', summary: 'b', ts: sameTs }));
+    traceBuffer.push(makeTraceEvent({ source: 'agent', kind: 'agent.turn.started', summary: 'c', ts: sameTs }));
+    // First poll — no sinceSeq.
+    const first = await getEvents();
+    if (!first.body.data) throw new Error('data missing');
+    const firstEvents = first.body.data.events as Array<{ summary: string; __seq: number }>;
+    expect(firstEvents.map((e) => e.summary)).toEqual(['c', 'b', 'a']);
+    // The newest event's __seq is the cursor to pass back.
+    const cursor = first.body.data.nextSinceSeq;
+    expect(cursor).toBeGreaterThan(0);
+    expect(firstEvents[0]?.__seq).toBe(cursor);
+    // Second poll — passing back the cursor returns NOTHING.
+    // This is the exact regression test: with the previous `since >= ts`
+    // cursor, this would either re-fetch the same events (>=) or skip
+    // all of them and then re-fetch them on a later poll (>= on the
+    // exact same ts). The seq cursor is exact.
+    const second = await getEvents('sinceSeq=' + String(cursor));
+    if (!second.body.data) throw new Error('data missing');
+    expect(second.body.data.events.length).toBe(0);
+    // And the nextSinceSeq is preserved so the third poll is still 0
+    // (NOT accidentally re-fetched).
+    expect(second.body.data.nextSinceSeq).toBe(cursor);
+  });
+
+  test('sinceSeq cursor handles invalid input (non-numeric / negative) as "no filter"', async () => {
+    traceBuffer.push(makeTraceEvent({ source: 'agent', kind: 'agent.turn.started', summary: 'a' }));
+    // Non-numeric → sinceSeq=undefined → returns all.
+    const garbage = await getEvents('sinceSeq=abc');
+    if (!garbage.body.data) throw new Error('data missing');
+    expect(garbage.body.data.events.length).toBe(1);
+    // Negative → sinceSeq=undefined → returns all.
+    const neg = await getEvents('sinceSeq=-5');
+    if (!neg.body.data) throw new Error('data missing');
+    expect(neg.body.data.events.length).toBe(1);
+  });
+
   test('respects limit (default 100, hard-capped at capacity 200)', async () => {
     for (let i = 0; i < 250; i += 1) {
       traceBuffer.push(makeTraceEvent({ source: 'agent', kind: 'agent.turn.started', summary: `e${i}` }));
@@ -152,7 +214,7 @@ describe('GET /api/runtime/loop/events (contract)', () => {
     expect(beyond.body.data.capacity).toBe(200);
   });
 
-  test('combines situationId + since + limit with AND', async () => {
+  test('combines situationId + since + sinceSeq + limit with AND', async () => {
     traceBuffer.push(makeTraceEvent({ source: 'runtime-loop', kind: 'runtime.scheduled', summary: 'r-old', situationId: 'sit-A', ts: '2026-08-22T01:00:00.000Z' }));
     traceBuffer.push(makeTraceEvent({ source: 'agent', kind: 'agent.turn.started', summary: 'a1', situationId: 'sit-A', ts: '2026-08-22T02:00:00.000Z' }));
     traceBuffer.push(makeTraceEvent({ source: 'agent', kind: 'agent.turn.started', summary: 'a2', situationId: 'sit-A', ts: '2026-08-22T02:30:00.000Z' }));
@@ -163,6 +225,8 @@ describe('GET /api/runtime/loop/events (contract)', () => {
     const summaries = (body.data.events as Array<{ summary: string }>).map((e) => e.summary);
     // Newest first, then limit=2 → a3, a2 (a1 dropped by limit; r-old by since; b1 by situationId)
     expect(summaries).toEqual(['a3', 'a2']);
+    // nextSinceSeq is the seq of a3 (the newest returned).
+    expect(body.data.nextSinceSeq).toBeGreaterThan(0);
   });
 
   test('preserves the runtime-agnostic TraceEvent shape (ts/source/kind/summary/situationId/sessionId/turnId/detail)', async () => {
@@ -188,6 +252,9 @@ describe('GET /api/runtime/loop/events (contract)', () => {
     expect(evt['sessionId']).toBe('sess-1');
     expect(evt['turnId']).toBe('turn-1');
     expect(evt['detail']).toEqual({ toolName: 'jd.product.list', args: { date: '2026-08-22' } });
+    // The internal __seq cursor is attached at query time.
+    expect(typeof evt['__seq']).toBe('number');
+    expect(evt['__seq']).toBe(body.data.nextSinceSeq);
   });
 
   test('invalid limit (non-numeric / negative) collapses to default 100', async () => {

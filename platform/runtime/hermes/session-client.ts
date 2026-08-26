@@ -330,8 +330,19 @@ export class HermesSessionClient {
   private closedByUser = false;
 
   constructor(options: HermesSessionClientOptions = {}) {
-    const port = 9119;
-    this.url = options.url ?? `ws://localhost:${port}/api/ws`;
+    // P0010.2 closure Repair — the WS URL is overridable via the
+    // `HERMES_WS_URL` env var. Default 9119 is preserved for the
+    // production deployment shape. The dev env commonly runs Hermes on a
+    // non-default port (e.g. 9120) so an explicit env var lets the same
+    // agentFabric binary talk to a non-standard Hermes without code
+    // changes. The `options.url` parameter still wins (programmatic
+    // override), then the env var, then the default.
+    const DEFAULT_PORT = 9119;
+    const fromEnv = typeof process !== 'undefined' && process.env
+      ? process.env['HERMES_WS_URL']
+      : undefined;
+    const port = parsePortFromUrl(options.url ?? fromEnv ?? `ws://localhost:${DEFAULT_PORT}/api/ws`) ?? DEFAULT_PORT;
+    this.url = options.url ?? fromEnv ?? `ws://localhost:${port}/api/ws`;
     this.callerToken = options.token;
     this.connectTimeoutMs = options.connectTimeoutMs ?? 10_000;
   }

@@ -20,6 +20,7 @@ import { initDatabase } from '#platform/storage/init.js';
 import { createScheduledAcquisitionRunner } from '#app/runtime/scheduling/index.js';
 import type { ScheduledAcquisition } from '#app/runtime/scheduling/index.js';
 import { createRuntimeLoop } from '#app/runtime/loop/index.js';
+import { stdoutSink } from '#app/runtime/loop/loop-events.js';
 import { runtimeLoopRouter } from './routes/runtime-loop.js';
 
 export interface ServerOptions {
@@ -108,6 +109,15 @@ export const createServer = (options: ServerOptions): Express => {
       db,
       ...(options.schedule ? { schedule: options.schedule } : {}),
       workspaceDir: resolve(process.cwd(), 'data', 'fabric-workspace'),
+      // P0010.2 closure — wire the Loop's onEvent to the in-memory trace
+      // buffer so every LoopEvent (scheduled / skipped / blocked / completed)
+      // shows up in the right-pane Execution Trace. The default sink
+      // (`formatLoopEventFallback`) only console.logs; without this wire
+      // the operator only sees the agent.connect.* events from the session
+      // client and never knows whether the Runtime actually scheduled
+      // something. `stdoutSink` is the loop's single source of truth for
+      // LoopEvent → console + TraceEvent mapping (see loop-events.ts).
+      onEvent: stdoutSink,
     });
     app.use('/api', runtimeLoopRouter(loop));
     // Capture on a module-level ref so CLI / main() can start it after the

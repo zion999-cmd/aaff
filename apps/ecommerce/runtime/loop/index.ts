@@ -17,4 +17,12 @@ export {
   traceBufferDisclosure,
   makeTraceEvent,
 } from './trace-ring-buffer.js';
-export type { TraceEvent, TraceKind, TraceSource } from './trace-ring-buffer.js';
+export type {
+  TraceEvent,
+  TraceKind,
+  TraceSource,
+  // P0010.2 closure Repair — internal cursor types (read by the right-pane UI
+  // and the route handler; not synthesized by producers).
+  TraceEventWithSeq,
+  TraceQueryResult,
+} from './trace-ring-buffer.js';

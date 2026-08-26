@@ -1687,6 +1687,20 @@ async function loadSituationDetail(situationId) {
         const host = document.createElement('div'); host.id = 'situationTraceHost';
         decisionContent.appendChild(host);
         renderSignalAttribution(host, explanation, desc);
+        // P0010.2 closure Repair — mount the Runtime Trace ALSO in the
+        // non-completed branch. The operator needs to see the recovery
+        // attempt trail ("Runtime scheduled → Agent connect → 失败 → 阻塞")
+        // while the situation is in pending / blocked / recoverable state,
+        // not only after a successful investigation. Without this mount,
+        // the entire right pane went silent in the very state where the
+        // operator needs the most information. The function is idempotent
+        // (clears its own prior interval on the host) so the existing
+        // re-render flow stays safe.
+        const runtimeTraceHost = document.createElement('div');
+        runtimeTraceHost.id = 'situationRuntimeTraceHost_' + escHtml(situationId) + '_pending';
+        runtimeTraceHost.style.marginTop = '10px';
+        decisionContent.appendChild(runtimeTraceHost);
+        renderRuntimeTrace(runtimeTraceHost, situationId);
       }
     }
   } catch (e) {
@@ -2435,7 +2449,14 @@ function renderRuntimeTrace(host, situationId) {
     '</details>';
 
   const root = host.querySelector('.runtime-trace');
-  let cursorTs = null; // ISO 8601 string; updated to newest event ts each fetch.
+  // P0010.2 closure Repair — `cursorSeq` is the strictly-monotonic
+  // `__seq` returned by the buffer for the newest event we have.
+  // We pass it back as `sinceSeq` on the next poll so the server
+  // excludes events we have already rendered. The previous `since`
+  // (ISO 8601 `ts`) cursor was ambiguous: two events in the same
+  // millisecond would either re-fetch (`since >= ts`) or be skipped
+  // (`since > ts`). The seq cursor is exact.
+  let cursorSeq = null;
 
   const stateIcon = (kind) => {
     if (typeof kind !== 'string') return '·';
@@ -2489,7 +2510,7 @@ function renderRuntimeTrace(host, situationId) {
 
   const renderList = (events, disclosure) => {
     if (!events || !events.length) {
-      const disclosureText = disclosure && disclosure.kind === 'on-restart'
+      const disclosureText = disclosure && disclosure.kind === 'lost-on-restart'
         ? '（重启后清空）'
         : '';
       return (
@@ -2514,7 +2535,7 @@ function renderRuntimeTrace(host, situationId) {
     }
     const params = new URLSearchParams();
     params.set('situationId', situationId);
-    if (cursorTs) params.set('since', cursorTs);
+    if (cursorSeq !== null) params.set('sinceSeq', String(cursorSeq));
     params.set('limit', '100');
     try {
       const res = await fetch('/api/runtime/loop/events?' + params.toString(), { headers: { Accept: 'application/json' } });
@@ -2527,7 +2548,7 @@ function renderRuntimeTrace(host, situationId) {
       const events = Array.isArray(data.events) ? data.events : [];
       // If this is the first fetch, replace the host content; if a poll
       // cycle brings new events, prepend them above the existing list.
-      if (cursorTs === null) {
+      if (cursorSeq === null) {
         root.innerHTML = renderList(events, { kind: data.lost, capacity: data.capacity });
       } else if (events.length) {
         // events are newest-first; insert at the very top of the host.
@@ -2536,17 +2557,22 @@ function renderRuntimeTrace(host, situationId) {
         tmp.innerHTML = html;
         while (tmp.firstChild) root.insertBefore(tmp.firstChild, root.firstChild);
       }
-      // Advance the cursor to the newest event's ts so the next poll
-      // only fetches newer entries. If the response is empty, we keep
-      // the cursor where it was (no new events; the server's `since`
-      // filter would also be a no-op for our case).
-      if (events.length) {
-        cursorTs = events[0].ts;
+      // P0010.2 closure Repair — advance the cursor to the seq of the
+      // newest event the server returned. `data.nextSinceSeq` is the
+      // canonical cursor (the server's `nextSinceSeq` is also safe to
+      // use when the response is empty — it preserves the cursor so
+      // the next poll only fetches newer events).
+      if (typeof data.nextSinceSeq === 'number' && data.nextSinceSeq > 0) {
+        cursorSeq = data.nextSinceSeq;
+      } else if (events.length && typeof events[0].__seq === 'number') {
+        // Defensive: the server should always set `nextSinceSeq`, but
+        // fall back to the event's own seq if the field is missing.
+        cursorSeq = events[0].__seq;
       }
     } catch (err) {
       // Network blip / server restart. Show a transient warning but
       // keep the existing list intact; the next poll cycle will retry.
-      if (cursorTs === null) {
+      if (cursorSeq === null) {
         root.innerHTML =
           '<div class="runtime-trace-empty muted" style="font-size:0.75rem">' +
             '执行轨迹加载失败（' + escHtml((err && err.message) ? err.message : '未知错误') + '），将在下一轮重试' +
