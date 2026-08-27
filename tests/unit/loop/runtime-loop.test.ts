@@ -27,6 +27,12 @@ const markInvestigationMock = vi.hoisted(() => vi.fn());
 const closeClientMock = vi.hoisted(() => vi.fn());
 const connectClientMock = vi.hoisted(() => vi.fn());
 const createSessionMock = vi.hoisted(() => vi.fn());
+// P0010.2 Final Closure Repair (191cdd1) — `connectWithSituationTrace` is
+// imported from the same route module; the test factory must export a stub
+// or the call inside the loop's `investigate()` will throw (undefined is not
+// a function), which fails every test that expects the connect → createSession
+// → runInvestigationTurn → close chain to fire.
+const connectWithSituationTraceMock = vi.hoisted(() => vi.fn());
 
 vi.mock('#app/runtime/situation/index.js', () => ({
   runSituationProducer: runSituationProducerMock,
@@ -35,6 +41,7 @@ vi.mock('#app/runtime/situation/index.js', () => ({
 vi.mock('#platform/server/routes/situation-chat.js', () => ({
   runInvestigationTurn: runInvestigationTurnMock,
   markInvestigation: markInvestigationMock,
+  connectWithSituationTrace: connectWithSituationTraceMock,
 }));
 
 // Fake HermesSessionClient — the Loop's `hermesClientFactory` returns one of
@@ -130,6 +137,16 @@ describe('createRuntimeLoop', () => {
     connectClientMock.mockReset();
     createSessionMock.mockReset();
     closeClientMock.mockReset();
+    // Default no-op — connectWithSituationTrace would normally forward to
+    // client.connect() and stamp a situation-scoped trace event. In tests
+    // we don't care about the trace; the FakeHermesClient already wires
+    // `connect = connectClientMock`, so calling client.connect() would
+    // double-count. The stub below forwards to the connect mock instead,
+    // preserving the existing assertion that `connectClientMock` fires
+    // once per investigation.
+    connectWithSituationTraceMock.mockImplementation(
+      async (client: { connect: () => Promise<void> }) => client.connect(),
+    );
     // Default impls — tests override as needed.
     connectClientMock.mockResolvedValue(undefined);
     createSessionMock.mockResolvedValue({ sessionId: 'sess_test_001' });

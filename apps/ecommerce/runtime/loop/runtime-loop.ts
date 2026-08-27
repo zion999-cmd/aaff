@@ -443,23 +443,34 @@ export const createRuntimeLoop = (options: RuntimeLoopOptions): RuntimeLoop => {
         // event. The clear-block route resets this to undefined
         // along with consecutiveFailures=0. Only write the marker
         // when this is a fresh block (not already emitted) — the
-        // recovery scan filters out already-emitted cases, so we
-        // only get here on the threshold-crossing tick. Defensive
-        // double-check below to make the no-re-emit invariant
-        // explicit at the policy boundary.
-        if (hint) {
-          const situation = loadSituation(db, situationId);
-          if (situation) {
-            const priorInv = loadInvestigationFromLearningContext(db, situationId);
-            if (priorInv && !(priorInv as { blockedEmittedAt?: unknown }).blockedEmittedAt) {
-              markInvestigation(db, situation, {
-                status: priorInv.status ?? 'failed',
-                ...(priorInv.error ? { error: priorInv.error } : {}),
-                ...(priorInv.evidenceContentHash ? { evidenceContentHash: priorInv.evidenceContentHash } : {}),
-                consecutiveFailures: count,
-                blockedEmittedAt: nowIso(),
-              });
-            }
+        // defensive `if (priorInv && !priorInv.blockedEmittedAt)`
+        // check below makes the no-re-emit invariant explicit at
+        // the policy boundary, independent of whether the situation
+        // arrived via the recovery scan (has a `hint`) or via the
+        // producer path (no `hint`, but `candidateIds` included it
+        // on this tick).
+        //
+        // P0010.2.7 follow-up: the previous code wrapped this whole
+        // block in `if (hint)`, which silently skipped the stamp
+        // for producer-emitted situations (the recovery scan
+        // excludes `candidateIds`, so producer-path situations
+        // have no `hint`). The result: `blockedEmittedAt` was never
+        // written, the workspacePresentation reducer fell through
+        // to `recoverable` instead of `blocked`, the operator's
+        // "解除阻塞" button was hidden, and the right panel kept
+        // emitting `investigation_blocked` events every tick
+        // without ever settling into the canonical `blocked` state.
+        const situation = loadSituation(db, situationId);
+        if (situation) {
+          const priorInv = loadInvestigationFromLearningContext(db, situationId);
+          if (priorInv && !(priorInv as { blockedEmittedAt?: unknown }).blockedEmittedAt) {
+            markInvestigation(db, situation, {
+              status: priorInv.status ?? 'failed',
+              ...(priorInv.error ? { error: priorInv.error } : {}),
+              ...(priorInv.evidenceContentHash ? { evidenceContentHash: priorInv.evidenceContentHash } : {}),
+              consecutiveFailures: count,
+              blockedEmittedAt: nowIso(),
+            });
           }
         }
         logger.emit({ kind: 'investigation_blocked', situationId, consecutiveFailures: count });
