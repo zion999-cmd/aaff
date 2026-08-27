@@ -171,6 +171,13 @@ const state = {
   // click to real content.
   situationContext: null,
   currentSituationId: null,
+  // P0010.2.7-followup: when the operator has already recorded at least
+  // one judgment/suggestion for the current situation, the 6 canonical
+  // feedback buttons collapse to a one-line summary + "修改反馈" affordance.
+  // `interactionEditing=true` re-opens the full grid for an explicit edit.
+  // Re-renders happen via the polling / loadSituationDetail path, so this
+  // flag is read at render time only — no event listeners to keep in sync.
+  interactionEditing: false,
   // P0010.2.x — Detail-page polling. The page polls
   // `/api/situations/:id` every `DETAIL_POLL_MS` ms. We compare the
   // returned `presentationRevision` to the cached one; when it changes
@@ -1773,9 +1780,44 @@ async function loadSituationDetail(situationId) {
     html += '</div>';
 
     // Layer 4: 你怎么处理？
+    // P0010.2.7-followup: once the operator has already recorded at least
+    // one intervention for this situation, the 6 canonical feedback buttons
+    // collapse to a one-line summary + "修改反馈" affordance. The previous
+    // behavior always showed the full grid, which produced duplicate
+    // records ("认同判断 认同 认同 认同") and made the page look like the
+    // system was asking the same question four times in a row.
+    //
+    // The summary surfaces the most recent record (type + summary + time)
+    // so the operator sees the canonical state without scrolling. The
+    // existing 处理记录 list below stays as the full history.
     html += '<div class="situation-layer situation-interaction">';
     html += '<h3 class="situation-layer-title">👤 你怎么处理？</h3>';
-    html += renderInteractionSurface(situationId);
+    if (interventions.length === 0 || state.interactionEditing === true) {
+      html += renderInteractionSurface(situationId);
+      if (interventions.length > 0 && state.interactionEditing === true) {
+        // While in edit mode, show a small cancel link so the operator
+        // can back out without leaving another record.
+        html += '<div class="interaction-edit-cancel">' +
+          '<a href="javascript:void(0)" onclick="cancelInteractionEdit(\'' + escHtml(situationId) + '\')" ' +
+          'style="font-size:0.78rem;color:#94a3b8;text-decoration:underline">收起（不修改）</a>' +
+          '</div>';
+      }
+    } else {
+      var last = interventions[interventions.length - 1];
+      var lastTypeLabel = timelineEventLabel(last && last.type, (last && last.content) || {});
+      var lastSummary = (last && last.summary) || '已记录';
+      var lastTime = ((last && (last.timestamp || last.createdAt)) || '').slice(11, 16);
+      html += '<div class="interaction-collapsed" data-collapsed="true">' +
+        '<span class="interaction-collapsed-summary">' +
+          '已记录 ' + interventions.length + ' 条反馈 · ' +
+          '最近: ' + escHtml(lastTypeLabel) + ' · ' + escHtml(lastSummary) +
+          (lastTime ? ' @ ' + escHtml(lastTime) : '') +
+        '</span>' +
+        '<a class="interaction-edit-link" href="javascript:void(0)" ' +
+          'onclick="startInteractionEdit(\'' + escHtml(situationId) + '\')" ' +
+          'style="margin-left:12px;font-size:0.8rem">修改反馈</a>' +
+      '</div>';
+    }
 
     // Show existing interventions
     if (interventions.length > 0) {
@@ -3198,6 +3240,20 @@ function handleIntervention(situationId, optionIndex) {
   submitStructuredIntervention(situationId, option.grammarType, summary, content);
 }
 
+// P0010.2.7-followup: open the full 6-canonical-feedback grid after the
+// operator has already recorded at least one intervention. The grid stays
+// open only until the next record is submitted; on submit, loadSituationDetail
+// re-renders the page and the gate flips back to collapsed.
+function startInteractionEdit(situationId) {
+  state.interactionEditing = true;
+  if (situationId) loadSituationDetail(situationId);
+}
+
+function cancelInteractionEdit(situationId) {
+  state.interactionEditing = false;
+  if (situationId) loadSituationDetail(situationId);
+}
+
 // Submit a structured intervention → POST → re-read → re-render.
 async function submitStructuredIntervention(situationId, type, summary, content) {
   try {
@@ -3218,6 +3274,10 @@ async function submitStructuredIntervention(situationId, type, summary, content)
       respondsToActivityIds: respondsToActivityIds,
     };
     await apiPost('/api/situations/' + situationId + '/interventions', payload);
+    // P0010.2.7-followup: a successful record means we're done editing.
+    // Clear the flag so the next render collapses back to summary, even
+    // if the user just clicked from the "修改反馈" expanded grid.
+    state.interactionEditing = false;
     // Re-read — don't fake state
     loadSituationDetail(situationId);
     showToast('已记录: ' + summary.slice(0, 30));
@@ -4184,3 +4244,7 @@ window.askSituationAgent = askSituationAgent;
 window.handleIntervention = handleIntervention;
 window.startInvestigation = startInvestigation;
 window.generateRecommendation = generateRecommendation;
+// P0010.2.7-followup: exposed so the inline onclick in the collapsed
+// interaction summary can re-open the full 6-button grid.
+window.startInteractionEdit = startInteractionEdit;
+window.cancelInteractionEdit = cancelInteractionEdit;

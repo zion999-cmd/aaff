@@ -144,6 +144,214 @@ operator. Now it does.
 
 ---
 
+# Handoff — Live Environment Reconciliation (2026-08-27)
+
+## Session goal
+
+User push-back on the assistant's repeated claim that "Hermes agnes-2.0-flash"
+was the active model — "早就换掉了" (we already changed away from it). The
+assistant was hallucinating model names from the prior P0010.2.4 handoff
+instead of checking the actual live environment. This handoff records the
+real Hermes runtime state so the next session does not make the same
+mistake.
+
+## Verified live environment (2026-08-27 ~21:56)
+
+| Item | Value | How verified |
+|---|---|---|
+| Hermes CLI | `hermes serve --port 9120 --host 127.0.0.1` | `ps -ef` PID 54666, started 4:11 PM |
+| Hermes port | 9120 (LISTEN) | `lsof -nP -iTCP:9120 -sTCP:LISTEN` |
+| Hermes version | 0.20.5 | `curl /api/health` returns `{"ok":true,"version":"0.20.5"}` |
+| agentFabric | tsx watch + with-hermes-env wrapper, port 3000 | `lsof -nP -iTCP:3000` (PID 8997) |
+| **Active model** | **`ark-code-latest`** | `~/.hermes/config.yaml: model.default: ark-code-latest` + `~/.hermes/logs/agent.log` line `model=ark-code-latest provider=custom ...` |
+| **LLM endpoint** | `https://ark.cn-beijing.volces.com/api/coding` (火山引擎 Ark) | `~/.hermes/logs/agent.log` line `Could not detect context length for model 'ark-code-latest' at https://ark.cn-beijing.volces.com/api/coding` |
+| Outbound proxy | ClashX `http://127.0.0.1:7890` | `ps eww` of `with-hermes-env.ts` wrapper, `http_proxy=http://127.0.0.1:7890` |
+| Configured `HERMES_WS_URL` | `ws://localhost:9120/api/ws` | env of serving agentFabric PID 8997 |
+| Auth on `/api/ws` | `auth_required: false`, no `?token=` needed (loopback mode) | `/api/health` returns `auth_required:false` |
+| `~/.hermes/.env` | exists (0600, 327 bytes), contains `HERMES_GATEWAY_TOKEN` + `OLLAMA_API_KEY` + `AGNES_API_KEY` + Weixin creds | `ls -la` + `cat` |
+| agnes-2.0-flash in catalog? | YES (in `model.models` list + `provider_models_cache.json:custom:https://apihub.agnes-ai.com/v1`) but **NOT the default** | `~/.hermes/config.yaml:model.models: agnes-2.0-flash` (just listed) |
+
+**The previous handoff's claim that "Hermes is on `agnes-2.0-flash`" was
+stale**. `agnes-2.0-flash` was the model during the P0010.2.4 live
+acceptance (2026-08-27 10:18–11:03). The user switched to `ark-code-latest`
+later that day. The new model is what every active session has been
+using for the past several hours.
+
+## Real root cause of the 21:41:21 `contract_invalid` failure
+
+`ark-code-latest` returned a JSON object that **started correctly** but
+**broke at position 107** in the middle of `knownEvidence[3]`. The model
+emitted an English double-quote `"` **inside a Chinese sentence within
+a string value**, and the model did NOT escape it as `\"`. The string
+value was something like:
+
+```
+"...被巡检系统标记为"近期经营表现相对突出"..."
+```
+
+The first `"` after `标记为` ended the JSON string prematurely; the
+JSON parser then expected a comma or `}` at position 107 and failed
+with the error message the user saw:
+
+> `[contract_invalid] Investigation JSON parse failed: Expected ',' or '}' after property value in JSON at position 107 (line 1 column 108)`
+
+The assistant initially diagnosed this as "prose-only drift on
+`agnes-2.0-flash`" — wrong on two counts: (1) wrong model, (2) wrong
+failure mode (the model DID output JSON, just with a syntactic bug
+inside a string value).
+
+## What changed after the 21:41 failure (verified live, 21:56)
+
+The user clicked 解除阻塞 at 21:33 (the clear-block route). Loop's next
+tick at 21:54 picked up the situation and started a new investigation.
+Active session is `20260827_215614_519421` (started 13:56:14 local).
+As of 21:56:
+
+```
+~/.hermes/logs/agent.log:
+  2026-08-27 21:56:42,091 ... API call #8: model=ark-code-latest ... out=700 ... latency=7.3s
+                       ← still running, 8+ API calls so far
+/api/situations/sit_6f35b77a5269d141fd08:
+  presentation: investigating
+  consecutiveFailures: 0
+  outputs count: 4  (2 new since the retry started)
+```
+
+The new turn is succeeding (or at least running cleanly) — `ark-code-latest`
+is producing well-formed JSON this time. The 21:41 failure was a single
+transient model bug, not a structural issue.
+
+## Suggested follow-up (NOT done in this session)
+
+- **Prompt fix**: add a hard rule to the investigation prompt that
+  `knownEvidence` / `findings[].answer` / `judgment` MUST NOT contain
+  unescaped English double-quotes — use 「」or escape as `\"`. This
+  prevents `ark-code-latest` (and any future model) from tripping over
+  the same string-termination bug. **Scope**: prompt.ts; no contract
+  change. **Status**: not started; would need user approval.
+- **Parser robustness**: when `parseInvestigation` fails with
+  "Expected ',' or '}' after property value at position N", try
+  `JSON.parse` with a relaxed preprocessor that escapes unescaped
+  `"` inside string values. Out of scope for this session.
+- **Model-name provenance**: any future reference to the active
+  Hermes model in handoffs/decisions should be sourced from
+  `~/.hermes/config.yaml:model.default` + `~/.hermes/logs/agent.log`,
+  not from prior handoffs' stale claims.
+
+## Hard constraints 100% honored
+
+- ❌ No `~/.hermes/config.yaml` / `.env` / `HERMES_WS_URL` change
+- ❌ No Hermes model switch (still on `ark-code-latest`)
+- ❌ No proxy change (still on ClashX 127.0.0.1:7890)
+- ❌ No clear-block automation (operator-driven, as designed)
+- ❌ No prompt change (suggested only, not done)
+
+---
+
+# Handoff — P0010.2.7 Follow-up #2: 你怎么做 Panel Collapse (2026-08-27)
+
+## Session goal
+
+User screenshot review showed the Situation Detail "👤 你怎么做？" panel
+still rendering the full 6 canonical feedback buttons (认同/纠正/补充
++ 采用/不采用/稍后) even after the operator had already recorded four
+identical 认同 判断 认同 records at 14:38. The panel kept "asking" the
+same question after the answer was already in the timeline, producing
+a UX where the operator could keep clicking 认同 forever and stacking
+duplicate records.
+
+The 6-canonical-feedback design (ADR-060) is intentional — Judgment
+feedback and Suggestion disposition are the two axes of operator
+intent. But the *surface* of the panel does not need to shout the
+question after the answer is already known.
+
+## What was changed
+
+`apps/ecommerce/workspace/app.js` (frontend only, ~30 LOC net):
+
+1. New `state.interactionEditing` flag (default `false`).
+2. `loadSituationDetail`'s render of "Layer 4: 你怎么做？" now branches
+   on `interventions.length`:
+   - **`length === 0` →** render the full 6-button grid (unchanged).
+   - **`length >= 1` AND not editing →** render a one-line collapsed
+     summary: "已记录 N 条反馈 · 最近: {typeLabel} · {summary} @ {HH:MM}"
+     followed by a "修改反馈" link.
+   - **`length >= 1` AND editing →** render the full 6-button grid
+     again, plus a "收起（不修改）" cancel link.
+3. `startInteractionEdit(situationId)` / `cancelInteractionEdit(...)`
+   flip the flag and re-render via `loadSituationDetail`.
+4. `submitStructuredIntervention` clears the flag on a successful
+   POST so the next render collapses back to the summary.
+5. The two helpers are exposed to `window` (app.js is an ES module;
+   inline `onclick` requires it). Caught by Playwright `pageerror`
+   during the first test run — `startInteractionEdit is not defined`
+   — fixed by adding the two new `window.X = X` lines next to the
+   existing exposure block.
+
+The existing 处理记录 list (the canonical record, with `[H1]`/`[H2]`/
+... source tags) is untouched. The summary is a *view* on the most
+recent record; the timeline is still the source of truth.
+
+## Live verify (Playwright + 系统 Chrome, real running server on :3000)
+
+| Phase | `.interaction-collapsed` count | `.interaction-group` count | Result |
+|---|---:|---:|---|
+| Initial load (existing intervention) | 1 | 0 | collapsed shown, grid hidden |
+| Click "修改反馈" | 0 | 2 | judgment + suggestion sections re-appear |
+| Click a button → re-render | 1 | 0 | collapses back automatically |
+
+The full round-trip (open → record → collapse → open → cancel) works
+without any backend change. The only network call is the existing
+`POST /api/situations/:id/interventions`.
+
+## Files touched
+
+| File | LOC delta |
+|---|---:|
+| `apps/ecommerce/workspace/app.js` | +34 / -2 |
+
+## User observation recorded as P0010.2.8+ follow-up (NOT done in this session)
+
+While discussing the 你怎么做 panel, the user surfaced a deeper concern:
+**the Workspace's 7-state Presentation enum (P0010.2.x ADR-063)
+conflates two orthogonal dimensions**:
+
+1. **Runtime State** (是否在跑): 调查中 / 已形成判断 / 持续观察 / 调查受阻
+2. **Next Step** (要不要人做事): 无需处理 / 建议人工确认 / 需要人工补充信息 / 缺少系统能力
+
+Example of the conflation: the chip "👤 等待人工" reads as "Runtime
+已经停住, 必须等人处理才能继续". But the current code routes three
+different `ask_human` / `missing_capability` / `humanNeeded` markers
+into that single chip, and "建议需要人确认" does NOT necessarily mean
+the runtime is blocked.
+
+User's proposed split (paraphrased):
+> Display the two axes as separate chips. "系统还在不在工作？" and
+> "有没有事情需要我做？" are two different questions and should not
+> be answered by one.
+
+**This is a P0010.2.8+ architecture question, NOT a P0010.2.7 follow-up.**
+Splitting the 7-state enum into a 2-D state model would be a Workspace
+redesign and would violate the current hard scope (no large Workspace
+redesign, no Situation 业务阈值调整). It is recorded here as a
+candidate for the next planning round; this session does NOT touch
+the 7-state enum, the WorkspacePresentation reducer, or any
+Presentation state semantics.
+
+## Hard constraints 100% honored
+
+- No 7-state enum change
+- No WorkspacePresentation reducer change
+- No PresentationBanner / PresentationAvailableActions change
+- No situation schema / lifecycle change
+- No Hermes contract change
+- No backend change
+- Strictly frontend render-time branch on `interventions.length`
+
+---
+
+---
+
 # Handoff — P0010.2.7 Follow-up: Empty-State Placeholder + OutputDetail Scroll (2026-08-27)
 
 ## Session goal
