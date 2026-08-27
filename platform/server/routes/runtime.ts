@@ -22,6 +22,13 @@ import { SignalFacade } from '#app/analysis/metrics/facade.js';
 import { loadEvidence, listEvidence } from '#app/connectors/evidence/store.js';
 import { readFileSync, existsSync } from 'node:fs';
 import { resolve } from 'node:path';
+// ADR-064 — 3-layer Hermes runtime health (gateway / session runtime / agent turn).
+// `probeAuthRequired` re-probes the Session Runtime on every readiness/status
+// call so the cached layer state does not go stale. `health-state` holds the
+// agent-turn layer (only updated by the loop) and a stale-tolerant view of the
+// session runtime layer.
+import { probeAuthRequired, parsePortFromUrl } from '#platform/runtime/hermes/session-client.js';
+import { getHermesHealth, recordSessionRuntimeProbe } from '#platform/runtime/hermes/health-state.js';
 
 // ---- Request Schemas ----
 
@@ -332,6 +339,12 @@ export const runtimeRouter = (db: Db): Router => {
 
   // GET /api/readiness — product runtime readiness (P0009). Honest: reflects
   // real acquisition prerequisites (JD/CDP), not static config presence.
+  //
+  // ADR-064: the embedded `hermes` field is the 3-layer shape (gateway /
+  // session runtime / agent turn). The session-runtime layer is re-probed
+  // here so the readiness chip does not show stale data after a Hermes
+  // restart that flipped the port. The agent-turn layer is whatever the
+  // Loop last recorded (see `recordAgentTurn` in runtime-loop).
   router.get('/readiness', async (_req, res) => {
     try {
       const [cdpAvailable, jdPageAvailable, capabilityCount, evidenceCount] = await Promise.all([
@@ -348,11 +361,35 @@ export const runtimeRouter = (db: Db): Router => {
         (async () => {
           try { return listEvidence({}).length; } catch { return 0; }
         })(),
+        // ADR-064: re-probe the Session Runtime on every readiness call so
+        // the chip does not lag behind a Hermes restart. We then record
+        // the probe so `getHermesHealth()` agrees with what we just
+        // observed. The agent-turn layer is left untouched.
+        (async () => {
+          const url = process.env['HERMES_WS_URL'] ?? 'ws://localhost:9119/api/ws';
+          const port = parsePortFromUrl(url) ?? 9119; // `hermes serve` default
+          try {
+            const probe = await probeAuthRequired(url);
+            recordSessionRuntimeProbe({
+              url,
+              port,
+              authRequired: probe.authRequired,
+              probeFailed: probe.probeFailed,
+              tokenSource: getHermesHealth().sessionRuntime.tokenSource,
+            });
+            return { url, port, probeOk: !probe.probeFailed, authRequired: probe.authRequired };
+          } catch {
+            // probeAuthRequired swallows its own errors; this catch is
+            // defensive only.
+            return { url, port, probeOk: false, authRequired: null as boolean | null };
+          }
+        })(),
       ]);
 
       // Honest JD data-source state: Chrome reachable ≠ JD page open ≠ logged in.
       const jdCdp = !cdpAvailable ? 'unavailable' : jdPageAvailable ? 'ready' : 'auth_required';
 
+      const hermes = getHermesHealth();
       ok(res, {
         workspace: 'ready',
         capabilities: capabilityCount,
@@ -362,10 +399,42 @@ export const runtimeRouter = (db: Db): Router => {
         // P0010.1 UI: workspace version comes from status.json (single source of
         // truth), not a hardcoded string in the SPA.
         version: readWorkspaceVersion(),
+        // ADR-064: 3-layer hermes health — see ADR-064 + /api/runtime/hermes/status.
+        hermes,
       });
     } catch (err) {
       fail(res, 500, err instanceof Error ? err.message : 'Readiness check failed');
     }
+  });
+
+  // GET /api/runtime/hermes/status — dedicated 3-layer Hermes runtime
+  // health (ADR-064). Returns the same shape as `readiness.hermes` but
+  // without the JD/CDP noise, so the UI / monitoring can poll this
+  // endpoint cheaply. The session runtime is re-probed every call.
+  router.get('/runtime/hermes/status', async (_req, res) => {
+    const url = process.env['HERMES_WS_URL'] ?? 'ws://localhost:9119/api/ws';
+    const port = parsePortFromUrl(url) ?? 9119; // `hermes serve` default
+    try {
+      const probe = await probeAuthRequired(url);
+      recordSessionRuntimeProbe({
+        url,
+        port,
+        authRequired: probe.authRequired,
+        probeFailed: probe.probeFailed,
+        tokenSource: getHermesHealth().sessionRuntime.tokenSource,
+      });
+    } catch {
+      // probeAuthRequired swallows its own errors; this catch is
+      // defensive only.
+      recordSessionRuntimeProbe({
+        url,
+        port,
+        authRequired: null,
+        probeFailed: true,
+        tokenSource: getHermesHealth().sessionRuntime.tokenSource,
+      });
+    }
+    ok(res, getHermesHealth());
   });
 
   // GET /api/runtime/status — runtime availability and blueprint info.

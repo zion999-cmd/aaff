@@ -170,13 +170,27 @@ describe('HermesSessionClient', () => {
   });
 
   it('fails explicitly when no token is available', async () => {
+    // ADR-064 — the diagnostic contract is fixed: the operator must see
+    // the exact "Hermes Session Runtime unavailable at <url>. AgentFabric
+    // requires 'hermes serve' for the configured session adapter." text.
+    // The previous "Missing Hermes dashboard session token" wording was
+    // ambiguous because it conflated "no token" with "runtime down".
     delete process.env.HERMES_DASHBOARD_SESSION_TOKEN;
     resolveTokenMock.mockResolvedValue(undefined);
     const client = new HermesSessionClient();
-    await expect(client.connect()).rejects.toThrow(/Missing Hermes dashboard session token/);
+    await expect(client.connect()).rejects.toThrow(
+      /Hermes Session Runtime unavailable at ws:\/\/localhost:9119\/api\/ws\./,
+    );
+    await expect(client.connect().catch((e: Error) => e.message)).resolves.toMatch(
+      /AgentFabric requires 'hermes serve' for the configured session adapter\./,
+    );
   });
 
   it('rejects connect() when the server rejects the credential (onerror)', async () => {
+    // ADR-064 — even on a connect-after-token failure, the operator
+    // must see the user-required prefix "Hermes Session Runtime
+    // unavailable at <url>...". The inner cause (handshake rejected)
+    // is preserved in the message body.
     const client = new HermesSessionClient({ token: 'wrong-secret' });
     const { ws, connectPromise } = await beginConnect(client);
     ws.emitError('WebSocket handshake rejected');
@@ -186,7 +200,10 @@ describe('HermesSessionClient', () => {
     });
     const second = MockWebSocket.instances[1]!;
     second.emitError('WebSocket handshake rejected (retry)');
-    await expect(connectPromise).rejects.toThrow(/Hermes connect failed twice/);
+    await expect(connectPromise).rejects.toThrow(/Hermes Session Runtime unavailable at/);
+    await expect(connectPromise.catch((e: Error) => e.message)).resolves.toMatch(
+      /WebSocket upgrade failed after token accepted/,
+    );
     // The WS URL is the same for both attempts because the token is the same.
     expect(MockWebSocket.instances[0]!.url).toBe('ws://localhost:9119/api/ws?token=wrong-secret');
     expect(MockWebSocket.instances[1]!.url).toBe('ws://localhost:9119/api/ws?token=wrong-secret');

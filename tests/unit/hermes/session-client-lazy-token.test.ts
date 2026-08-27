@@ -168,6 +168,9 @@ describe('HermesSessionClient — lazy token + retry-once (P0010.2)', () => {
   });
 
   it('throws an actionable error when the first AND second attempts both fail', async () => {
+    // ADR-064 — diagnostic message contract is fixed: the prefix must
+    // be "Hermes Session Runtime unavailable at <url>..." and the
+    // body must preserve both per-attempt error strings.
     resolveTokenMock.mockResolvedValue('any-token');
     const client = new HermesSessionClient();
 
@@ -177,10 +180,10 @@ describe('HermesSessionClient — lazy token + retry-once (P0010.2)', () => {
     expect(MockWebSocket.instances).toHaveLength(2);
     const second = MockWebSocket.instances[1]!;
     second.emitError('second attempt failed');
-    await expect(connectPromise).rejects.toThrow(/Hermes connect failed twice/);
+    await expect(connectPromise).rejects.toThrow(/Hermes Session Runtime unavailable at/);
     await expect(connectPromise).rejects.toThrow(/first attempt failed/);
     await expect(connectPromise).rejects.toThrow(/second attempt failed/);
-    await expect(connectPromise).rejects.toThrow(/Verify 'hermes serve' is up/);
+    await expect(connectPromise).rejects.toThrow(/AgentFabric requires 'hermes serve'/);
   });
 
   it('does NOT reset the cache when the failing token was operator-pinned (env-var)', async () => {
@@ -194,7 +197,7 @@ describe('HermesSessionClient — lazy token + retry-once (P0010.2)', () => {
     await waitForRetry();
     const second = MockWebSocket.instances[1]!;
     second.emitError('handshake rejected (retry)');
-    await expect(connectPromise).rejects.toThrow(/Hermes connect failed twice/);
+    await expect(connectPromise).rejects.toThrow(/Hermes Session Runtime unavailable at/);
     expect(resetCacheMock).not.toHaveBeenCalled();
     expect(first.url).toBe('ws://localhost:9119/api/ws?token=pinned-secret');
     expect(second.url).toBe('ws://localhost:9119/api/ws?token=pinned-secret');
@@ -209,7 +212,7 @@ describe('HermesSessionClient — lazy token + retry-once (P0010.2)', () => {
     await waitForRetry();
     const second = MockWebSocket.instances[1]!;
     second.emitError('handshake rejected (retry)');
-    await expect(connectPromise).rejects.toThrow(/Hermes connect failed twice/);
+    await expect(connectPromise).rejects.toThrow(/Hermes Session Runtime unavailable at/);
     expect(resetCacheMock).not.toHaveBeenCalled();
     expect(first.url).toBe('ws://localhost:9119/api/ws?token=option-pinned');
     expect(second.url).toBe('ws://localhost:9119/api/ws?token=option-pinned');
@@ -221,12 +224,16 @@ describe('HermesSessionClient — lazy token + retry-once (P0010.2)', () => {
 
     const { ws: first, connectPromise } = await beginConnect(client);
     first.emitError('stale rejected');
-    await expect(connectPromise).rejects.toThrow(/auto-re-resolve also returned no token/);
+    // ADR-064 — diagnostic message contract; the body now reads
+    // "token re-resolve returned empty" instead of the older
+    // "auto-re-resolve also returned no token".
+    await expect(connectPromise).rejects.toThrow(/Hermes Session Runtime unavailable at/);
+    await expect(connectPromise).rejects.toThrow(/token re-resolve returned empty/);
     // P0010.2.4 (post ADR-061) — the actionable error mentions
     // `HERMES_DASHBOARD_SESSION_TOKEN` only. The earlier gateway-token
     // expansion was rolled back because HERMES_GATEWAY_TOKEN is the
     // HTTP gateway credential, not the WS session token.
-    await expect(connectPromise).rejects.toThrow(/If HERMES_DASHBOARD_SESSION_TOKEN/);
+    await expect(connectPromise).rejects.toThrow(/HERMES_DASHBOARD_SESSION_TOKEN/);
     // No second WebSocket is constructed when the retry path cannot get a token.
     expect(MockWebSocket.instances).toHaveLength(1);
   });
@@ -241,7 +248,7 @@ describe('HermesSessionClient — lazy token + retry-once (P0010.2)', () => {
     expect(MockWebSocket.instances).toHaveLength(2);
     const second = MockWebSocket.instances[1]!;
     second.emitError('retry also failed');
-    await expect(connectPromise).rejects.toThrow(/Hermes connect failed twice/);
+    await expect(connectPromise).rejects.toThrow(/Hermes Session Runtime unavailable at/);
     expect(first.url).toBe('ws://localhost:9119/api/ws?token=will-timeout');
   });
 

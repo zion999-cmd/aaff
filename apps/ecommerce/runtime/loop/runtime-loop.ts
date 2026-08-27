@@ -78,6 +78,7 @@ import { HermesSessionClient } from '#platform/runtime/hermes/index.js';
 import { runInvestigationTurn, markInvestigation, connectWithSituationTrace } from '#platform/server/routes/situation-chat.js';
 import type { InvestigationTurnResult } from '#platform/server/routes/situation-chat.js';
 import { loadInvestigationFromLearningContext } from '#app/experience/learning-context-producer.js';
+import { recordAgentTurn } from '#platform/runtime/hermes/health-state.js';
 
 const DEFAULT_TICK_MS = 60_000;
 const DEFAULT_SHOP_ID = 'jd_shop_001';
@@ -281,6 +282,13 @@ export const createRuntimeLoop = (options: RuntimeLoopOptions): RuntimeLoop => {
           ...(result.drift && result.drift.length > 0 ? { drift: result.drift } : {}),
           ...(result.unmappable && result.unmappable.length > 0 ? { unmappable: result.unmappable } : {}),
         });
+        // ADR-064: agent turn reported not-ok — record so the readiness
+        // chip and /api/runtime/hermes/status can report `agentTurn: failed`
+        // (the most recent observation wins over any prior success).
+        recordAgentTurn({
+          ok: false,
+          failureReason: result.failureReason ?? 'investigation_returned_not_ok',
+        });
         return;
       }
       // P0010.2.2 — success resets the counter to 0. Without this, a
@@ -301,6 +309,9 @@ export const createRuntimeLoop = (options: RuntimeLoopOptions): RuntimeLoop => {
         // to dig into the Investigation's persisted payload.
         ...(result.drift && result.drift.length > 0 ? { drift: result.drift } : {}),
       });
+      // ADR-064: agent turn completed cleanly — record so the readiness
+      // chip and /api/runtime/hermes/status can report `agentTurn: healthy`.
+      recordAgentTurn({ ok: true });
       // WorkItem is materialized inside runInvestigationTurn's route
       // wiring (single call site covers both Loop and manual POSTs).
       // Nothing to do here.
@@ -322,6 +333,10 @@ export const createRuntimeLoop = (options: RuntimeLoopOptions): RuntimeLoop => {
         consecutiveFailures: priorCount + 1,
       });
       logger.emit({ kind: 'investigation_failed', situationId, error: message });
+      // ADR-064: agent turn threw — same surface as the result.ok=false
+      // path; record so /api/runtime/hermes/status reports the failure
+      // even when the connect never returned a structured result.
+      recordAgentTurn({ ok: false, failureReason: 'turn_threw' });
     } finally {
       try {
         client?.close();

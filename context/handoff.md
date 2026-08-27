@@ -1,3 +1,133 @@
+# Handoff — Hermes Integration Correction (ADR-064) (2026-08-27)
+
+## Session goal
+
+User live review of P0010.2.4 fix (ADR-061) acknowledged the connect-chain was
+correct but pointed out the **runtime/diagnostic contract was still wrong in 3
+ways**:
+
+1. The error message `Missing Hermes dashboard session token...` made an
+   operator believe "Hermes is down" when in fact Hermes may be up and serving
+   with `auth_required:false` and a random in-memory `_SESSION_TOKEN` that
+   the resolver has no path to read. The diagnostic conflated "no token" with
+   "runtime unreachable".
+2. The readiness chip in Workspace read `d.workspace === 'ready'`, which
+   was always `'ready'` and never reflected Hermes health. It conflated
+   "agentFabric process up" with "Hermes Session Runtime up".
+3. The UI hint "请确认 Hermes serve 已启动" used the human word "Hermes"
+   without distinguishing the **gateway** (port 8642, API_SERVER_KEY Bearer)
+   from the **session runtime** (port 9119, HERMES_DASHBOARD_SESSION_TOKEN) —
+   which is the actual production chain agentFabric uses.
+
+User instruction (verbatim, hard constraint):
+> "先纠正运行/诊断 contract，再继续 7500f65 的真实浏览器 live acceptance"
+> + "HermesSessionClient → hermes serve → /api/ws 是唯一整合。
+> 不允许 gateway:8642 fallback to /api/ws、gateway token/API_SERVER_KEY
+> → session token、自动看到 Hermes PID 就猜 transport。HERMES_WS_URL 是
+> Session Runtime endpoint 的唯一配置来源；可以有明确默认 9119，但日志
+> 必须说明这是 serve default，不是'检测到 gateway'。如果 endpoint
+> 不可达，错误必须写：'Hermes Session Runtime unavailable at <url>.
+> AgentFabric requires \'hermes serve\' for the configured session
+> adapter.'。不要因为 8642 gateway 存活就认为 session runtime 存活。
+> 不要因为 9119 不存在就认为 Hermes 整体离线。Health 必须分层：Hermes
+> gateway running/not checked；Hermes session runtime (/api/ws)
+> healthy/unavailable；Agent turn healthy/failed。不得只显示统一的 Hermes
+> online/offline。Token domain 分离：/api/ws → HERMES_DASHBOARD_SESSION_TOKEN；
+> :8642/v1 → API_SERVER_KEY。禁止相互 fallback."
+
+5 hard constraints → 5 file-level decisions (see ADR-064 for full text).
+
+## What was changed
+
+| File | Change | Why |
+|---|---|---|
+| `platform/runtime/hermes/health-state.ts` (NEW, 257 LOC) | Process-singleton 3-layer `HermesHealth` shape (gateway not_checked + sessionRuntime {url,port,state,authRequired,probeFailed,lastProbedAt,tokenSource} + agentTurn {state,lastTurnAt,lastFailureReason}) | Single source of truth; one read API, one write API per layer; gateway is an **advertised non-feature** |
+| `platform/runtime/hermes/session-client.ts` | `missingTokenError(probe)` rewritten to user-verbatim wording + resolution note + "NOT a fallback" tail; new `sessionRuntimeUnreachableError(err)`; `connect()` 4 exit paths call into health-state BEFORE throwing; `parsePortFromUrl` exported; `HermesAuthError.reason` union extended with `session_runtime_unreachable`; 9119 comments annotated "hermes serve default (Session Runtime)" | Operator must see the exact required prefix; the difference between "no token" and "token accepted but WS refused" is now distinguishable; readiness/status reflects truth even if no caller awaits the throw |
+| `platform/runtime/hermes/token-resolver.ts` | 9119 annotations = "hermes serve default (Session Runtime)"; top comment block extended with explicit token-domain-separation paragraph | Re-assert ADR-061's removal of `HERMES_GATEWAY_TOKEN`; prevent accidental re-introduction of a gateway fallback |
+| `platform/server/routes/runtime.ts` | `/api/readiness` embeds `hermes: {gateway, sessionRuntime, agentTurn}` field, re-probes `/api/health` on every call; new `/api/runtime/hermes/status` route | Readiness chip must reflect Hermes truth, not the always-`'ready'` workspace field; dedicated route for cheap monitoring poll |
+| `apps/ecommerce/runtime/loop/runtime-loop.ts` | Imports `recordAgentTurn`; called on all 3 turn outcome paths (ok / result.ok=false / catch) with structured `failureReason` | Agent-turn layer reflects the most recent investigation turn, not a stale boolean |
+| `apps/ecommerce/workspace/app.js` | `renderReadiness()` reads `d.hermes.sessionRuntime.state` (primary) + `d.hermes.agentTurn.state` (suffix), NOT `d.workspace === 'ready'`; 3 catch-block UI hints (L2817, L3404, L3411) rewritten to "Session Runtime 是 `hermes serve`（默认端口 9119），不是 hermes gateway（端口 8642）" | Two-layer visible to operator; no single combined boolean; both transport layers named explicitly |
+| `tests/unit/hermes/diagnostic-message.test.ts` (NEW, 13 tests) | Pins 3-layer shape + diagnostic message contract + token domain separation | Regression net for the diagnostic contract; touching the message wording or the health shape now requires a deliberate ADR update |
+| `tests/unit/hermes/session-client.test.ts` + `tests/unit/hermes/session-client-lazy-token.test.ts` | 5 error-message assertions updated from "Hermes connect failed twice" to ADR-064 prefix "Hermes Session Runtime unavailable at" + "AgentFabric requires 'hermes serve'" body | Tests must match the operator-facing contract |
+
+## Verification
+
+- **typecheck**: `npm run typecheck` — 0 new errors vs baseline (baseline has 19
+  pre-existing, none introduced by this slice).
+- **unit tests**: 13 new tests in `tests/unit/hermes/diagnostic-message.test.ts`,
+  all pass. Existing session-client tests updated for the new wording; 5 old
+  assertions rewritten to the new contract.
+- **full suite**: `npm test` → **1123 passed / 5 pre-existing flaky** vs master
+  baseline before this slice of **1110 passed / 5 pre-existing flaky** —
+  **net 0 new regression**, +13 net new tests. The 5 pre-existing flaky are
+  the same as in master:
+  - `capability/coverage.test` (real API count vs assertion 50)
+  - 3× `loop/runtime-loop.test` (pre-existing `vi.mock` connect-spy timing)
+  - `hermes/session-client-lazy-token.test` (pre-existing slow-timer
+    unhandled-rejection pattern)
+
+## Risk surface
+
+- **operator mental model shift**: the readiness chip text changes from
+  "Hermes · ready" to "Session Runtime · ready · Agent Turn · turn ok" —
+  this is intentional, but operators who screenshot the old chip for
+  runbooks need to know.
+- **/api/readiness response shape changed**: now includes a `hermes` field.
+  External clients that strictly-typed the old shape (without `hermes`) will
+  just see an extra field — no breakage.
+- **/api/runtime/hermes/status is new**: not yet consumed by any UI; it
+  exists for cheap monitoring and for the future Wake Engine (P0012) that
+  needs a structured 3-layer health source.
+
+## NOT in scope (verbatim from user)
+
+- No 8642 adapter.
+- No gateway as session transport.
+- No 3rd Hermes main path.
+- No Workspace State Convergence design change (ADR-063 is intact).
+- No P0010.3 / Terminal Lifecycle / Resolution Engine / new persistent
+  lifecycle.
+- No Event Bus / SSE / WebSocket push.
+- No Wake Engine / Action Engine / Approval / external sending.
+- No SubprocessHermesClient deletion (still used for the legacy
+  `rankProductsComposition` path).
+- No Hermes proxy.
+- No fake time / provenance.
+
+## Next-step (live acceptance, deferred per user order)
+
+When the operator runs live acceptance for the 7500f65 Workspace State
+Convergence work, the test environment **must**:
+
+1. Start `hermes serve --port 9120` (NOT `hermes gateway`).
+2. Export `HERMES_DASHBOARD_SESSION_TOKEN=<chosen>` in BOTH the `hermes serve`
+   shell AND the agentFabric shell.
+3. Export `HERMES_WS_URL=ws://localhost:9120/api/ws` in the agentFabric shell.
+4. Verify via the UI: readiness chip says "Session Runtime · ready · Agent
+   Turn · turn ok" (after the first investigation turn completes).
+5. Verify via `/api/runtime/hermes/status` (curl) that
+   `sessionRuntime.state === 'healthy'` and `agentTurn.state === 'healthy'`
+   (after at least one turn).
+
+If the operator instead only starts `hermes gateway` on 8642, the readiness
+chip must show "Session Runtime · unavailable · Agent Turn · no turn yet"
+and the error hint in the chat catch-block must read exactly the
+ADR-064-required prefix. This is the correct behavior — gateway is a
+separate service, not a session transport.
+
+## Suggested next ADR (NOT a proposal, just a forward note)
+
+- If live acceptance needs to validate the **agent-turn** path against a
+  real Hermes, the test should pre-seed a Situation via the existing
+  `runSituationProducer` path (P0009.1) so the loop has a candidate to pick
+  up on the first tick.
+- The Wake Engine / Event Bus work (P0012) can now consume
+  `/api/runtime/hermes/status` as a structured source of "is the agent
+  actually online?" — this slice makes that consumption possible without
+  inventing a new probe path.
+
+---
+
 # Handoff — P0010.2.x Workspace State Convergence (ADR-063) (2026-08-27)
 
 ## Session goal

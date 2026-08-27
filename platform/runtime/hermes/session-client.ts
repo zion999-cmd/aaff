@@ -31,6 +31,11 @@ import {
   type ResolveHermesTokenResult,
 } from './token-resolver.js';
 import { traceBuffer, makeTraceEvent } from '#app/runtime/loop/trace-ring-buffer.js';
+import {
+  recordSessionRuntimeProbe,
+  recordSessionRuntimeConnectOk,
+  recordSessionRuntimeConnectFailure,
+} from './health-state.js';
 
 // ---- Types ----
 
@@ -282,13 +287,19 @@ export function resetHealthCache(): void {
   healthCache.clear();
 }
 
+/**
+ * Translate a `/api/ws` URL to its `/api/health` probe counterpart.
+ * This is the Session Runtime probe (the same endpoint `hermes serve` and
+ * `hermes dashboard` both expose on their default port 9119). It is NOT
+ * a hermes gateway endpoint — port 8642 is a separate service.
+ */
 function urlToHttp(wsUrl: string): string {
   // ws://localhost:9119/api/ws → http://localhost:9119/api/health
   const replaced = wsUrl.replace(/^ws(s)?:\/\//, 'http$1://');
   return replaced.replace(/\/api\/ws\/?$/, '/api/health');
 }
 
-function parsePortFromUrl(url: string): number | undefined {
+export function parsePortFromUrl(url: string): number | undefined {
   try {
     const u = new URL(url);
     if (!u.port) return undefined;
@@ -308,7 +319,7 @@ function parsePortFromUrl(url: string): number | undefined {
 export class HermesAuthError extends Error {
   override readonly name = 'HermesAuthError';
   constructor(
-    readonly reason: 'connect_failed' | 'connect_closed' | 'connect_timeout' | 'retry_exhausted' | 'missing_token',
+    readonly reason: 'connect_failed' | 'connect_closed' | 'connect_timeout' | 'retry_exhausted' | 'missing_token' | 'session_runtime_unreachable',
     message: string,
   ) {
     super(message);
@@ -331,13 +342,16 @@ export class HermesSessionClient {
 
   constructor(options: HermesSessionClientOptions = {}) {
     // P0010.2 closure Repair — the WS URL is overridable via the
-    // `HERMES_WS_URL` env var. Default 9119 is preserved for the
-    // production deployment shape. The dev env commonly runs Hermes on a
-    // non-default port (e.g. 9120) so an explicit env var lets the same
-    // agentFabric binary talk to a non-standard Hermes without code
-    // changes. The `options.url` parameter still wins (programmatic
-    // override), then the env var, then the default.
-    const DEFAULT_PORT = 9119;
+    // `HERMES_WS_URL` env var. Default 9119 is the `hermes serve` default
+    // port (the Session Runtime that backs `/api/ws`); it is NOT a
+    // hermes gateway port (gateway defaults to 8642 with API_SERVER_KEY
+    // Bearer auth and is a separate service — see ADR-064). The dev env
+    // commonly runs Hermes on a non-default port (e.g. 9120) so an
+    // explicit env var lets the same agentFabric binary talk to a
+    // non-standard Hermes without code changes. The `options.url`
+    // parameter still wins (programmatic override), then the env var,
+    // then the default.
+    const DEFAULT_PORT = 9119; // `hermes serve` default (Session Runtime)
     const fromEnv = typeof process !== 'undefined' && process.env
       ? process.env['HERMES_WS_URL']
       : undefined;
@@ -372,6 +386,7 @@ export class HermesSessionClient {
    */
   async connect(): Promise<void> {
     this.closedByUser = false;
+    // 9119 is the `hermes serve` default (Session Runtime), not gateway.
     const port = parsePortFromUrl(this.url) ?? 9119;
     const startedAt = Date.now();
     const log = (info: Partial<HermesConnectInfo> & { attempt: 1 | 2 }): void => {
@@ -393,6 +408,18 @@ export class HermesSessionClient {
     // to choose the actionable error message. It does NOT change whether
     // we send `?token=` — see probeAuthRequired() JSDoc above.
     const probe = await probeAuthRequired(this.url);
+    // ADR-064: publish the probe result to the 3-layer health state so
+    // /api/runtime/hermes/status and /api/readiness agree on what the
+    // last observation was. The tokenSource is still unknown at this
+    // point — it gets overwritten on the connect-ok / connect-failure
+    // path below.
+    recordSessionRuntimeProbe({
+      url: this.url,
+      port,
+      authRequired: probe.authRequired,
+      probeFailed: probe.probeFailed,
+      tokenSource: null,
+    });
 
     // (2) Resolve a candidate token: callerToken > env-var > auto-discover.
     //
@@ -422,6 +449,15 @@ export class HermesSessionClient {
         outcome: 'no-token-resolved',
         error: 'no_token_found',
       });
+      // ADR-064: no session token resolvable — the Session Runtime is
+      // not usable through the configured adapter. Mark unavailable
+      // before throwing so the readiness/status route surfaces the
+      // actual reason.
+      recordSessionRuntimeConnectFailure({
+        url: this.url,
+        port,
+        reason: 'no session token resolvable (env-dashboard unset, auto-discover returned no token)',
+      });
       throw this.missingTokenError(probe);
     }
     log({
@@ -440,6 +476,13 @@ export class HermesSessionClient {
         probeFailed: probe.probeFailed,
         tokenSource: first.source,
         outcome: 'ok',
+      });
+      // ADR-064: connect succeeded — overwrite the health state with the
+      // confirmed source and mark Session Runtime healthy.
+      recordSessionRuntimeConnectOk({
+        url: this.url,
+        port,
+        tokenSource: first.source,
       });
       return;
     }
@@ -463,12 +506,12 @@ export class HermesSessionClient {
 
     const fresh = await resolveToken();
     if (!fresh.token) {
-      throw new Error(
-        `Hermes connect failed (${firstErr.message}); auto-re-resolve also returned no token. ` +
-          `If ${ENV_TOKEN_NAMES.dashboard} is set in the agentFabric env, ` +
-          `refresh it to match the value in the running 'hermes serve' process; otherwise verify ` +
-          `'hermes serve' is up on ${this.url} with auth_required=${probe.authRequired ? 'true' : 'false'}.`,
-      );
+      const reason = `token re-resolve returned empty after first attempt failed: ${firstErr.message}. ` +
+        `${ENV_TOKEN_NAMES.dashboard} is NOT a fallback to a different transport; the configured session adapter is 'hermes serve' at ${this.url}.`;
+      // ADR-064: token re-resolve failed after a connect failure — the
+      // Session Runtime is not reachable through the configured adapter.
+      recordSessionRuntimeConnectFailure({ url: this.url, port, reason });
+      throw this.sessionRuntimeUnreachableError(new Error(reason));
     }
 
     const secondErr = await this.tryOnce(fresh.token).catch((err: unknown) => err);
@@ -479,6 +522,14 @@ export class HermesSessionClient {
         probeFailed: probe.probeFailed,
         tokenSource: fresh.source,
         outcome: 'ok',
+      });
+      // ADR-064: second-attempt connect succeeded — overwrite the health
+      // state with the confirmed source (the post-refresh token source
+      // is the one that actually worked).
+      recordSessionRuntimeConnectOk({
+        url: this.url,
+        port,
+        tokenSource: fresh.source,
       });
       return;
     }
@@ -491,10 +542,17 @@ export class HermesSessionClient {
       error: secondErr.message,
     });
 
-    throw new Error(
-      `Hermes connect failed twice. First: ${firstErr.message}. ` +
-        `Second (after token refresh): ${secondErr.message}. ` +
-        `Verify 'hermes serve' is up on ${this.url} and the token in its env matches.`,
+    // ADR-064: both connect attempts failed — Session Runtime is not
+    // reachable through the configured adapter. Mark the health state
+    // accordingly BEFORE throwing so the readiness/status routes reflect
+    // the failure even if no caller is awaiting the throw.
+    recordSessionRuntimeConnectFailure({
+      url: this.url,
+      port,
+      reason: `connect failed twice — first: ${firstErr.message}; second (after token refresh): ${secondErr.message}`,
+    });
+    throw this.sessionRuntimeUnreachableError(
+      new Error(`connect failed twice — first: ${firstErr.message}; second (after token refresh): ${secondErr.message}`),
     );
   }
 
@@ -537,26 +595,53 @@ export class HermesSessionClient {
   }
 
   /**
-   * P0010.2.4 — error when no token is available. Now takes the probe
-   * result so the message can mention whether the running Hermes is in
-   * `auth_required: false` (loopback) mode, in which case the operator
-   * must still set the env var (or have `hermes serve` running for
-   * auto-discover) — Hermes 0.20.5 authenticates the WebSocket upgrade
-   * in both modes (see web_server.py:_ws_auth_reason).
+   * P0010.2.4 + ADR-064 — error when no session token is available, OR the
+   * configured session-runtime endpoint is unreachable.
+   *
+   * Per ADR-064 diagnostic contract (user verbatim):
+   *   * AgentFabric's only Hermes transport is `HermesSessionClient` →
+   *     `hermes serve` → `/api/ws`. The hermes gateway (port 8642, OpenAI-
+   *     compatible API server, `API_SERVER_KEY` Bearer) is a SEPARATE
+   *     service and is NOT a fallback.
+   *   * The error MUST name the **Session Runtime** as the missing
+   *     dependency, not "Hermes" generically, and MUST say `hermes serve`
+   *     is the required subcommand (NOT `hermes gateway` or `hermes
+   *     dashboard`).
+   *   * The two distinct failure modes (probe unreachable vs token missing)
+   *     are surfaced as different `modeHint` suffixes so the operator can
+   *     tell the cases apart without reading source.
    */
   private missingTokenError(probe: { authRequired: boolean; probeFailed: boolean }): HermesAuthError {
     const modeHint = probe.probeFailed
-      ? ' (could not probe /api/health; assuming auth_required)'
+      ? ' (session runtime probe failed: /api/health not reachable at this URL)'
       : probe.authRequired
-        ? ' (Hermes reports auth_required=true)'
-        : ' (Hermes reports auth_required=false; loopback mode still requires ?token=)';
+        ? ' (session runtime reports auth_required=true)'
+        : ' (session runtime reports auth_required=false; loopback mode still requires ?token=)';
     return new HermesAuthError(
       'missing_token',
-      `Missing Hermes dashboard session token${modeHint}. Either (a) export ` +
-        `${ENV_TOKEN_NAMES.dashboard} in the agentFabric process env ` +
-        `to match the value used by 'hermes serve', or (b) start 'hermes serve' (defaults to port 9119) ` +
-        `so the token can be auto-discovered from its process env. ` +
-        `See platform/runtime/hermes/token-resolver.ts for details.`,
+      `Hermes Session Runtime unavailable at ${this.url}. ` +
+        `AgentFabric requires 'hermes serve' for the configured session adapter.${modeHint}\n` +
+        `Resolution: (a) start the Session Runtime with 'hermes serve' (default port 9119) and ` +
+        `export HERMES_DASHBOARD_SESSION_TOKEN=<chosen_value> in BOTH the 'hermes serve' shell and the agentFabric shell, OR ` +
+        `(b) set HERMES_WS_URL to point at an already-running 'hermes serve' instance.\n` +
+        `NOT a fallback: hermes gateway (port 8642, API_SERVER_KEY Bearer) is a separate service and is NOT supported by the configured session adapter.`,
+    );
+  }
+
+  /**
+   * P0010.2.4 + ADR-064 — error when the configured session-runtime endpoint
+   * is reachable enough to be probed but the WebSocket upgrade itself
+   * failed after the token was accepted. Distinguished from
+   * `missingTokenError` so the operator can tell "I have a token but my
+   * session runtime is misbehaving" apart from "I have no token at all".
+   */
+  private sessionRuntimeUnreachableError(err: unknown): HermesAuthError {
+    const reason = err instanceof Error ? err.message : String(err);
+    return new HermesAuthError(
+      'session_runtime_unreachable',
+      `Hermes Session Runtime unavailable at ${this.url}. ` +
+        `AgentFabric requires 'hermes serve' for the configured session adapter. ` +
+        `(WebSocket upgrade failed after token accepted: ${reason})`,
     );
   }
 

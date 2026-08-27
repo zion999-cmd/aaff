@@ -2813,8 +2813,14 @@ async function startInvestigation(situationId) {
         (resp.error ? ': ' + escHtml(resp.error) : '') + '</p>';
     }
   } catch (e) {
+    // ADR-064 — show the EXACT backend error to the operator. The backend
+    // already writes "Hermes Session Runtime unavailable at <url>..." with
+    // the right recovery instructions; we just surface it here. We do NOT
+    // re-invent a different "hermes may be down" message, because the
+    // backend distinguishes session runtime (9119) from gateway (8642).
     uEl.innerHTML = '<p class="muted placeholder">调查失败: ' + escHtml(e.message) +
-      '<br/><small>请确认 Hermes serve 已启动（hermes serve，端口 9119）。</small></p>';
+      '<br/><small>检查方向：Session Runtime 是 <code>hermes serve</code>（默认端口 9119），不是 hermes gateway（端口 8642）。' +
+      'gateway 存活 ≠ Session Runtime 存活。</small></p>';
   } finally {
     if (btn) btn.disabled = false;
   }
@@ -2963,8 +2969,20 @@ function loadReadiness() {
 
 function renderReadiness(data) {
   var d = data || {};
+  // ADR-064 — the Hermes chip is now driven by the 3-layer health shape.
+  // We do NOT fall back to d.workspace (which is always "ready" and was
+  // never an honest Hermes signal). Session Runtime is the layer the
+  // operator needs to see; Agent Turn is a secondary status; Gateway is
+  // intentionally not surfaced because agentFabric does not talk to it.
+  var hermes = d.hermes || {};
+  var sr = hermes.sessionRuntime || {};
+  var at = hermes.agentTurn || {};
+  var srLabel = sr.state === 'healthy' ? 'ready' : 'unavailable';
+  var atLabel = at.state === 'healthy' ? 'turn ok'
+    : at.state === 'failed' ? 'turn failed'
+    : 'no turn yet';
   var chips = {
-    readinessHermes: 'Hermes · ' + (d.workspace === 'ready' ? 'ready' : 'unavailable'),
+    readinessHermes: 'Session Runtime · ' + srLabel + ' · Agent Turn · ' + atLabel,
     readinessCdp: 'JD/CDP · ' + (d.jd_cdp === 'ready' ? 'ready' : d.jd_cdp === 'auth_required' ? '需要登录' : 'unavailable'),
     readinessCapabilities: 'Capabilities · ' + (d.capabilities != null ? d.capabilities : '…'),
     readinessEvidence: 'Evidence · ' + (d.evidence != null ? d.evidence : '…'),
@@ -3401,7 +3419,8 @@ async function runIngest(opts) {
       if (st) renderKnowledgeSources(st, resp.status);
     } else {
       result.innerHTML = '<p class="muted placeholder">Agent 执行失败: ' + escHtml(resp.error || '未知错误') +
-        '<br/><small>请确认 Hermes serve 已启动（hermes serve，端口 9119）。</small></p>';
+        '<br/><small>检查方向：Session Runtime 是 <code>hermes serve</code>（默认端口 9119），不是 hermes gateway（端口 8642）。' +
+        'gateway 存活 ≠ Session Runtime 存活。</small></p>';
     }
     // 刷新主状态（含生成的知识）——无论 Agent 状态如何，都以磁盘为准。
     if (resp.status) refreshKnowledge(resp.status);

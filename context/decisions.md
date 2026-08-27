@@ -1,5 +1,81 @@
 # 技术决策记录 (ADR)
 
+## ADR-064: Hermes Integration Correction — Single Session Runtime, 3-Layer Health, No Fallback (2026-08-27)
+
+- **日期**: 2026-08-27
+- **状态**: Accepted（typecheck 0 新增，13/13 新定向测试 pass，full suite 1123 passed / 5 pre-existing flaky，**net 0 new regression** vs master baseline 1110/5）
+- **来源**: 用户在审 P0010.2.4 修复后明确指出"运行/诊断 contract" 还在犯 3 个错：(1) 暗示 9119 关闭 = Hermes 整体离线、(2) 暗示 8642 gateway 存活 = session runtime 存活、(3) 把"无 token"和"runtime 不可达"两种失败模式混成一条字符串。命令："先纠正运行/诊断 contract，再继续 7500f65 的真实浏览器 live acceptance"。
+
+**核心原则**（用户原话，verbatim 保留）:
+> HermesSessionClient → hermes serve → /api/ws 是唯一整合。不允许 gateway:8642 fallback to /api/ws、gateway token/API_SERVER_KEY → session token、自动看到 Hermes PID 就猜 transport。HERMES_WS_URL 是 Session Runtime endpoint 的唯一配置来源；可以有明确默认 9119，但日志必须说明这是 serve default，不是'检测到 gateway'。如果 endpoint 不可达，错误必须写：'Hermes Session Runtime unavailable at <url>. AgentFabric requires \'hermes serve\' for the configured session adapter.'。不要因为 8642 gateway 存活就认为 session runtime 存活。不要因为 9119 不存在就认为 Hermes 整体离线。Health 必须分层：Hermes gateway running/not checked；Hermes session runtime (/api/ws) healthy/unavailable；Agent turn healthy/failed。不得只显示统一的 Hermes online/offline。Token domain 分离：/api/ws → HERMES_DASHBOARD_SESSION_TOKEN；:8642/v1 → API_SERVER_KEY。禁止相互 fallback。
+
+**Background — why this slice is purely corrective**:
+
+ADR-061 (P0010.2.4 review repair) already removed the `HERMES_GATEWAY_TOKEN` fallback and made the `?token=` path consistent. What remained was: (a) the "no token" error still read `Missing Hermes dashboard session token` which an operator would read as "Hermes is down" (it's not — Hermes may be up with auth_required=false and a random in-memory token that the resolver has no way to read); (b) the readiness chip rendered `data.workspace === 'ready' ? 'ready' : 'unavailable'` which conflated "agentFabric process up" with "Session Runtime up" — they were never the same thing; (c) `health-state` was a hidden module-scoped boolean implicit in the connect logger, with no separate "agent turn" state; (d) `app.js` L2817/L3404/L3411 UI hints said "请确认 Hermes serve 已启动（hermes serve，端口 9119）" which was a step forward but still said "Hermes" (the human word) without distinguishing gateway from session runtime.
+
+**Decisions** (each addresses a hard constraint from the user):
+
+1. **Single integration: HermesSessionClient → hermes serve → /api/ws.**
+   - `HERMES_WS_URL` is the only config source. Default `ws://localhost:9119/api/ws`.
+   - **No** gateway:8642 → /api/ws fallback.
+   - **No** gateway token / `API_SERVER_KEY` → session token mapping.
+   - **No** PID auto-detection of transport.
+   - Where in code: `platform/runtime/hermes/session-client.ts` (constructor + `connect()` + `parsePortFromUrl()`); `platform/runtime/hermes/token-resolver.ts` (env-var branch + auto-discover branch both target `/api/ws` only).
+
+2. **Diagnostic message contract** (the user-required exact wording).
+   - `missingTokenError(probe)` throws a `HermesAuthError('missing_token', 'Hermes Session Runtime unavailable at <url>. AgentFabric requires \'hermes serve\' for the configured session adapter.' + modeHint + recovery note + 'NOT a fallback' tail)`.
+   - New `sessionRuntimeUnreachableError(err)` throws `'session_runtime_unreachable'` with the same prefix plus `(WebSocket upgrade failed after token accepted: <reason>)`.
+   - The connect-ok / connect-failure paths call into `health-state` BEFORE throwing so `/api/readiness` and `/api/runtime/hermes/status` reflect the truth even if no caller awaits the throw.
+
+3. **3-layer health model** (no single Hermes online/offline).
+   - **gateway**: `not_checked` always. `note: 'agentFabric does not talk to hermes gateway (port 8642). See ADR-064.'` This is a deliberate, advertised non-feature: agentFabric does not depend on gateway health.
+   - **sessionRuntime**: `url, port, state ∈ {healthy, unavailable}, authRequired: boolean | null, probeFailed: boolean, lastProbedAt, tokenSource: 'env-dashboard' | 'auto-dashboard' | null`. Updated on probe (via `/api/readiness` + `/api/runtime/hermes/status`) AND on connect attempt (via `session-client.connect()`).
+   - **agentTurn**: `state ∈ {healthy, failed, never_attempted}, lastTurnAt, lastFailureReason`. Updated ONLY by the runtime loop (`apps/ecommerce/runtime/loop/runtime-loop.ts`) on the 3 turn outcome paths.
+   - Where: `platform/runtime/hermes/health-state.ts` (NEW, 257 LOC) — process singleton, no class, the single source of truth. `getHermesHealth()` is the read API; `recordSessionRuntimeProbe / recordSessionRuntimeConnectOk / recordSessionRuntimeConnectFailure / recordAgentTurn` are the write API.
+
+4. **Token domain separation** (no cross-fallback between /api/ws and :8642/v1).
+   - `/api/ws` accepts only `HERMES_DASHBOARD_SESSION_TOKEN` (operator-pinned) or auto-discover from `hermes serve`'s env. `HERMES_GATEWAY_TOKEN` and `API_SERVER_KEY` are gateway credentials — they MUST NEVER cross into the WS upgrade.
+   - The comment block in `token-resolver.ts` header now states the domain separation explicitly (a future contributor will not accidentally re-introduce the gateway fallback).
+   - Test `tests/unit/hermes/diagnostic-message.test.ts#Token domain separation` pins the invariant by setting `HERMES_GATEWAY_TOKEN` and asserting `resolveHermesSessionToken()` returns `undefined`.
+
+5. **Readiness + new dedicated route**.
+   - `/api/readiness` now embeds `hermes: {gateway, sessionRuntime, agentTurn}` and re-probes `/api/health` on every call so a Hermes restart that flips the port does not leave a stale chip.
+   - NEW `/api/runtime/hermes/status` — same 3-layer shape, no JD/CDP noise, for cheap monitoring poll.
+   - The "workspace: 'ready'" field stays (it's the agentFabric process up signal, NOT a Hermes signal). The Hermes truth is in the new `hermes` field.
+
+6. **app.js UI honesty** (the user-facing layer).
+   - `renderReadiness()` no longer reads `d.workspace === 'ready'`. It now reads `d.hermes.sessionRuntime.state` and `d.hermes.agentTurn.state` to render the chip. Two layers visible to the operator, never a single combined "Hermes ready" boolean.
+   - 3 catch-block UI hints (L2817, L3404, L3411) now read "Session Runtime 是 `hermes serve`（默认端口 9119），不是 hermes gateway（端口 8642）. gateway 存活 ≠ Session Runtime 存活" — explicitly naming both transports and their separability.
+
+**Files**:
+- `platform/runtime/hermes/health-state.ts` (NEW, 257 LOC) — 3-layer state module + read API.
+- `platform/runtime/hermes/session-client.ts` — `missingTokenError`/`sessionRuntimeUnreachableError` rewrite + `connect()` records to health-state + `parsePortFromUrl` export + `HermesAuthError.reason` union extended with `'session_runtime_unreachable'`.
+- `platform/runtime/hermes/token-resolver.ts` — 9119 annotations = `hermes serve default (Session Runtime)`; domain-separation comment block.
+- `platform/server/routes/runtime.ts` — `/api/readiness` embeds `hermes` field + re-probes on every call; NEW `/api/runtime/hermes/status` route.
+- `apps/ecommerce/runtime/loop/runtime-loop.ts` — `recordAgentTurn` on all 3 turn outcome paths.
+- `apps/ecommerce/workspace/app.js` — `renderReadiness` reads `d.hermes.*`; 3 catch-block UI hints rewritten.
+- `tests/unit/hermes/diagnostic-message.test.ts` (NEW, 13 tests) — pins the 3-layer shape + diagnostic message + token domain separation.
+- `tests/unit/hermes/session-client.test.ts` + `tests/unit/hermes/session-client-lazy-token.test.ts` — error-message assertions updated to the new wording.
+- `context/{current_state.md,decisions.md,handoff.md,status.json}` — this ADR + handoff.
+
+**Not in scope** (per user "NOT Included"):
+- No 8642 adapter.
+- No gateway as session transport.
+- No 3rd Hermes main path.
+- No Workspace State Convergence design change (P0010.2.x ADR-063 is intact).
+- No P0010.3 / Terminal Lifecycle / Resolution Engine / new persistent lifecycle.
+- No Event Bus / SSE / WebSocket push.
+- No Wake Engine / Action Engine / Approval / external sending.
+- No SubprocessHermesClient deletion (still used for the legacy `rankProductsComposition` path).
+- No Hermes proxy.
+- No fake time / provenance.
+
+**Verification**:
+- typecheck: 0 new errors (baseline 19 pre-existing, none introduced by this slice).
+- `npm test`: 1123 passed / 5 pre-existing flaky (master baseline before this slice: 1110 passed / 5 pre-existing flaky — **net 0 regression**, +13 net new tests).
+- New test file `tests/unit/hermes/diagnostic-message.test.ts` (13 tests) covers: gateway always `not_checked`; session-runtime probe ok → healthy / fail → unavailable; connect-ok overwrites prior failure; connect-failure overwrites prior healthy; agent-turn never_attempted → healthy/failed; 3 layers independent; `HermesAuthError` accepts the new `session_runtime_unreachable` reason; `missing_token` reason contains the user-required prefix; `HERMES_GATEWAY_TOKEN` is never promoted to a session token.
+- Live acceptance deferred to the next session per user order: "先纠正运行/诊断 contract，再继续 7500f65 的真实浏览器 live acceptance". When that acceptance runs, the test environment MUST start `hermes serve --port <port>` (NOT gateway) and set `HERMES_WS_URL` accordingly.
+
 ## ADR-063: P0010.2.x — Workspace State Convergence (Single Reducer + Derived View + writeRecommendationResult Seam)
 
 - **日期**: 2026-08-27

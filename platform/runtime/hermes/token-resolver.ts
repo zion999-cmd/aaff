@@ -9,11 +9,17 @@
 //      (see hermes_cli/web_server.py:540), so any value we send in
 //      `?token=` must match whatever the Hermes process generated.
 //   2. Auto-discover from the running `hermes serve` process listening on
-//      the port derived from the URL (default 9119). Reads the serve
-//      process's env via `lsof` + `ps eww` (macOS) or
-//      `lsof` + `/proc/<pid>/environ` (Linux). Auto-discovery reads
-//      HERMES_DASHBOARD_SESSION_TOKEN ONLY — we do NOT accept any
-//      other env var as a session token source.
+//      the port derived from the URL (default 9119 — the `hermes serve`
+//      default port for the Session Runtime that backs `/api/ws`; it is
+//      NOT a hermes gateway port — gateway defaults to 8642 with
+//      API_SERVER_KEY Bearer auth and is a separate service, see
+//      ADR-064). Reads the serve process's env via `lsof` + `ps eww`
+//      (macOS) or `lsof` + `/proc/<pid>/environ` (Linux).
+//      Auto-discovery reads HERMES_DASHBOARD_SESSION_TOKEN ONLY — we do
+//      NOT accept any other env var as a session token source. In
+//      particular, HERMES_GATEWAY_TOKEN and API_SERVER_KEY are the
+//      credentials for the SEPARATE hermes gateway service (port 8642)
+//      and must NEVER be sent to the /api/ws Session Runtime.
 //
 // Caching: auto-discovered tokens are cached per port for the lifetime of
 // the process (one `lsof` + one `ps eww` per agentFabric boot). The
@@ -109,6 +115,8 @@ export interface ResolveHermesTokenResult {
 export async function resolveHermesSessionToken(
   options: ResolveOptions = {},
 ): Promise<string | undefined> {
+  // 9119 is the `hermes serve` default (Session Runtime that backs /api/ws).
+  // It is NOT a hermes gateway port — gateway uses 8642 and API_SERVER_KEY.
   const port = parsePort(options.url) ?? 9119;
 
   // (1) Operator-pinned env var wins. Never cached, never auto-refreshed.
@@ -138,6 +146,8 @@ export async function resolveHermesSessionToken(
 export async function resolveHermesSessionTokenWithSource(
   options: ResolveOptions = {},
 ): Promise<ResolveHermesTokenResult> {
+  // 9119 is the `hermes serve` default (Session Runtime that backs /api/ws).
+  // It is NOT a hermes gateway port — gateway uses 8642 and API_SERVER_KEY.
   const port = parsePort(options.url) ?? 9119;
 
   const fromOperator = resolveFromOperatorEnv();
