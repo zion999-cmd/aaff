@@ -1,3 +1,149 @@
+# Handoff — P0010.2.7 Threshold-Crossing blockStuck Repair (2026-08-27)
+
+## Session goal
+
+User live-acceptance of P0010.2.7 (commit 2d49691) reported: "对于这种情况, 系统会继续跟进?还是如何?? 我开了半天了, 你bug都修好了, 它还在这里". The Workspace's 待处理 (pending) list had 4 situations (sit_6f35b77a5269d141fd08 / sit_b2379747a0f4ed2d4474 / sit_7ea3efe6aeb3dc0b9b7b / sit_a09f616b20aa0446a5dd) all showing:
+
+- banner: "调查中（已失败 · Runtime 正在重试）"
+- right panel events: 4× "Runtime 已暂停调查 (连续失败 3 次)"
+- 4 of them had `consecutiveFailures >= 3` but the 解除阻塞 (Clear block) button was hidden
+
+So the situation was in a deadlock: the loop correctly identified threshold-crossing, the policy returned `skip: blocked_runtime_failure`, but the `workspacePresentation` reducer was falling through to `recoverable` instead of `blocked`. Result: the operator had no UI path to resume the system.
+
+## Root cause
+
+P0010.2.2's R4 audit fix (`3c68824`) added the threshold-crossing
+`markInvestigation` stamp but wrapped it in `if (hint)` — i.e.
+"only stamp when the situation arrived via the recovery scan".
+The recovery scan excludes `candidateIds` (producer output), so
+producer-emitted situations never get a `hint`. Result: the
+`blockedEmittedAt` sidecar is never written for the producer path,
+the `workspacePresentation` reducer's `blocked` branch never fires
+(because it requires BOTH `consecutiveFailures >= threshold` AND
+`blockedEmittedAt != null`), and the situation is rendered as
+`recoverable` (banner: "调查中（已失败 · Runtime 正在重试）")
+forever.
+
+The 4 stuck situations were all producer-emitted on 2026-08-27
+morning. Hermes was on the wrong port (`9119` instead of `9120`)
+during the early day, so all 3 retries failed. Once Hermes was
+fixed and the threshold-crossing tick fired, the producer path
+silently skipped the stamp — the situation was correct in the
+loop's event log but invisible to the UI.
+
+## What was changed
+
+| File | Change | Why |
+|---|---|---|
+| `apps/ecommerce/runtime/loop/runtime-loop.ts` | Removed the `if (hint)` gate that wrapped the threshold-crossing `markInvestigation` block. Kept the defensive `if (priorInv && !priorInv.blockedEmittedAt)` check so the no-re-emit invariant still holds on subsequent ticks. Comment rewritten to spell out the bug for the next reader. | The stamp must fire for ALL threshold-crossing situations, not just recovery-scan arrivals. The defensive check is the only invariant we actually need. |
+| `tests/unit/loop/runtime-loop.test.ts` | Added `connectWithSituationTraceMock` to the hoisted mocks and the `#platform/server/routes/situation-chat.js` mock factory. The mock implementation forwards to the FakeHermesClient.connect spy, preserving the existing "connectClientMock called once per investigation" assertion. | The 3 tests (`investigation triggered path`, `recovers a pre-existing open situation that has no learning_context`, `excludes producer-emitted situations from the recovery scan`) were NOT regressions from this fix — they were pre-existing failures on master HEAD (verified by `git stash` of the runtime-loop.ts change; the same 3 tests fail without my fix). The root cause: `connectWithSituationTrace` was added in `191cdd1` (P0010.2 Final Closure Repair) but the test mock factory was never updated, so the import resolved to `undefined` and the call inside the loop's `investigate()` threw — the connect spy was never reached. |
+
+## Live verification
+
+```bash
+# Pre-fix: 4 situations had inv.consecutiveFailures=3 but blockedEmittedAt=null
+sqlite3 data/agentfabric.db "SELECT situation_id,
+  json_extract(body, '$.investigation.consecutiveFailures'),
+  json_extract(body, '$.investigation.blockedEmittedAt')
+FROM learning_contexts
+WHERE json_extract(body, '$.investigation.consecutiveFailures') >= 3;"
+# → 4 rows, all blockedEmittedAt=null except sit_68065996f8fcd48b0842 (different scenario)
+
+# Post-fix: loop tick at 13:24:54 stamped blockedEmittedAt on 3 producer-path situations
+# (sit_a09f616b20aa0446a5dd was created before my fix; manually stamped by hand)
+# → 4 rows, all blockedEmittedAt non-null
+
+# API verification
+curl /api/situations/sit_6f35b77a5269d141fd08 | jq .data.workspacePresentation
+# → { "presentation": "blocked",
+#     "banner": { "headline": "⚠ 自动调查已暂停",
+#                 "detail": "已连续失败 3 次（阈值 3）。请执行「解除阻塞并重新调度」让 Runtime 重新安排下一轮调查。",
+#                 "availableActions": { "showClearBlock": true, ... } }, ... }
+```
+
+The 解除阻塞 button is now visible. The next time the operator
+clicks it, the clear-block route resets both `blockedEmittedAt`
+and `consecutiveFailures` to `null/0`, the next tick evaluates
+the policy again, and (now that Hermes is on 9120) the recovery
+turn will succeed.
+
+## Tests
+
+- `npx vitest run tests/unit/loop/runtime-loop.test.ts` → **15 passed / 0 failed** (was 12 passed / 3 failed)
+- `npm run typecheck` → 0 new errors (baseline 21 pre-existing unchanged)
+
+## Why the system was NOT auto-recovering
+
+User's question: "系统会继续跟进?还是如何??"
+
+The answer: **the system intentionally does NOT auto-recover from
+threshold-crossing state**. This is by design — 3 consecutive
+failures is a safety threshold; after crossing it, the system
+enters `blocked` mode and emits `investigation_blocked` exactly
+once per block cycle (the P0010.2.2 R4 audit invariant). To
+resume, the operator MUST explicitly invoke
+`POST /api/situation/:id/clear-block` (the 解除阻塞 button in the
+UI). The clear-block route resets `consecutiveFailures=0` and
+`blockedEmittedAt=null`, and the very next tick (within 60s) will
+re-evaluate the policy. If the underlying issue is fixed (e.g.
+Hermes is back on the right port), the recovery turn succeeds
+and the situation transitions to `completed`.
+
+The deadlock the user saw was the pre-fix code path:
+- Loop correctly returned `skip: blocked_runtime_failure` ✓
+- Loop correctly fired the `investigation_blocked` event ✓
+- BUT the stamp on the marker failed ✗
+- Reducer fell through to `recoverable` ✗
+- UI showed "调查中（已失败 · Runtime 正在重试）" instead of "⚠ 自动调查已暂停" ✗
+- Operator had no clear-block button to resume ✗
+
+The system was "trying to follow up" (the events fired every
+60s), but it had no way to surface the resolved state to the
+operator. Now it does.
+
+## Risk + suggestions
+
+- **Risk 1**: Manually stamping `blockedEmittedAt` on
+  `sit_a09f616b20aa0446a5dd` (the one that was created before my
+  fix shipped) is a one-off operator action, not part of the
+  fix. The other 3 situations were stamped by the loop itself
+  on the first post-fix tick. If the operator had 4+ stuck
+  situations from prior days, each would need a one-off stamp.
+  In the future, a small `scripts/clear-block-all-stuck.ts` tool
+  could batch this for dev environments.
+- **Risk 2**: The 解除阻塞 button only clears the block counter;
+  it does NOT retroactively trigger an investigation. The next
+  tick (within 60s) will pick it up. If the operator expects
+  immediate action, this is a UX gap. Mitigated by the auto-poll
+  in the Workspace's Feed view.
+- **Suggestion**: Add a "Runtime · blockedCount: N" indicator to
+  the readiness chip so the operator can see at a glance when
+  situations need clearing without opening the Situation list.
+  The data is already exposed via `/api/runtime/loop`'s
+  `blockedCount` field — just needs a UI wire.
+
+## Hard constraints 100% 遵守
+
+- ❌ No DTD-011 / 同比业务规则 change
+- ❌ No Situation 业务阈值 change
+- ❌ No Terminal Lifecycle / Resolution Engine / Action Engine / Wake Engine
+- ❌ No Event Bus / SSE / new WebSocket (Hermes WS OK)
+- ❌ No Fabric 万物皆插件
+- ❌ No Experience→Knowledge growth
+- ❌ No Hermes model / proxy / ark-code-latest / volcengine / HERMES_WS_URL
+- ❌ No deletion of Hermes installation / config / 全局用户数据 / 无关 sessions
+- ❌ No large Workspace redesign
+- ❌ No deletion of human-uploaded knowledge sources
+- ❌ No Hermes session token contract / proxy state / ADR-064 topology change
+- ❌ This is not a Hermes config task
+
+## Commit
+
+- `fdda125 fix(loop): stamp blockedEmittedAt on producer-path threshold-crossing ticks`
+  Pushed to `origin/master` (ce5381e → fdda125).
+
+---
+
 # Handoff — P0010.2.7 Follow-up: Empty-State Placeholder + OutputDetail Scroll (2026-08-27)
 
 ## Session goal
