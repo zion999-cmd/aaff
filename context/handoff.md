@@ -1,3 +1,147 @@
+# Handoff — P0010.2.7 Follow-up: Empty-State Placeholder + OutputDetail Scroll (2026-08-27)
+
+## Session goal
+
+User screenshot review of P0010.2.7 (commit 839daf6) found two cosmetic
+issues in the 交付物详情 view that the 5-section report missed:
+
+1. **Right panel placeholder is still too large and useless.** The
+   `.decision-placeholder` (`点击左侧 AI 发现卡片查看决策依据。`) kept
+   rendering at the bottom of the panel even when real explainability
+   content (Ranking Explainability, source citations) had already
+   loaded. It was supposed to be an empty-state hint but never
+   disappeared when the panel content populated.
+
+2. **The middle 交付物 section has no scroll.** When the operator clicked
+   a long output, the recommendation text + judgment + trust tags + 6
+   status fields were clipped at the bottom of the viewport with no
+   way to reach the lower content (the action buttons at the bottom
+   were unreachable).
+
+User message (verbatim, translated):
+> "OK, first look at the middle part of the screenshot, the 交付物
+> section has no scroll, the text below is not visible; '点击左侧 AI
+> 发现卡片查看决策依据。' is still very large, completely useless."
+
+## What was changed
+
+| File | Change | Why |
+|---|---|---|
+| `apps/ecommerce/workspace/app.js` | New `syncDecisionPlaceholder()` helper (5 LOC) — reads `#decisionContent` children + text content, sets `.decision-placeholder` display to `none` if any content exists or `flex` otherwise. Called from `setDecisionPanelState()` after the class switch | The placeholder should disappear as soon as the panel has real content. The rail mode already hides it via CSS (`.decision-panel.rail .decision-placeholder { display: none }`); the open mode just needs the JS-driven toggle |
+| `apps/ecommerce/workspace/index.html` | Wrapped `#outputDetailContent` in `.view-scroll` class (was `muted placeholder`, now `view-scroll muted`) | The `.view-container` is `overflow: hidden` so the inner content gets clipped. The `.view-scroll` pattern (already used in `view-situationDetail` and `view-knowledge`) sets `overflow-y: auto` on the inner content. The `muted placeholder` class was always the wrong choice for a content container — the placeholder text only shows while loading |
+
+## Critical debugging detour
+
+The first commit attempt introduced a **JavaScript syntax error** that
+silently killed the entire `app.js` script. The browser's
+`pageerror` reported `Unexpected token '}'` and the panel rendered at
+the default 340px (not the intended 48px rail) because
+`setDecisionPanelState('rail')` was never executed.
+
+**Root cause**: when I added the new `syncDecisionPlaceholder()` function
+below `setDecisionPanelState`, two leftover tokens from inside the
+original `setDecisionPanelState` function were orphaned outside it:
+
+```js
+function syncDecisionPlaceholder() {
+  ...
+  placeholder.style.display = hasContent ? 'none' : 'flex';
+}                                                      // ← closes syncDecisionPlaceholder
+  // mode === 'hidden' leaves both classless ...     // ← orphan comment (was inside setDecisionPanelState)
+}                                                      // ← orphan closing brace
+```
+
+Both `}` and the comment were originally inside the
+`setDecisionPanelState` body. When I added the new function, the
+insert location left them as orphans in the top-level scope. The whole
+script failed to parse, so `setDecisionPanelState` was never defined,
+so the bootstrap's `setDecisionPanelState('rail')` call threw a
+`ReferenceError` and the panel was stuck at the CSS-default 340px
+grid column.
+
+**Fix**: removed the orphan `}` and the orphan comment. The file is
+now 4186 lines (was 4188) and parses cleanly.
+
+## Verification (real browser, Playwright + system Chrome)
+
+1. **Initial page load** — right panel correctly collapses to 48px rail
+   (`.decision-panel.rail` + `.workspace-layout.decision-rail` applied,
+   `getBoundingClientRect().width = 48`, `grid-template-columns =
+   "240px 1152px 48px"`, placeholder `display: none` because
+   `decisionContent` already has markup children from
+   `index.html:357`).
+
+2. **Click situation card** — panel correctly expands to 340px
+   (`.decision-panel.open`, width 340, content shows the
+   Ranking Explainability + 来源 + 当周判断 + 真实来源 sections).
+
+3. **Navigate to outputs view → click "查看交付物"** —
+   `view-outputDetail` becomes active, `#outputDetailContent` has
+   `view-scroll` class + computed `overflow-y: auto`, scroll height
+   1530px > client height 767px (i.e. actually scrollable, all 5
+   children render). Scrolling to the bottom shows the
+   "已悉/确认收到" and "关闭交付物" action buttons.
+
+3 screenshots saved at `/tmp/p0010-2-7-followup-{1,2,3}-*.png`:
+- `1-initial-rail.png` — clean 48px rail on the right, no big placeholder
+- `2-outputdetail.png` — output detail with real content + scroll
+- `3-outputdetail-scrolled.png` — bottom of output detail showing action buttons
+
+## Tests
+
+- typecheck: 0 new errors (baseline 21 pre-existing, unrelated)
+- `npm test` — 1136 passed / 6 failed / 3 skipped. The 6 failures are
+  the same 5 pre-existing flaky tests (capability coverage + 3
+  runtime-loop connect-spy timing + session-client slow-timer) plus
+  one new test-file flakiness from `tests/integration/p0010.2.4-live-d1.test.ts`
+  requiring live Hermes — all unrelated to my UI changes (verified by
+  examining the failure messages: all reference
+  `platform/runtime/hermes/session-client.ts`).
+
+## Risk + suggestions
+
+- **Risk 1**: `syncDecisionPlaceholder` reads
+  `(content.textContent || '').trim().length > 0` which means the
+  placeholder stays hidden if the content is only whitespace. This is
+  intentional (whitespace-only shouldn't keep the placeholder), but if
+  a future view legitimately renders an empty explanation (e.g.
+  "Investigation in progress, no findings yet") the placeholder will
+  still hide. Mitigated by the rail mode — the rail state still shows
+  the placeholder because the panel is collapsed.
+- **Risk 2**: The `.view-scroll` class assumes a 1-layer scroll (the
+  parent `.view-container` is `overflow: hidden`, the inner
+  `.view-scroll` is `overflow-y: auto`). If a future change adds
+  nested scrollable regions inside the output detail (e.g. a long
+  evidence timeline), the inner region will need its own scroll
+  mechanism, not another `.view-scroll` parent.
+- **Suggestion**: The root-cause bug (orphan tokens after editing
+  inside an IIFE-style structure) would be caught by a pre-commit
+  syntax check. Consider adding a `node -c` or `tsx --check` hook
+  on `apps/ecommerce/workspace/*.js` to prevent the same silent
+  failure in future edits.
+
+## Hard constraints 100% 遵守
+
+- ❌ No DTD-011 / 同比业务规则 change
+- ❌ No Situation 业务阈值 change
+- ❌ No Terminal Lifecycle / Resolution Engine / Action Engine / Wake Engine
+- ❌ No Event Bus / SSE / new WebSocket (Hermes WS OK)
+- ❌ No Fabric 万物皆插件
+- ❌ No Experience→Knowledge growth
+- ❌ No Hermes model / proxy / ark-code-latest / volcengine / HERMES_WS_URL
+- ❌ No deletion of Hermes installation / config / 全局用户数据 / 无关 sessions
+- ❌ No large Workspace redesign
+- ❌ No deletion of human-uploaded knowledge sources
+- ❌ No Hermes session token contract / proxy state / ADR-064 topology change
+- ❌ This is not a Hermes config task
+
+## Commit
+
+- `2d49691 fix(P0010.2.7-followup): hide empty-state placeholder + make outputDetail scrollable`
+  Pushed to `origin/master` (839daf6 → 2d49691).
+
+---
+
 # Handoff — Hermes Integration Correction (ADR-064) (2026-08-27)
 
 ## Session goal
