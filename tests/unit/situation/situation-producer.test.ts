@@ -155,13 +155,57 @@ describe('detectSituations — ranking attention', () => {
       shop: SHOP,
       storeDaily: [],
       rankings,
-      productNames: { sku_0: '明星商品' },
+      // P0010.2.5 PREVENTION: ranking_attention now requires a real catalog
+      // name. Both leaders here have real names so the test still pins the
+      // ranking-detection logic; the unknown-SKU skip is covered separately
+      // in the test below.
+      productNames: { sku_0: '明星商品A', sku_1: '明星商品B' },
     });
 
     const leaders = situations.filter((s) => s.tags[0] === 'ranking_attention');
     expect(leaders).toHaveLength(2); // sku_0 (0.9) and sku_1 (0.85) lead by >= 0.1 over 0.4
     expect(leaders[0]!.entity.id).toBe('sku_0');
-    expect(leaders[0]!.entity.name).toBe('明星商品');
+    expect(leaders[0]!.entity.name).toBe('明星商品A');
+  });
+
+  // P0010.2.5 — unknown-SKU products that lead the ranking but have no
+  // real catalog entry MUST NOT generate ranking_attention situations.
+  // These are noise (test-fixture data with no business meaning), and
+  // because the situationId fingerprint includes the date, each daily
+  // re-run would otherwise create a new one — accumulating stale
+  // situations forever.
+  test('does NOT emit ranking attention for products with no real catalog name', () => {
+    const rankings = [0.9, 0.85, 0.5, 0.4, 0.4, 0.4].map((score, i) => makeRanking(`sku_${i}`, score));
+    const situations = detectSituations({
+      shop: SHOP,
+      storeDaily: [],
+      rankings,
+      // No entries → all SKUs are "unknown". The 2 leading SKUs would
+      // have qualified under the pure ranking rule, but the prevention
+      // filter must drop them.
+      productNames: {},
+    });
+
+    const leaders = situations.filter((s) => s.tags[0] === 'ranking_attention');
+    expect(leaders).toHaveLength(0);
+  });
+
+  // Mixed: only the named leader should be emitted; the unknown-SKU
+  // leader must be skipped even when it has a higher score.
+  test('emits ranking attention only for named products; unknown-SKU leaders are skipped', () => {
+    const rankings = [0.95, 0.85, 0.5, 0.4, 0.4, 0.4].map((score, i) => makeRanking(`sku_${i}`, score));
+    const situations = detectSituations({
+      shop: SHOP,
+      storeDaily: [],
+      rankings,
+      // sku_0 has the highest score but no catalog name → skip.
+      // sku_1 has a real name → emit.
+      productNames: { sku_1: '明星商品B' },
+    });
+
+    const leaders = situations.filter((s) => s.tags[0] === 'ranking_attention');
+    expect(leaders).toHaveLength(1);
+    expect(leaders[0]!.entity.id).toBe('sku_1');
   });
 
   test('emits no ranking attention when scores are tied', () => {

@@ -196,7 +196,26 @@ const detectRankingAttention = (
   const window = sorted.map((r) => r.ranked_at.slice(0, 10)).sort().pop() ?? '';
   if (!window) return [];
 
-  return leaders.map((r) => buildRankingAttention(shop, r, window, productNames));
+  // P0010.2.5 PREVENTION: skip products with no real catalog name.
+  //
+  // The previous loop generated one ranking_attention Situation per
+  // unknown-SKU leader per day. After 5 days, the same two products
+  // (10072459317818, 10072459153406 — never had a real name in the
+  // catalog) had accumulated 10 stale situations that carried no
+  // business meaning. The fingerprint includes the date, so each day
+  // produced a new ID — INSERT OR IGNORE could not dedup them.
+  //
+  // The fix: only emit ranking_attention when the product has a real
+  // catalog name. Unknown-SKU "leaders" are not a real business signal;
+  // they are ranking noise from the test fixture. If a real catalog
+  // entry appears later, the situation will be generated from that day
+  // onward.
+  return leaders
+    .filter((r) => {
+      const candidate = productNames[r.entity_id];
+      return candidate !== undefined && candidate !== '' && candidate !== r.entity_id;
+    })
+    .map((r) => buildRankingAttention(shop, r, window, productNames));
 };
 
 // ---- Top-level detection ----

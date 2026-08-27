@@ -195,7 +195,14 @@ describe('buildInvestigationPrompt', () => {
     expect(prompt).toContain('fabric_execute_capability');
     expect(prompt).toContain('fabric_list_capabilities');
     expect(prompt).toContain('missing_capability');
-    expect(prompt.toLowerCase()).toContain('must actually call fabric_execute_capability');
+    // P0010.2.5 — the old "MUST actually call fabric_execute_capability at
+    // least once" was over-prescriptive. The new prompt frames evidence
+    // acquisition as the standard move per gap (one call per gap, retry
+    // once, then stop) — multiple capabilities per turn are allowed as
+    // long as each solves a distinct evidence gap. The semantic invariant
+    // is "acquire live evidence for unresolved gaps, do not just analyze";
+    // we pin the new wording rather than the old one.
+    expect(prompt.toLowerCase()).toMatch(/acquire evidence for each gap|evidence acquisition|one capability per gap|evidence gap/i);
   });
 
   test('no hardcoded investigation tree / if-else business logic', () => {
