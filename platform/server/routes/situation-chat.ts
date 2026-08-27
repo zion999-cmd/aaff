@@ -683,7 +683,12 @@ export const runInvestigationTurn = async (
 
   let reply: string;
   try {
-    const replyPromise = collectTurn(client, sessionId, 600_000);
+    // P0010.2.4 live acceptance (2026-08-27): agnes-2.0-flash via ClashX proxy
+    // routinely takes 10-15 min on the real investigation prompt (system
+    // prompt + tool schemas + situation context). The previous 600s timed
+    // out every turn. 1800s matches hermes's _resolved_api_call_timeout
+    // (run_agent.py default 1800.0s) so a healthy slow turn can complete.
+    const replyPromise = collectTurn(client, sessionId, 1_800_000);
     await client.submitPrompt(sessionId, prompt);
     reply = await replyPromise;
   } catch (err) {
