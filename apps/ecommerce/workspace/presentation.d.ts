@@ -183,3 +183,126 @@ export interface InvestigationDisplayBanner {
 export const INVESTIGATION_DISPLAY_BANNER: Readonly<
   Record<InvestigationDisplayState, InvestigationDisplayBanner>
 >;
+
+// ---- P0010.2.x — Workspace Presentation (single source of truth) ----
+//
+// These types mirror `shared/schemas/workspace-presentation.ts` on the
+// server side. The browser app reads `workspacePresentation` from
+// `/api/situations/:id` and `presentation` / `headline` /
+// `presentationRevision` from `/api/situations` (Feed).
+//
+// Architectural rule (audit §6.7): the WorkspacePresentation is a
+// DERIVED VIEW computed server-side. The browser MUST NOT recompute
+// state from raw `learningContext` fields. The two old per-route
+// helpers (P0010.1's `deriveInvestigationStatus` and P0010.2.4's
+// `deriveInvestigationDisplayState`) are still exported for back-
+// compat, but new code MUST consume the WorkspacePresentation types
+// below.
+
+/** The 7-state operator-facing state. Mirrors `WorkspacePresentationStateSchema`. */
+export type WorkspacePresentationState =
+  | 'pending'
+  | 'investigating'
+  | 'recoverable'
+  | 'completed'
+  | 'observing'
+  | 'waiting_human'
+  | 'blocked';
+
+/** The "available actions" map the reducer attaches to the banner.
+ *  The browser uses these to show/hide buttons deterministically
+ *  instead of guessing from the presentation state. */
+export interface PresentationAvailableActions {
+  showGenerateRecommendation: boolean;
+  showClearBlock: boolean;
+  showLegacyStart: boolean;
+}
+
+/** The single banner contract. Every operator-facing copy lives here. */
+export interface PresentationBanner {
+  headline: string;
+  detail: string;
+  availableActions: PresentationAvailableActions;
+  /** True when there was a prior valid judgment/understanding and the
+   *  current attempt failed — used by the content layer to render the
+   *  "上一次有效判断仍保留" supplemental copy. The state itself remains
+   *  `recoverable` (audit §6.7 rule: prior cognition never auto-promotes
+   *  to `observing`). */
+  priorValidCognitionPreserved: boolean;
+}
+
+/** Per-situation summary the reducer derives from
+ *  `learningContext.investigation`. Status is the presentation state,
+ *  not the raw `investigation.status` field. */
+export interface PresentationInvestigationSummary {
+  status: WorkspacePresentationState;
+  stopReason?: string;
+  judgment: string;
+  currentUnderstanding: string;
+  recommendation: any;
+  hypotheses: Array<{ statement: string; status: string }>;
+  consecutiveFailures: number;
+  maxConsecutiveFailures: number;
+  startedAt?: string;
+  updatedAt?: string;
+}
+
+/** Per-output summary, newest first. */
+export interface PresentationWorkItemSummary {
+  outputId: string;
+  type: string;
+  status: string;
+  content: string;
+  createdAt: string;
+  acknowledgedAt?: string;
+  closedAt?: string;
+}
+
+/** Per-intervention summary. */
+export interface PresentationInterventionSummary {
+  interventionId: string;
+  type: string;
+  decision?: 'accept' | 'reject' | 'defer' | 'override' | 'no_action';
+  summary: string;
+  timestamp: string;
+}
+
+/** The single envelope the Detail page consumes. */
+export interface WorkspacePresentationOutput {
+  situationId: string;
+  presentation: WorkspacePresentationState;
+  situationLifecycle: 'open' | 'partial' | 'mature';
+  banner: PresentationBanner;
+  investigation: PresentationInvestigationSummary | null;
+  outputs: PresentationWorkItemSummary[];
+  interventions: PresentationInterventionSummary[];
+  /** The reducer's wall-clock when the snapshot was computed. The browser
+   *  uses this for the "已更新于 X" chip, NOT for the revision hash. */
+  computedAt: string;
+  /** sha1 hash of the relevant persisted facts (excludes `computedAt`).
+   *  Two requests with the same persisted state produce the same revision.
+   *  The 4-second polling loop skips re-render when this matches. */
+  presentationRevision: string;
+}
+
+/** The lighter shape the Feed list returns per row. */
+export interface FeedEntrySummary {
+  situationId: string;
+  presentation: WorkspacePresentationState;
+  headline: string;
+  shortLabel: string;
+  observedAt: string;
+  interventionCount: number;
+  hasAcceptedDecision: boolean;
+  judgmentPreview: string;
+  presentationRevision: string;
+}
+
+/** Get the single WorkspacePresentation snapshot for one situation.
+ *  Replaces the old `deriveInvestigationDisplayState` chain — the Detail
+ *  page reads ONLY this value, never raw investigation fields. */
+export function getWorkspacePresentation(detail: any): WorkspacePresentationOutput | null;
+
+/** Get a FeedEntrySummary for a situation. Same derivation as
+ *  getWorkspacePresentation but projects to the lighter shape. */
+export function getFeedEntrySummary(detail: any): FeedEntrySummary | null;

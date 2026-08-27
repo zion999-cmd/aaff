@@ -10,6 +10,7 @@
 
 import type { Database as Db } from 'better-sqlite3';
 import type { Recommendation } from '#shared/schemas/investigation.js';
+import type { LearningContext, Situation } from '#shared/schemas/learning-context.js';
 import { nowIso } from '#shared/utils/time.js';
 import { fingerprint } from '#shared/utils/crypto.js';
 import type { WorkItem } from '#shared/schemas/output.js';
@@ -17,6 +18,7 @@ import {
   readLearningContextBody,
   writeLearningContextBody,
 } from '#app/experience/learning-context-helpers.js';
+import { storeInvestigationInLearningContext } from '#app/experience/learning-context-producer.js';
 
 export type MaterializeResult =
   | { created: true; outputId: string }
@@ -94,4 +96,102 @@ export const materializeWorkItem = (
   writeLearningContextBody(db, situationId, next);
 
   return { created: true, outputId };
+};
+
+// ---- P0010.2.x — unified Recommendation → Output seam --------------------
+//
+// Both `/chat` (turn-end) and `/recommend` (manual regenerate) must end
+// with this single function. Before this seam existed, the two routes had
+// inconsistent post-write steps: `/chat` materialized a WorkItem, `/recommend`
+// only wrote the recommendation to the investigation block — leaving the
+// detail page with a real recommendation but no corresponding Output, the
+// exact bug that produced the "已生成建议 + 生成建议 按钮" contradiction.
+//
+// Invariants (audit §6.8, ADR-040):
+//   * Any path that produces a complete Recommendation MUST end with this
+//     function. The decision "is there an Output" is bound to "does a
+//     Recommendation exist", not to which HTTP route produced it.
+//   * `materializeWorkItem` is idempotent on content fingerprint, so calling
+//     this twice with the same Recommendation is a no-op for outputs[].
+//   * The function never throws — failure is reported via the return value
+//     so the route can choose to surface it (or not) without losing the
+//     investigation write.
+
+export interface WriteRecommendationResult {
+  /** True iff the investigation row was updated with the new recommendation. */
+  investigationPersisted: boolean;
+  /** Materialize result. `no_recommendation` is returned (not thrown) when
+   *  the caller passes `null` for `recommendation` — the seam is total. */
+  materialize: MaterializeResult;
+}
+
+/**
+ * The unified seam for "a Recommendation is now the Agent's final answer".
+ *
+ *  1. If `recommendation` is null/undefined, return early with
+ *     `{ investigationPersisted: false, materialize: { created: false, reason: 'no_recommendation' } }`
+ *     so the caller does not have to branch.
+ *  2. Otherwise persist the recommendation onto the investigation block
+ *     (via `storeInvestigationInLearningContext`).
+ *  3. Run `materializeWorkItem` so a `recommendation` WorkItem exists
+ *     in `outputs[]`. Same fingerprint → no duplicate.
+ *
+ * Both `/chat` (situation-chat.ts turn-end) and `/recommend`
+ * (situation-chat.ts manual regenerate) MUST call this function. The two
+ * call sites used to drift; this is the convergence. Passing
+ * `recommendation = null` is the safe no-op path for turns that complete
+ * without producing a recommendation (the prior code used to skip the
+ * `materializeWorkItem` call entirely in that branch, which left the
+ * audit dead-leg #3 latent in the code even when the bug was not hit).
+ */
+export const writeRecommendationResult = (
+  db: Db,
+  situation: Situation,
+  investigation: NonNullable<LearningContext['investigation']>,
+  recommendation: Recommendation | null | undefined,
+): WriteRecommendationResult => {
+  if (!recommendation) {
+    return {
+      investigationPersisted: false,
+      materialize: { created: false, reason: 'no_recommendation' },
+    };
+  }
+
+  // Step 1 — write the recommendation onto the investigation block.
+  // We keep the rest of the investigation fields (judgment, hypotheses,
+  // findings, etc.) intact; only `recommendation` and `updatedAt` change.
+  const nextInvestigation: NonNullable<LearningContext['investigation']> = {
+    ...investigation,
+    recommendation,
+    updatedAt: nowIso(),
+  };
+  let investigationPersisted = false;
+  try {
+    storeInvestigationInLearningContext(db, situation, nextInvestigation);
+    investigationPersisted = true;
+  } catch {
+    // Persist failure is reported but does not block materialization.
+    // The route can choose to surface this; the Loop policy treats
+    // "no investigation row" as `skip` so the worst case is "the next
+    // tick re-investigates and re-tries" — still correct.
+    investigationPersisted = false;
+  }
+
+  // Step 2 — materialize the WorkItem. Idempotent on fingerprint.
+  //
+  // CRITICAL: the fingerprint MUST use the *original* investigation
+  // `updatedAt` (the one that came in with `investigation`), NOT the
+  // `nextInvestigation.updatedAt` we just stamped. Otherwise every
+  // re-run of the seam would generate a fresh `outputId` and produce
+  // duplicate WorkItems — exactly the audit dead-leg #3 we are
+  // trying to fix. The seam re-stamps `updatedAt` only for the
+  // persisted record; the fingerprint sees the unchanged `updatedAt`
+  // (or no `updatedAt`) so the dedup check works.
+  const fingerprintInvestigation = {
+    ...investigation,
+    recommendation,
+  };
+  const materialize = materializeWorkItem(db, situation.situationId, fingerprintInvestigation);
+
+  return { investigationPersisted, materialize };
 };

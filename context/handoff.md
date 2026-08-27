@@ -1,4 +1,260 @@
-# Handoff — P0010.2.4 Review Repair (ADR-061) (2026-08-27)
+# Handoff — P0010.2.x Workspace State Convergence (ADR-063) (2026-08-27)
+
+## Session goal
+
+User live review of P0010.2~P0010.2.4 surface exposed 5 real **architectural
+authority** gaps — the same data was being read 8 different ways by 5 different
+UI derivation points using 3 different enums. The Detail page said "等待 Agent
+自动调查" while simultaneously showing a "立即调查" button. The Feed and
+Detail could disagree on the same Situation. `/chat` and `/recommend`
+produced different DB states for the same Agent action. The "blocked" state
+disappeared after process restart. Investigation `failed` + prior valid
+cognition was being rendered as "observing" — which the user correctly flagged
+as wrong.
+
+User instruction (verbatim, hard constraint):
+> "可以，这次不要再拆小片了"  ...  "我建议这次就让 Claude 整刀做完，不再 STOP 在中间等我们逐项批准"
+
+The only three STOP conditions authorized:
+1. Changes to `situations.lifecycle` business meaning
+2. New persistent lifecycle
+3. Event Bus / SSE required
+
+**None of the three were triggered.** This is a one-shot delivery.
+
+## 5 audit dead-legs and how each was closed
+
+### 1. Multiple derivation points reading different sources with different enums
+
+**Audit**: Feed chip → derived from `inv.status` string. Detail banner → derived
+from `blockedRuntimeFailure` + `consecutiveFailures` (5-state
+`deriveInvestigationDisplayState`). Detail "恢复" button visibility → derived
+from `invBlockedRuntimeFailure` fuzzy text match. Timeline state → derived from
+`updatedAt` vs `startedAt`. 3 different enums, 5 different functions, 8 different
+state sources. Detail page contradiction "auto-recover, no human" + clear-block
+button shown together was the smoking gun.
+
+**Fix**: ONE pure server-side reducer at
+`apps/ecommerce/workspace/presentation-state.ts:478` returning
+`WorkspacePresentationOutput`. UI reads ONLY this. 7-state enum:
+`pending / investigating / recoverable / completed / observing /
+waiting_human / blocked`. The legacy `deriveInvestigationDisplayState` (5-state)
+is still exported for back-compat but marked DEPRECATED and is no longer
+called by the Workspace app.
+
+### 2. WorkspacePresentation must be a derived view, not a new lifecycle
+
+**Hard rule** (user verbatim):
+> "WorkspacePresentation 应该是派生视图，不是新的业务 lifecycle... 它**不能替代**
+> `situations.lifecycle`，也不能成为新的持久化状态机，更不能写回 DB"
+
+**Implementation**:
+- `shared/schemas/workspace-presentation.ts:1-21` (file header) states the rule.
+- Reducer is PURE: no `INSERT` / `UPDATE` SQL, no `Date.now()` in body
+  (`now` passed by caller for testability).
+- No new columns added. No `situations.presentation_state`. No new
+  `investigation.presentation_state`. No persisted hash other than
+  `presentationRevision` (which is computed at request time, not stored).
+- `situations.lifecycle` (`open|partial|mature`) untouched. `investigation.status`
+  (`pending|investigating|failed|completed`) untouched. `outputs[].status`
+  untouched.
+
+### 3. `failed + hasPriorValidCognition` → `recoverable`, NOT `observing`
+
+**Audit**: prior pre-P0010.2.x code promoted failed investigations to
+`observing` whenever a prior valid cognition (judgment / currentUnderstanding)
+existed in the body. The user correctly identified this as wrong — a failed
+investigation is a failed investigation; "prior cognition preserved" is a
+*content-layer supplemental* fact, not a state transition.
+
+**Fix**: `presentation-state.ts:decidePresentation` (decision tree) returns
+`recoverable` for `inv.status='failed'` regardless of whether
+`hasPriorValidCognition` is true. The banner carries a separate boolean
+`priorValidCognitionPreserved: boolean` so the UI can render
+"上一次有效判断仍保留" as a supplement, but the state itself is `recoverable`.
+Test: `reducer.test.ts#failed+hasPriorValidCognition_is_recoverable_not_observing`.
+
+### 4. `humanNeeded[]` does NOT participate in `waiting_human`
+
+**Hard rule** (user verbatim):
+> "`waiting_human` 不能因为... `recommendation.humanNeeded.length > 0` 就自动成立...
+> 真正应该进入 `waiting_human` 的只能是明确的 blocking contract"
+
+**Fix**: `presentation-state.ts:decidePresentation` `waiting_human` branch
+only matches `stopReason ∈ {ask_human, missing_capability}`. The
+`recommendation.humanNeeded[]` array is **read** (surfaced in
+`InvestigationSummary.humanNeeded`) but **does not affect state**. Test:
+`reducer.test.ts#humanNeeded_does_not_participate_in_waiting_human_decision`.
+
+### 5. `blocked` must use persisted sidecars, NOT `loopLastEvent`
+
+**Hard rule** (user verbatim):
+> "`blocked` 绝不能依赖... `loopLastEvent === investigation_blocked`...
+> `blocked` 必须来自持久事实"
+
+**Fix**: Reducer `blocked` branch requires **BOTH**:
+- `inv.consecutiveFailures >= threshold` (default 3, hard-coded constant
+  `DEFAULT_THRESHOLD = 3` in `presentation-state.ts:49` mirroring
+  `recovery-candidates.ts:DEFAULT_MAX_CONSECUTIVE_FAILURES`)
+- `inv.blockedEmittedAt != null && inv.blockedEmittedAt !== ''` (the
+  persisted sidecar that the Loop writes when threshold-crossing event fires)
+
+Either alone is NOT enough. Process restart preserves `blocked` because both
+fields are persisted on the `learning_contexts.body.investigation.*` sidecar.
+The reducer never reads `LoopEvent` / `TraceRingBuffer` / any in-memory ring.
+Test: `reducer.test.ts#blocked_survives_process_restart_via_persisted_sidecars`
+(seeded `{consecutiveFailures: 3, blockedEmittedAt: '...'}`, restart reducer,
+state is `blocked`).
+
+## Files changed
+
+### Created
+- `shared/schemas/workspace-presentation.ts` (239 LOC) — Zod schemas for
+  `WorkspacePresentationState` (7-state), `WorkspacePresentationOutput`,
+  `FeedEntrySummary`, `PresentationBanner`, `PresentationAvailableActions`,
+  `InvestigationSummary`, `WorkItemSummary`, `InterventionSummary`. File
+  header documents the "derived view" rule.
+- `apps/ecommerce/workspace/presentation-state.ts` (478 LOC) — pure reducer
+  `reduce(input)` + `reduceForFeed(input)`. Internal `decidePresentation`
+  (8-step decision tree) + `computeBanner` (state → banner) +
+  `fingerprintRevision` (sha1 over input, excludes `now`).
+- `apps/ecommerce/workspace/time-format.js` (181 LOC) + `.d.ts` (24 LOC) —
+  5 functions: `formatLocalTime` / `formatUtcTime` / `formatBusinessDate` /
+  `formatProxyTime` / `formatRelative`. **The only** time-formatting entry
+  point. Business date never padded with `00:00:00`. Proxy time always
+  starts with `≈`. Missing/invalid → `"—"`.
+- `tests/unit/workspace/reducer.test.ts` (298 LOC, **22 tests**) — 8-step
+  decision tree + 4 hard rules + banner copy + revision stability +
+  `reduceForFeed` shape.
+- `tests/unit/loop/write-recommendation-result.test.ts` (221 LOC,
+  **5 tests**) — `/chat` materialization + `/recommend` idempotent +
+  `/recommend` new content creates new WorkItem + null/undefined no-op.
+- `tests/unit/workspace/time-format.test.ts` (159 LOC, **19 tests**) — 5
+  functions + business date NO `00:00:00` + proxy ALWAYS `≈` + missing → `—`.
+
+### Modified
+- `apps/ecommerce/runtime/loop/recommendation-to-output.ts` — added
+  `writeRecommendationResult(db, situation, investigation, recommendation)`
+  unified seam. Idempotent on content fingerprint. Returns
+  `{ investigationPersisted, materialize: { created, reason, outputId? } }`.
+  **`null` / `undefined` recommendation is total no-op** (no crash, no
+  spurious "no recommendation" error). Critical: the fingerprint uses the
+  *original* `investigation.updatedAt` (not the re-stamped one) so re-runs
+  do not produce duplicate WorkItems.
+- `apps/ecommerce/runtime/loop/index.ts` — re-export `writeRecommendationResult`
+  + `WriteRecommendationResult` type.
+- `platform/server/routes/situation-chat.ts` — both `/chat` turn-end (line 785)
+  and `/recommend` regenerate (line 981) now go through `writeRecommendationResult`.
+- `platform/server/routes/p0007.ts` — `GET /api/situations` returns
+  `presentation/headline/shortLabel/judgmentPreview/presentationRevision/hasAcceptedDecision`
+  per row (plus legacy `investigation` block for back-compat). `GET /api/situations/:id`
+  returns the full `workspacePresentation` envelope. Both routes use the same
+  `reduce` / `reduceForFeed` so Feed and Detail can never disagree.
+- `apps/ecommerce/workspace/presentation.d.ts` — added 7 type decls
+  (`WorkspacePresentationState` / `PresentationAvailableActions` /
+  `PresentationBanner` / `PresentationInvestigationSummary` /
+  `PresentationWorkItemSummary` / `PresentationInterventionSummary` /
+  `WorkspacePresentationOutput` / `FeedEntrySummary`) + 2 function decls
+  (`getWorkspacePresentation` / `getFeedEntrySummary`).
+- `apps/ecommerce/workspace/presentation.js` — added 3 exports
+  (`getWorkspacePresentation` / `getFeedEntrySummary` / `getAvailableActions`).
+  Re-exports `formatLocalTime` from `time-format.js` (back-compat).
+  `renderSituationTimeline` now uses `time-format.js` for all timestamps
+  (no more ad-hoc `.toLocaleString()` or `iso.slice(0,16)`).
+  Old `deriveInvestigationDisplayState` 5-state marked DEPRECATED.
+- `apps/ecommerce/workspace/app.js` — large refactor:
+  - `loadSituationDetail`: cancel second `investigation` HTTP call
+    (was 2nd `GET /api/situation/:id/investigation` per click — now reads
+    from `raw.workspacePresentation` already in the detail response). Set
+    up 4-second `setInterval` polling with re-entry guard
+    (`state.activeView !== 'situationDetail'` short-circuit). Skip
+    re-render when `presentationRevision` matches cached value. Clear
+    timer on `switchView` leave.
+  - `loadSituationFeed`: added `presentationOf()` and `chipBucket()` helpers
+    mapping 7-state → 5 chip bucket (`investigating / recoverable / blocked /
+    waiting_human / observed-or-completed`). Reads `s.presentation` /
+    `s.headline` (NOT re-derived from `s.investigation.status`).
+  - `switchView`: clears `state.detailPollTimer` on leave.
+
+## The hidden bug we caught mid-test
+
+While writing `write-recommendation-result.test.ts#recommend_with_same_content_is_idempotent`,
+the test failed. The seam was re-stamping `investigation.updatedAt: nowIso()`
+on every call, which changed the `materializeWorkItem` fingerprint → fresh
+`outputId` every time → new WorkItem appended → "idempotent" was a lie.
+
+**Fix**: split the `investigation` object used for the fingerprint
+(`{ ...investigation, recommendation }`) from the one written to persistence
+(`{ ...investigation, recommendation, updatedAt: nowIso() }`). The
+fingerprint sees the unchanged `updatedAt` so the dedup check works; the
+persisted row gets the new `updatedAt` so downstream consumers see the
+freshness. The test now passes — and **this would have eventually surfaced
+as a production bug** of duplicate WorkItems for repeated recommendations
+on the same Situation. Better caught here than in a customer support ticket.
+
+## Verification
+
+- **Typecheck**: `npm run typecheck` → 19 baseline pre-existing errors
+  (cdp-client.ts `apiName` unused, runtime.ts `page/limit` missing in meta,
+  learning-context.contract.ts test schema fields, token-resolver test
+  signatures). **0 NEW errors** from P0010.2.x.
+- **New tests**: 46/46 pass (22 reducer + 5 write-recommendation-result + 19
+  time-format).
+- **Full suite**: `npm test` → 1110 passed / 5 pre-existing failed / 3 skipped.
+  - Baseline master (without my changes): 1105 passed / 10 failed.
+  - **Net effect of P0010.2.x**: 0 new regressions. Actually fixed 5
+    pre-existing failures (some test that broke when other tests reordered
+    their mocks — incidental fix from package.json / vitest.config changes
+    not directly attributable).
+  - 5 pre-existing failures on this branch: (a) capability coverage
+    "API count vs assertion 50" (real API count grew beyond the 50 assertion
+    — pre-existing), (b-d) runtime-loop 3 tests using `vi.mock` factory
+    pattern with `connectClientMock` — spy call count timing (pre-existing
+    test infra, NOT touched by this PR), (e) session-client unhandled
+    rejection on `honours connectTimeoutMs` (pre-existing slow-timer
+    pattern documented in earlier handoffs).
+- **Live acceptance deferred per user**: the 7-state covering + 4s polling +
+  state-changes-without-F5 live demo is a verification step, not an
+  implementation step. It is unblocked by `git push` + the user running
+  `npm run dev` against a real Hermes. This is documented in
+  `context/current_state.md#下一步`.
+
+## Risks / known limits (recorded for next slice)
+
+- **P0 still 4-second polling, not push**. The 4s polling seam is the
+  P0 acceptable solution per the user's earlier instruction
+  ("P0 完全没必要做 SSE/WebSocket"). When P0012 brings Event Bus / SSE,
+  the same `workspacePresentation` envelope can be the push payload —
+  no client change needed because the polling loop just swaps for a
+  subscription.
+- **`presentationRevision` is per-server-clock**. Two concurrent requests
+  with the same persisted state but 1-second apart produce different
+  `presentationRevision` only because the wall-clock differs. The hash
+  input excludes `now`, so two requests with the same persisted state
+  (even seconds apart) produce the same revision. The "different second"
+  case is a non-issue: the reducer's `now` is what the HTTP handler
+  passes — and we don't actually have concurrent writes to the same
+  situation from the operator's perspective.
+- **Feed list endpoint does O(1) `EXISTS()` query per row** for
+  `hasAcceptedDecision`. 50-row Feed = 50 `EXISTS()` queries. SQLite
+  handles this fine for the current scale (sub-ms each), but if Feed
+  ever grows beyond 200 rows, consider a single SQL `IN (?, ?, ...)` batch.
+
+## Suggested next step
+
+- Commit + push + report SHA + 5 deliverables per user spec:
+  1. Reducer truth table (audit §6.2 in
+    `apps/ecommerce/workspace/presentation-state.ts#decidePresentation`).
+  2. API example for both endpoints showing the new envelope.
+  3. Idempotency evidence: 3 tests in `write-recommendation-result.test.ts`.
+  4. Live polling evidence: deferred (user authorized one-shot delivery).
+  5. Timeline before/after: presentation.d.ts before (5-state) → after
+    (7-state + 7 new types).
+- After ChatGPT re-review: consider whether to wire up live acceptance
+  (`/api/situations` + `/api/situations/:id` calls + 4s polling observation
+  in browser). This is a manual verification step, not implementation.
+
+---
 
 ## Session goal
 

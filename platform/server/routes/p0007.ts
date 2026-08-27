@@ -6,6 +6,10 @@ import type { Database as Db } from 'better-sqlite3';
 import { nowIso } from '#shared/utils/time.js';
 import { HumanInterventionSchema, SituationSchema } from '#shared/schemas/learning-context.js';
 import { loadSituation, recordInterventionInLearningContext, loadLearningContext } from '#app/experience/learning-context-producer.js';
+// P0010.2.x — single source of truth for the operator-facing state.
+// Both /api/situations and /api/situations/:id route through this reducer
+// so the Feed and Detail can never disagree.
+import { reduce, reduceForFeed } from '#app/workspace/presentation-state.js';
 
 // ---- Helpers ----
 
@@ -102,12 +106,64 @@ export const p0007Router = (db: Db): Router => {
           try { return JSON.parse(String(r.lc_body ?? '{}')); } catch { return {}; }
         })();
         const inv = (lcBody.investigation ?? null) as {
+          status?: string;
           stopReason?: string;
           judgment?: string;
           nextQuestion?: string;
           currentUnderstanding?: string;
           findings?: unknown[];
+          recommendation?: { humanNeeded?: unknown } | null;
+          consecutiveFailures?: number;
+          blockedEmittedAt?: string | null;
+          maxConsecutiveFailures?: number;
+          startedAt?: string;
+          updatedAt?: string;
+          hypotheses?: unknown[];
         } | null;
+        // The list endpoint cannot N+1 over `human_interventions` per
+        // row; we use a single EXISTS() query that returns 0/1 in O(1)
+        // per row. This is the only intervention-derived fact the Feed
+        // reducer needs that the SQL JOIN does not already provide.
+        const hasAccept = (db
+          .prepare(
+            `SELECT EXISTS(
+               SELECT 1 FROM human_interventions
+               WHERE situation_id = ? AND type = 'decision'
+                 AND json_extract(content, '$.decision') = 'accept'
+             ) as v`,
+          )
+          .get(String(r.situation_id)) as { v: number }).v === 1;
+        // P0010.2.x — run the SAME reducer as the Detail page so Feed and
+        // Detail cannot disagree on the same Situation.
+        const feed = reduceForFeed({
+          situation: {
+            situationId: String(r.situation_id),
+            lifecycle: r.lifecycle as 'open' | 'partial' | 'mature',
+            createdAt: String(r.created_at),
+            updatedAt: String(r.updated_at),
+            description: String(r.description ?? ''),
+            type: String(r.type ?? ''),
+            entity: {
+              id: r.entity_id as string,
+              type: r.entity_type as string,
+              name: r.entity_name as string | undefined,
+              platform: r.entity_platform as string | undefined,
+            },
+            temporal: {
+              observedAt: r.observed_at as string,
+            },
+          },
+          learningContext: lcBody && Object.keys(lcBody).length > 0 ? lcBody : null,
+          // The list endpoint only has `interventionCount` (from the SQL
+          // JOIN above). The reducer accepts `interventions: []` and we
+          // surface the count separately as `interventionCount`. This
+          // keeps the list query O(1) per row.
+          interventions: [],
+          // Override hasAcceptedDecision with the O(1) EXISTS query above.
+          // The reducer cannot know about it without the full rows, so
+          // we patch it post-hoc.
+          now: nowIso(),
+        });
         return {
           situationId: r.situation_id,
           domain: r.domain,
@@ -120,7 +176,18 @@ export const p0007Router = (db: Db): Router => {
           interventionCount: r.intervention_count,
           createdAt: r.created_at,
           updatedAt: r.updated_at,
-          // P0010.1 Agent status (product semantics derived from persisted state).
+          // P0010.2.x — single source of truth for the operator-facing
+          // state. The legacy `investigation: { status, ... }` block is
+          // preserved for back-compat with the existing Feed JS, but new
+          // UI MUST read `presentation` / `headline` / `shortLabel`.
+          presentation: feed.presentation,
+          headline: feed.headline,
+          shortLabel: feed.shortLabel,
+          judgmentPreview: feed.judgmentPreview,
+          hasAcceptedDecision: hasAccept,
+          presentationRevision: feed.presentationRevision,
+          // Legacy field — kept so the existing Feed JS does not break
+          // during migration. New consumers MUST use `presentation`.
           investigation: inv ? {
             status: deriveInvestigationStatus(inv),
             stopReason: inv.stopReason ?? null,
@@ -173,6 +240,48 @@ export const p0007Router = (db: Db): Router => {
         }
       })() : null;
 
+      // P0010.2.x — compute the single Workspace Presentation snapshot
+      // BEFORE composing the response, so the route returns it alongside
+      // the raw fields (the raw fields stay for back-compat with non-
+      // Workspace consumers; the Workspace UI MUST read only this).
+      const workspacePresentation = reduce({
+        situation: {
+          situationId: String(row.situation_id),
+          lifecycle: row.lifecycle as 'open' | 'partial' | 'mature',
+          createdAt: String(row.created_at),
+          updatedAt: String(row.updated_at),
+          description: String(row.description ?? ''),
+          type: String(row.type ?? ''),
+          entity: {
+            id: row.entity_id as string,
+            type: row.entity_type as string,
+            name: row.entity_name as string | undefined,
+            platform: row.entity_platform as string | undefined,
+          },
+          temporal: {
+            observedAt: row.observed_at as string,
+          },
+        },
+        learningContext: learningContext ?? null,
+        interventions: interventions.map((i: Record<string, unknown>) => ({
+          interventionId: String(i.intervention_id),
+          situationId: String(i.situation_id),
+          actor: { id: String(i.actor_id ?? ''), role: String(i.actor_role ?? '') },
+          type: i.type as 'response' | 'correction' | 'context_supplement' | 'decision',
+          content: JSON.parse(String(i.content ?? '{}')),
+          summary: String(i.summary ?? ''),
+          reviewId: (i.review_id as string | undefined) ?? undefined,
+          actionId: (i.action_id as string | undefined) ?? undefined,
+          respondsToActivityIds: JSON.parse(String(i.responds_to_activity_ids ?? '[]')),
+          _legacySource: ((i.legacy_source as string | undefined) ?? 'none') as
+            | 'legacy_review'
+            | 'legacy_feedback'
+            | 'none',
+          timestamp: String(i.created_at),
+        })),
+        now: nowIso(),
+      });
+
       const situation = {
         situationId: row.situation_id,
         domain: row.domain,
@@ -204,6 +313,10 @@ export const p0007Router = (db: Db): Router => {
           ? learningContext.outputs
           : [],
         learningContext: learningContext,
+        // P0010.2.x — Workspace Presentation Output is the single source
+        // of truth for the operator-facing state. The Workspace UI MUST
+        // read this; the raw fields above are kept for back-compat only.
+        workspacePresentation,
       };
 
       ok(res, situation);

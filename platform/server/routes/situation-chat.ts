@@ -33,7 +33,7 @@ import {
   recordInterventionInLearningContext,
 } from '#app/experience/learning-context-producer.js';
 import { buildInvestigationPrompt, parseInvestigation, extractJsonObject } from '#app/runtime/investigation/index.js';
-import { materializeWorkItem } from '#app/runtime/loop/recommendation-to-output.js';
+import { writeRecommendationResult } from '#app/runtime/loop/recommendation-to-output.js';
 import { traceBuffer, makeTraceEvent } from '#app/runtime/loop/trace-ring-buffer.js';
 import { uuid } from '#shared/utils/crypto.js';
 
@@ -778,15 +778,12 @@ export const runInvestigationTurn = async (
     } catch { /* recommendation is best-effort — never blocks the investigation */ }
   }
 
-  // P0010.2: materialize a WorkItem from the completed Recommendation so the
-  // operator sees the deliverable without manually opening the Investigation
-  // panel. Single call site — both the manual POST /api/situation/:id/
-  // investigate and the RuntimeLoop's `investigate` go through this path.
-  // Idempotent: re-running with the same content produces the same
-  // deterministic outputId, so a re-investigation is a no-op for WorkItems.
+  // P0010.2.x: unified seam — the `/chat` turn-end and `/recommend`
+  // both end here so a WorkItem always exists for any complete
+  // Recommendation. No-Recommendation turns are a safe no-op.
   try {
-    materializeWorkItem(db, situation.situationId, completed);
-  } catch { /* WorkItem creation is best-effort — never blocks the investigation */ }
+    writeRecommendationResult(db, situation, completed, completed.recommendation ?? null);
+  } catch { /* Output materialization is best-effort — never blocks the investigation */ }
 
   return {
     ok: true,
@@ -977,9 +974,27 @@ export const situationChatRouter = (options: SituationChatOptions): Router => {
         return;
       }
 
-      // Persist additively into the investigation.
-      const next = { ...existing, recommendation: rec.recommendation, updatedAt: new Date().toISOString() };
-      storeInvestigationInLearningContext(options.db, situation, next);
+      // P0010.2.x — same unified seam as the `/chat` turn-end. The
+      // previous code only wrote `recommendation` to the investigation
+      // block and never produced a WorkItem, which is what surfaced the
+      // "已生成建议 + 生成建议 按钮" contradiction in the UI.
+      const seam = writeRecommendationResult(
+        options.db,
+        situation,
+        existing,
+        rec.recommendation,
+      );
+      if (!seam.materialize.created && seam.materialize.reason !== 'duplicate') {
+        // Non-fatal: the investigation row was updated (or not — surfaced
+        // via seam.investigationPersisted), but no WorkItem was created.
+        // We log this so the live-verify case can detect it; the Loop
+        // will retry the materialization on the next tick if the
+        // content changes.
+        // eslint-disable-next-line no-console
+        console.warn(
+          `[situation/:id/recommend] WorkItem not materialized: reason=${seam.materialize.reason} situation=${situationId}`,
+        );
+      }
 
       res.json({ success: true, agentStatus: 'completed', situationId, recommendation: rec.recommendation });
     } catch (err) {

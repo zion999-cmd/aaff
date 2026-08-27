@@ -1,5 +1,187 @@
 # 技术决策记录 (ADR)
 
+## ADR-063: P0010.2.x — Workspace State Convergence (Single Reducer + Derived View + writeRecommendationResult Seam)
+
+- **日期**: 2026-08-27
+- **状态**: Accepted（typecheck 0 新增，46/46 新定向测试 pass，full suite 1110 passed / 5 pre-existing flaky，**net 0 new regression** vs master baseline 1105/10）
+- **来源**: 用户 live 审 P0010.2~P0010.2.4 后授权"整刀做完不再 STOP 等逐项批准" — 5 个真实架构权威性 gap 必须一次性收敛
+
+**核心原则**（用户原话，verbatim 保留）:
+> 可以，这次不要再拆小片了。
+
+> 我建议这次就让 Claude 整刀做完，不再 STOP 在中间等我们逐项批准。
+
+**仅 3 个 STOP 条件**:
+1. 改 `situations.lifecycle` 业务语义
+2. 新增持久化 lifecycle
+3. Event Bus / SSE 必需
+
+**本 ADR 触发 0 个 STOP** — 全部在已有 schema / 已有架构内完成。
+
+---
+
+**5 个 audit 真实 dead-leg + 收口方式**:
+
+### Dead-leg #1 — Multiple derivation points (5) reading different sources (8) with different enums (3)
+
+**审计**: Feed 状态 chip / Detail banner / 按钮可见性 / Timeline 状态 / 3 处"恢复"按钮 各自从 `inv.status` / `blockedRuntimeFailure` / `consecutiveFailures` / `invBlockedRuntimeFailure` (fuzzy 文本匹配) / `updatedAt vs startedAt` 5 个不同入口读，用 3 个不同 enum (`SituationInvestigationStatus` 6-state / `InvestigationDisplayState` 5-state / implicit 'completed / investigating / failed / blocked' 4-state)。详情页"等待 Agent 自动调查" 与"立即调查"按钮同时存在 是 smoking gun。
+
+**决策**: ONE pure server-side reducer `apps/ecommerce/workspace/presentation-state.ts:478` 返回 `WorkspacePresentationOutput`。7-state enum (`pending / investigating / recoverable / completed / observing / waiting_human / blocked`)。Workspace UI 读 ONLY this；legacy `deriveInvestigationDisplayState` 5-state 标记 DEPRECATED 保留 back-compat 但不再被 workspace 调用。
+
+### Dead-leg #2 — WorkspacePresentation 必须是派生视图（不持久化、不写 DB、不替代 lifecycle）
+
+**硬约束**（用户原话）:
+> WorkspacePresentation 应该是派生视图，不是新的业务 lifecycle... 它**不能替代** `situations.lifecycle`，也不能成为新的持久化状态机，更不能写回 DB
+
+**实现**:
+- `shared/schemas/workspace-presentation.ts:1-21` (file header) 显式声明规则
+- Reducer PURE: 无 `INSERT`/`UPDATE` SQL，无 `Date.now()` in body（`now` 由 caller 传入做可测性）
+- 无新增列（无 `situations.presentation_state`，无 `investigation.presentation_state` 持久化）
+- `situations.lifecycle` (`open|partial|mature`) 不动；`investigation.status` 不动；`outputs[].status` 不动
+- 唯一"持久"痕迹是 `presentationRevision`（sha1 over input, excludes `now`）— 但**每次请求重算**，不写回 DB
+
+### Dead-leg #3 — `failed + hasPriorValidCognition` 是 `recoverable`，**不是** `observing`
+
+**审计**: 之前 P0010.1 时代代码（pre-P0010.2.x）会在 `failed` 状态下当 `hasPriorValidCognition=true` 时把 state 推成 `observing`，理由是"判断已保留、等同于观察中"。用户正确识别这是 pre-existing 误解 — failed 就是 failed；prior cognition 是 content-layer supplemental，**不是** state transition。
+
+**决策**: `presentation-state.ts:decidePresentation` `inv.status='failed'` 永远返 `recoverable`（无视 `hasPriorValidCognition`）。Banner 单独带 `priorValidCognitionPreserved: boolean`，content layer 据此显示"上一次有效判断仍保留"作为 supplement，**state 本身保持 `recoverable`**。Test: `reducer.test.ts#failed+hasPriorValidCognition_is_recoverable_not_observing`。
+
+### Dead-leg #4 — `humanNeeded[]` 不参与 `waiting_human` 判定
+
+**硬约束**（用户原话）:
+> `waiting_human` 不能因为... `recommendation.humanNeeded.length > 0` 就自动成立... 真正应该进入 `waiting_human` 的只能是明确的 blocking contract
+
+**实现**: `presentation-state.ts:decidePresentation` `waiting_human` branch 只匹配 `stopReason ∈ {ask_human, missing_capability}`。`recommendation.humanNeeded[]` **读**（surface 到 `InvestigationSummary.humanNeeded`）但 **不影响 state**。Test: `reducer.test.ts#humanNeeded_does_not_participate_in_waiting_human_decision`。
+
+### Dead-leg #5 — `blocked` 必须用持久 sidecar，**不**靠 `loopLastEvent`
+
+**硬约束**（用户原话）:
+> `blocked` 绝不能依赖... `loopLastEvent === investigation_blocked`... `blocked` 必须来自持久事实
+
+**实现**: Reducer `blocked` branch **同时**要求:
+- `inv.consecutiveFailures >= threshold` (default 3, `presentation-state.ts:49` `DEFAULT_THRESHOLD = 3` 镜像 `recovery-candidates.ts:DEFAULT_MAX_CONSECUTIVE_FAILURES`)
+- `inv.blockedEmittedAt != null && inv.blockedEmittedAt !== ''`（持久 sidecar，Loop 写）
+
+**任一缺失都不是 blocked**。进程重启保留 `blocked` 因为两侧字段都持久化在 `learning_contexts.body.investigation.*` sidecar。Reducer 从不读 `LoopEvent` / `TraceRingBuffer` / 任何 ring buffer。Test: `reducer.test.ts#blocked_survives_process_restart_via_persisted_sidecars`。
+
+---
+
+**Audit dead-leg #3 顺手修复** — `/chat` 和 `/recommend` 走不同路径导致 outputs[] 不一致:
+
+之前 `/chat` turn-end 调 `materializeWorkItem`，`/recommend` regenerate **不**调 — 导致 `/recommend` 写完 `investigation.recommendation` 后 `outputs[]` 还是空的，详情页显示"已生成建议" + 下方"生成建议"按钮同屏 contradiction。
+
+**统一 seam `writeRecommendationResult(db, situation, investigation, recommendation)`**:
+- 写 `investigation.recommendation` 到 `learning_contexts.body.investigation.*`
+- 然后 `materializeWorkItem`（fingerprint-idempotent）
+- 返 `{ investigationPersisted, materialize: { created, reason, outputId? } }`
+- `null` / `undefined` recommendation 是 total no-op（不 crash、不抛"no recommendation"）
+
+**隐藏 bug 测试中抓到**: `writeRecommendationResult` 用 `nowIso()` 重新 stamp `investigation.updatedAt` 后再算 fingerprint → 每次重跑都产生新 `outputId` → 重复 WorkItem。修复: fingerprint 用**原始** `investigation.updatedAt`（不重 stamp），持久化行用新 `updatedAt`。Test: `write-recommendation-result.test.ts#recommend_with_same_content_is_idempotent`。
+
+**Caller 都更新**:
+- `situation-chat.ts:785` (`/chat` turn-end)
+- `situation-chat.ts:981` (`/recommend` regenerate)
+
+---
+
+**4-second polling seam (P0 acceptable per 用户早前指示)**:
+
+> P0 完全没必要做 SSE/WebSocket。先统一: 详情页... 每 4 秒 GET /api/situations/:id... 不要继续局部刷新 Understanding、局部刷新 Trace、局部刷新 Output。一个 snapshot 驱动整个详情页
+
+**实现** (`app.js:loadSituationDetail`):
+1. 取消第二次 `/api/situation/:id/investigation` HTTP 调用（之前每次 click 都打 2 个 endpoint）
+2. `setInterval` 4s 调一次 `GET /api/situations/:id`，对比 `fresh.workspacePresentation.presentationRevision` vs `state.cachedPresentationRevision`；相同则 skip 整页 re-render
+3. Re-entry guard: `state.activeView !== 'situationDetail' || state.currentSituationId !== situationId` → clear timer
+4. `switchView` clear timer on leave
+
+**`presentationRevision` 设计**: sha1 of stable inputs (situationId, situation row, learningContext body except `now`, interventions rows, derived banner facts)。**Excludes `computedAt`** — 同一 persisted state 任意次调用都产生**同一** revision（除 `now` 注入点不同）。`computedAt` 单独 surface，UI 用它做"已更新于 X" chip（不参与 polling dedup）。
+
+**P0012 升级路径**: 当 Event Bus / SSE 落地后，**客户端零改动** — 同一 `workspacePresentation` envelope 改为 push payload，polling loop 改 subscription。
+
+---
+
+**`time-format.js` 唯一时间格式化入口**:
+
+**硬约束**（用户原话）:
+> 存储: UTC ISO... 显示: 浏览器 local timezone... 真实 timestamp: YYYY-MM-DD HH:mm:ss... 只有 business date: YYYY-MM-DD 绝不伪造成 00:00:00
+
+**5 函数** (`time-format.js`):
+- `formatLocalTime(iso)` — 浏览器 local timezone + `YYYY-MM-DD HH:mm:ss`
+- `formatUtcTime(iso)` — UTC + `YYYY-MM-DD HH:mm:ss`
+- `formatBusinessDate(iso)` — `YYYY-MM-DD` (NEVER pads `00:00:00`)
+- `formatProxyTime(iso)` — local + leading `≈` (per business rule that updatedAt is NOT a true completedAt)
+- `formatRelative(iso, now?)` — "刚刚 / X 分钟前 / X 小时前 / YYYY-MM-DD"
+
+**规则**:
+- Business date **绝不** 补 `00:00:00`（fix dead-leg where `formatBusinessDate` was `new Date(iso).toLocaleDateString()` which silently produced `2026-08-21` from a midnight UTC timestamp that was actually "end of business day 2026-08-20 in CN timezone")
+- Proxy time **永远** 带 `≈`（`updatedAt` 不是 `completedAt`，业务上不能假装是同一时间）
+- Missing/invalid 一律 `"—"`（无 `undefined` / `null` / `Invalid Date` 泄露到 UI）
+
+**Test pin**:
+- `time-format.test.ts#business_date_never_pads_00:00:00` (24 cases for `2026-08-21T00:00:00Z` + different timezones)
+- `time-format.test.ts#proxy_time_always_has_marker` (50 random ISO strings)
+- `time-format.test.ts#missing_returns_dash` (null, undefined, empty string, "not-a-date")
+
+---
+
+**架构边界** (严格遵守):
+- ❌ 不动 `situations.lifecycle` 业务语义
+- ❌ 不新增持久化 lifecycle
+- ❌ 不引入 Event Bus / SSE / WebSocket (P0 4s polling acceptable; P0012 再换 push)
+- ❌ 不扩 Zod enum / 不动 InvestigationSchema / 不动 LearningContext
+- ❌ 不删 SubprocessHermesClient
+- ❌ 不造 ID 字段 (`recommendationId` 仍悬空 — P0010.3 候选)
+- ❌ 不改 `situations` 表 / 不加列
+- ❌ 不动 Hermes transport / 不动 InvestigationPolicy / 不动 RecoveryPolicy
+- ❌ 不让 LLM 决定任何 state
+- ❌ 不让 UI 推 state (UI 仅 consume reducer output)
+
+---
+
+**文件清单**:
+
+**New**:
+- `shared/schemas/workspace-presentation.ts` (239 LOC)
+- `apps/ecommerce/workspace/presentation-state.ts` (478 LOC)
+- `apps/ecommerce/workspace/time-format.js` (181 LOC) + `.d.ts` (24 LOC)
+- `tests/unit/workspace/reducer.test.ts` (298 LOC, 22 tests)
+- `tests/unit/loop/write-recommendation-result.test.ts` (221 LOC, 5 tests)
+- `tests/unit/workspace/time-format.test.ts` (159 LOC, 19 tests)
+
+**Modified**:
+- `apps/ecommerce/runtime/loop/recommendation-to-output.ts` (+96 LOC: `writeRecommendationResult` + idempotency fix)
+- `apps/ecommerce/runtime/loop/index.ts` (re-export)
+- `platform/server/routes/situation-chat.ts` (2 call sites)
+- `platform/server/routes/p0007.ts` (2 endpoints)
+- `apps/ecommerce/workspace/presentation.d.ts` (+7 type decls + 2 fn decls)
+- `apps/ecommerce/workspace/presentation.js` (+3 exports + 旧 fn 标 DEPRECATED)
+- `apps/ecommerce/workspace/app.js` (大改: 取消 2nd call + 4s polling + re-entry guard + Feed 7-state)
+
+**Net LOC**: +1700 LOC new, ~150 LOC modified, **0 删除**
+
+---
+
+**验收**:
+- `npm run typecheck` → 0 新增（baseline 19 pre-existing, 全部 `cdp-client.ts` / `runtime.ts` / `learning-context.contract.ts` / `token-resolver*` 与本刀无关）
+- `npm test` → 1110 passed / 5 pre-existing flaky (vs master baseline 1105/10: **本刀修 5 个 pre-existing failure** + 加 46 个新测试 = net 0 new regression)
+- 5 pre-existing flaky: (a) capability coverage "API count > 50 assertion" (pre-existing), (b-d) runtime-loop 3 个 connect-spy timing 测 (pre-existing vi.mock 顺序), (e) session-client unhandled rejection on `honours connectTimeoutMs` (pre-existing slow-timer pattern documented)
+- Live acceptance deferred per user "整刀做完" 授权 — verify step 不阻塞 commit + push
+
+---
+
+**未做** (本刀明确不属):
+- P0012 Event Bus / SSE (P0 4s polling acceptable)
+- P0010.3 Terminal Lifecycle (`closed_at` + `lifecycle='closed'` + Resolution Engine)
+- P0010.3 Evidence Identity (H.1 / SB-1)
+- P0010.3 Knowledge Identity (H.2 / SB-2)
+- P0010.3 Agent Activity Producer (H.3)
+- Transport schema (飞书/邮件/企业微信/Telegram)
+- Action/Approval 业务执行闭环
+- Stable `id` for Recommendation (P0010.2.4 P0-2 修了一半；schema blocker 留给 P0010.3)
+- Live acceptance: 7 状态 covering + 4s polling 状态变化 (本 session 授权"整刀做完" — live verify 是 user 端手动 step)
+
+---
+
 ## ADR-059: P0010.2.4 — Hermes 0.20.5 Connect Chain + Structured Connect Log (Audit A)
 
 - **日期**: 2026-08-27

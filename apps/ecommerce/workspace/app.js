@@ -45,7 +45,15 @@ import {
   // P0010.1 Final Repair — Area C.4: intervention-link helpers.
   deriveLatestAgentActivityId,
   flattenRespondsToActivityIds,
+  // P0010.2.x — WorkspacePresentation wrappers. The Detail page and the
+  // Feed read ONLY `getWorkspacePresentation()`; raw `learningContext`
+  // fields are never re-interpreted on the client. The 5-state helpers
+  // above are KEPT for back-compat with any code path that still
+  // derives the state client-side.
+  getWorkspacePresentation,
+  getAvailableActions,
 } from './presentation.js';
+import { formatLocalTime, formatBusinessDate, formatRelative } from './time-format.js';
 
 const toastNode = document.getElementById('toast');
 
@@ -163,7 +171,21 @@ const state = {
   // click to real content.
   situationContext: null,
   currentSituationId: null,
+  // P0010.2.x — Detail-page polling. The page polls
+  // `/api/situations/:id` every `DETAIL_POLL_MS` ms. We compare the
+  // returned `presentationRevision` to the cached one; when it changes
+  // we re-render the entire detail body from the new snapshot. When the
+  // user navigates away (switchView out of `situationDetail`), we clear
+  // the interval so it never leaks.
+  detailPollTimer: null,
+  cachedPresentationRevision: null,
 };
+
+// 4-second polling — audit §6.4 explicit: "详情页 … 每 4 秒 GET
+// /api/situations/:id … 一个 snapshot 驱动整个详情页". The interval
+// is intentionally not aligned to `:00` seconds (audit: fleet-friendly
+// jitter so polling N clients does not stack up at the same instant).
+const DETAIL_POLL_MS = 4000;
 
 function showToast(msg) { toastNode.textContent = msg; toastNode.classList.add('show'); setTimeout(() => toastNode.classList.remove('show'), 1500); }
 async function apiGet(path) { const r = await fetch(path); if (!r.ok) throw new Error(`${r.status}`); const j = await r.json(); return j.data || j; }
@@ -185,6 +207,16 @@ function entityDisplayName(entity) {
 
 // ═══ Navigation ═════════════════════════════════════════════
 function switchView(name, filter = 'all') {
+  // P0010.2.x — leaving the Situation Detail view MUST stop the 4-second
+  // polling loop. Otherwise the loop runs forever, holds the snapshot in
+  // memory, and re-renders a view the user is no longer looking at.
+  if (state.activeView === 'situationDetail' && name !== 'situationDetail') {
+    if (state.detailPollTimer) {
+      clearInterval(state.detailPollTimer);
+      state.detailPollTimer = null;
+    }
+    state.cachedPresentationRevision = null;
+  }
   state.activeView = name; state.activeFilter = filter;
   document.querySelectorAll('.sidebar-item').forEach(item => {
     const itemView = item.dataset.view, itemFilter = item.dataset.filter;
@@ -1142,25 +1174,52 @@ async function loadSituationFeed(filter) {
       return;
     }
 
-    // Filter — P0010.1: mutually-exclusive Agent investigation status
-    // (pending / investigating / observing / needs_human / judgment_ready).
-    // Each situation maps to EXACTLY one status; counts never overlap.
-    var statusOf = function(s) { return (s.investigation && s.investigation.status) || 'pending'; };
+    // P0010.2.x — Feed state source. The 7-state presentation comes
+    // from the server-side reducer (`s.presentation`), NOT from the
+    // legacy `s.investigation.status` field. The reducer's enum is
+    // pending / investigating / recoverable / completed / observing /
+    // waiting_human / blocked. The 5 sidebar filter chips still
+    // expose the operator-facing buckets (pending / investigating /
+    // observing / needs_human / judgment_ready) — we map the 7
+    // states onto those buckets below.
+    //
+    // Each situation maps to EXACTLY one presentation state; counts
+    // never overlap. The 7→5 mapping is the contract: when the reducer
+    // adds a new state, this map is the only place that needs to
+    // learn about it (along with the chip CSS class).
+    var presentationOf = function(s) {
+      return s.presentation || (s.investigation && s.investigation.status) || 'pending';
+    };
+    var chipBucket = function(presentation) {
+      // 7-state → 5-bucket map.
+      switch (presentation) {
+        case 'pending': return 'pending';
+        case 'investigating': return 'investigating';
+        case 'recoverable': return 'pending'; // failed-but-retrying — operator view: still pending
+        case 'completed': return 'judgment_ready';
+        case 'observing': return 'observing';
+        case 'waiting_human': return 'needs_human';
+        case 'blocked': return 'needs_human'; // operator MUST act
+        default: return 'pending';
+      }
+    };
     var filtered = situations;
-    if (filter === 'pending') filtered = situations.filter(function(s) { return statusOf(s) === 'pending' || statusOf(s) === 'failed'; });
-    else if (filter === 'investigating') filtered = situations.filter(function(s) { return statusOf(s) === 'investigating'; });
-    else if (filter === 'observing') filtered = situations.filter(function(s) { return statusOf(s) === 'observing'; });
-    else if (filter === 'needs_human') filtered = situations.filter(function(s) { return statusOf(s) === 'needs_human'; });
-    else if (filter === 'judgment_ready') filtered = situations.filter(function(s) { return statusOf(s) === 'judgment_ready'; });
+    if (filter === 'pending') {
+      filtered = situations.filter(function (s) { return chipBucket(presentationOf(s)) === 'pending'; });
+    } else if (filter === 'investigating') {
+      filtered = situations.filter(function (s) { return chipBucket(presentationOf(s)) === 'investigating'; });
+    } else if (filter === 'observing') {
+      filtered = situations.filter(function (s) { return chipBucket(presentationOf(s)) === 'observing'; });
+    } else if (filter === 'needs_human') {
+      filtered = situations.filter(function (s) { return chipBucket(presentationOf(s)) === 'needs_human'; });
+    } else if (filter === 'judgment_ready') {
+      filtered = situations.filter(function (s) { return chipBucket(presentationOf(s)) === 'judgment_ready'; });
+    }
 
     var counts = { all: situations.length, pending: 0, investigating: 0, observing: 0, needs_human: 0, judgment_ready: 0 };
     situations.forEach(function(s) {
-      var st = statusOf(s);
-      if (st === 'pending' || st === 'failed') counts.pending++;
-      else if (st === 'investigating') counts.investigating++;
-      else if (st === 'observing') counts.observing++;
-      else if (st === 'needs_human') counts.needs_human++;
-      else counts.judgment_ready++;
+      var bucket = chipBucket(presentationOf(s));
+      counts[bucket] = (counts[bucket] || 0) + 1;
     });
     updateSituationBadges(counts);
 
@@ -1170,38 +1229,38 @@ async function loadSituationFeed(filter) {
     filtered.forEach(function(s) {
       var entity = s.entity || {};
       var temporal = s.temporal || {};
-      // P0010.1 REPAIR: drop the legacy "已处理/待处理/待观察" badge (the
-      // situations.lifecycle field is now a Content-shape flag, not a
-      // business lifecycle). The card now shows the 5-state Situation
-      // lifecycle derived from the agent-status-chip + intervention count.
-      var inv = s.investigation || null;
+      // P0010.2.x — Feed chip + label. The server pre-computes
+      // `presentation` (7-state) + `headline` + `shortLabel` for every
+      // row. We use those directly and STOP re-deriving from
+      // `s.investigation.status`. The 5 legacy chip classes are still
+      // applied via the bucket map above so the CSS keeps working.
+      var presentation = presentationOf(s);
+      var bucket = chipBucket(presentation);
       var interventionCount = s.interventionCount || 0;
       var hasAcceptedDecision = !!s.hasAcceptedDecision;
+      // The lifecycle card is a separate surface (it talks about the
+      // situation's content lifecycle, not the investigation's
+      // presentation). We keep deriveSituationLifecycle for that.
+      var inv = s.investigation || null;
       var lifecycle = deriveSituationLifecycle(inv, interventionCount, hasAcceptedDecision);
       if (lifecycle === 'closed') lifecycle = 'watching';
       var lcLabel = SITUATION_LIFECYCLE_LABEL[lifecycle] || '';
       var lcIcon = lcLabel.split(' ')[0] || '';
       var lcText = lcLabel.replace(/^[^\s]+\s+/, '');
       var badge = '<span class="situation-card-badge lifecycle-' + lifecycle + '">' + escHtml(lcIcon + ' ' + lcText) + '</span>';
-      // P0010.1: Agent business status from persisted investigation (never re-computed).
-      var inv = s.investigation || null;
-      var statusChip = '';
-      if (!inv || inv.status === 'pending') {
-        statusChip = '<span class="agent-status-chip uninvestigated">待调查</span>';
-      } else if (inv.status === 'investigating') {
-        statusChip = '<span class="agent-status-chip investigating">调查中</span>';
-      } else if (inv.status === 'failed') {
-        statusChip = '<span class="agent-status-chip failed">调查未完成</span>';
-      } else if (inv.status === 'observing') {
-        statusChip = '<span class="agent-status-chip observing">观察中</span>';
-      } else if (inv.status === 'needs_human') {
-        statusChip = '<span class="agent-status-chip needs-human">需人工核验</span>';
-      } else {
-        // P0010.1 Final Repair — Area D: "判断已形成" is informational, not
-        // triumphal. Autonomous by default — human interruptible, blocking
-        // only when necessary. The chip should not read as "case closed".
-        statusChip = '<span class="agent-status-chip judgment-ready">判断已形成</span>';
-      }
+      // P0010.2.x — Agent status chip text. The reducer's
+      // `s.headline` is the canonical headline (e.g. "🔍 调查中",
+      // "⚠ 自动调查已暂停"). The chip CSS class is bucketed to keep
+      // the existing stylesheet working.
+      var headline = s.headline || '';
+      var chipClass = 'agent-status-chip ' + (
+        bucket === 'pending' ? 'uninvestigated'
+        : bucket === 'investigating' ? 'investigating'
+        : bucket === 'observing' ? 'observing'
+        : bucket === 'needs_human' ? 'needs-human'
+        : 'judgment-ready'
+      );
+      var statusChip = '<span class="' + chipClass + '">' + escHtml(headline || presentation) + '</span>';
       var judgmentLine = inv && inv.judgment ? '<div class="situation-card-judgment">Agent 判断: ' + escHtml(inv.judgment.slice(0, 70)) + '</div>' : '';
       // P0010.1: strip a leading entity-id from the description so the card
       // title doesn't render "未知商品 · SKU 101 · 101 …" (duplicate id).
@@ -1327,6 +1386,15 @@ async function loadSituationDetail(situationId) {
   }
   if (!situationId) return;
   currentSituationId = situationId;
+  // P0010.2.x — cancel any prior polling loop. We always re-create the
+  // loop in the success path; cancelling here is the safety net for
+  // a re-entry into the same Situation (the page is not torn down,
+  // just refreshed). Without this, two loops would race and the older
+  // one's last `loadSituationDetail` could clobber the newer render.
+  if (state.detailPollTimer) {
+    clearInterval(state.detailPollTimer);
+    state.detailPollTimer = null;
+  }
   var content = document.getElementById('situationDetailContent');
   var badge = document.getElementById('situationLifecycleBadge');
   // P0010.1 Post-Review REPAIR: the Investigation Track is projected into
@@ -1490,34 +1558,49 @@ async function loadSituationDetail(situationId) {
       decisionContent.innerHTML = '';
     }
 
-    // Load any stored P0010 Investigation (read-only; null when not investigated).
-    // The Understanding surface consumes ONLY persisted investigation state — no
-    // LLM/Hermes call, no new evidence acquisition. Trace is a secondary drill-down.
-    // The Pattern Engine is NEVER presented as "Agent 当前理解" — it only appears
-    // as a secondary 信号归因 inside the Trace.
+    // P0010.2.x — single snapshot. The previous code did a SECOND
+    // `GET /api/situation/:id/investigation` here to fetch the
+    // persisted investigation state. That second call was the source of
+    // the audit dead-leg #1 (two state sources disagreeing) and the
+    // previous race that flipped the badge mid-render. The
+    // `/api/situations/:id` response now carries `workspacePresentation`
+    // — the same reducer-computed snapshot the Feed uses. We read it
+    // here directly. NO second HTTP call.
     //
-    // P0010.2.2 — also reads `blockedRuntimeFailure` from the API so the
-    // "立即调查（恢复）" button only appears in the single state where it
-    // is meaningful. In the normal flow (failed / no investigation yet /
-    // investigating) the button is hidden because the Runtime is already
-    // self-healing on its own tick.
+    // The browser still needs the raw `learningContext.investigation`
+    // for content projection (Understanding surface, Trace, Track
+    // panels). `raw.learningContext.investigation` carries it; we
+    // extract that for the legacy renderers, and we read the
+    // OPERATOR-FACING state from `raw.workspacePresentation.banner`
+    // exclusively.
+    const wp = getWorkspacePresentation(raw);
+    const wpInvestigation = wp && wp.investigation ? wp.investigation : null;
+    const invData = raw.learningContext && raw.learningContext.investigation
+      ? raw.learningContext.investigation
+      : null;
+    // Back-compat: downstream code reads `invStatus` and
+    // `invBlockedRuntimeFailure`. Map the 7-state presentation to the
+    // legacy 4-state slots so the rest of the function (Track / Trace /
+    // Understanding render) keeps working without rewrites.
+    let invStatus = 'pending';
+    if (wp) {
+      if (wp.presentation === 'investigating') invStatus = 'investigating';
+      else if (wp.presentation === 'recoverable') invStatus = 'failed';
+      else if (wp.presentation === 'completed' || wp.presentation === 'observing' || wp.presentation === 'waiting_human') invStatus = 'completed';
+    } else if (invData) {
+      if (invData.status === 'investigating') invStatus = 'investigating';
+      else if (invData.status === 'failed') invStatus = 'failed';
+      else if (invData.status === 'completed' || invData.stopReason) invStatus = 'completed';
+    }
+    const invBlockedRuntimeFailure = wp ? wp.presentation === 'blocked' : false;
+    const invConsecutiveFailures = invData ? Number(invData.consecutiveFailures ?? 0) : 0;
+    // Available-action flags come from the reducer's banner, NOT from
+    // string-matching the presentation state. The Detail page reads
+    // these to show/hide the generate-recommendation, clear-block, and
+    // legacy-start buttons deterministically.
+    const actions = getAvailableActions(wp);
     const uEl = document.getElementById('situationUnderstanding_' + escHtml(situationId));
     const btn = document.getElementById('startInvestigation_' + escHtml(situationId));
-    let invData = null;
-    let invStatus = 'pending'; // pending | investigating | failed | completed
-    let invBlockedRuntimeFailure = false;
-    let invConsecutiveFailures = 0;
-    try {
-      const inv = await apiGet('/api/situation/' + encodeURIComponent(situationId) + '/investigation');
-      invData = inv?.investigation ?? null;
-      if (invData) {
-        if (invData.status === 'investigating') invStatus = 'investigating';
-        else if (invData.status === 'failed') invStatus = 'failed';
-        else if (invData.status === 'completed' || invData.stopReason) invStatus = 'completed';
-      }
-      invBlockedRuntimeFailure = inv?.blockedRuntimeFailure === true;
-      invConsecutiveFailures = Number(inv?.consecutiveFailures ?? 0);
-    } catch { /* keep pending */ }
 
     // P0010.1 REPAIR: 5-state Lifecycle + Commitment + Outputs (second pass).
     // Compute hasAcceptedDecision from interventions (decision='accept').
@@ -1624,41 +1707,57 @@ async function loadSituationDetail(situationId) {
       }
       if (btn) btn.style.display = 'none';
     } else {
-      // P0010.2.4 (ADR-060 audit B) — Single source of truth for the
-      // banner copy + button visibility. Replaces the previous
-      // invStatus / invBlockedRuntimeFailure string-match block that
-      // contradicted itself when a Situation was blocked.
-      //
-      // The runtime drives the state via `deriveInvestigationDisplayState`;
-      // the banner copy + showClearBlock flag come from
-      // INVESTIGATION_DISPLAY_BANNER (presentation.js). NO inline string
-      // matches here.
+      // P0010.2.x — banner copy + button visibility come from the
+      // server-side WorkspacePresentation reducer when available. This
+      // is the single source of truth (audit §6.7). The
+      // deriveInvestigationDisplayState + INVESTIGATION_DISPLAY_BANNER
+      // path below is a back-compat fallback used only when the API
+      // response does not carry `workspacePresentation` (e.g. a
+      // non-Workspace consumer endpoint). For every Workspace request,
+      // we go through the `wp` branch.
       const willShow = '<div class="muted" style="font-size:0.75rem;margin-top:6px">完成后将显示：当前判断 / 已确认 / 当前假设 / 还不知道 / 下一步调查 / 建议</div>';
-      const displayState = deriveInvestigationDisplayState(
-        invData,
-        invBlockedRuntimeFailure,
-        invConsecutiveFailures,
-      );
-      const banner = INVESTIGATION_DISPLAY_BANNER[displayState] || INVESTIGATION_DISPLAY_BANNER.pending;
-      // P0010.2.4 review repair (ADR-061) — the `blocked` state's
-      // detail is a function `(consecutiveFailures, threshold) =>
-      // string`. app.js calls it with the live counter so the operator
-      // sees the actual count instead of a hard-coded placeholder. All
-      // other states have a static `detail` string. Default threshold
-      // matches recovery-candidates.ts DEFAULT_MAX_FAILURES=3.
-      const detailText = typeof banner.detail === 'function'
-        ? banner.detail(invConsecutiveFailures || 0, 3)
-        : banner.detail;
+      let bannerHeadline = '';
+      let bannerDetail = '';
+      let isBlocked = false;
+      if (wp) {
+        // Single source of truth. The reducer's banner has already
+        // accounted for `priorValidCognitionPreserved`, the
+        // recommendation presence (showGenerateRecommendation), and the
+        // blocked-state counter. We do NOT add any inline string-match
+        // copy here.
+        bannerHeadline = wp.banner.headline || '';
+        bannerDetail = wp.banner.detail || '';
+        isBlocked = wp.presentation === 'blocked';
+      } else {
+        // Back-compat fallback. Should be removed once every endpoint
+        // returns `workspacePresentation`.
+        const displayState = deriveInvestigationDisplayState(
+          invData,
+          invBlockedRuntimeFailure,
+          invConsecutiveFailures,
+        );
+        const banner = INVESTIGATION_DISPLAY_BANNER[displayState] || INVESTIGATION_DISPLAY_BANNER.pending;
+        bannerHeadline = banner.headline;
+        bannerDetail = typeof banner.detail === 'function'
+          ? banner.detail(invConsecutiveFailures || 0, 3)
+          : (banner.detail || '');
+        isBlocked = displayState === 'blocked';
+      }
       if (uEl) {
-        // Blocked state uses warning color; others use muted.
-        var colorCss = displayState === 'blocked' ? 'color:var(--warning)' : '';
+        var colorCss = isBlocked ? 'color:var(--warning)' : '';
         uEl.innerHTML =
-          '<p class="muted" style="' + colorCss + '">' + banner.headline +
-          (detailText ? '<br/><small>' + detailText + '</small>' : '') +
+          '<p class="muted" style="' + colorCss + '">' + bannerHeadline +
+          (bannerDetail ? '<br/><small>' + bannerDetail + '</small>' : '') +
           '</p>' + willShow;
       }
       if (btn) {
-        if (banner.showClearBlock) {
+        // P0010.2.x — button visibility is driven by the reducer's
+        // `availableActions` flags. The string-match fallback
+        // (`banner.showClearBlock`) is kept for back-compat with
+        // responses that don't carry `workspacePresentation`. New code
+        // MUST read the flags from `actions` only.
+        const showClearBlock = wp ? actions.showClearBlock : !!banner.showClearBlock;
+        if (showClearBlock) {
           // P0010.2.4 — explicit "解除阻塞并重新调度" copy. The button
           // is ONLY ever shown in the blocked state. It posts to
           // /clear-block which resets the failure counter and lets the
@@ -1703,6 +1802,38 @@ async function loadSituationDetail(situationId) {
         renderRuntimeTrace(runtimeTraceHost, situationId);
       }
     }
+    // P0010.2.x — 4-second polling. The whole page is driven by a
+    // single snapshot from `/api/situations/:id`. We re-fetch the same
+    // endpoint, compare the new `presentationRevision` to the cached
+    // one, and re-render the entire body ONLY when something
+    // actually changed. When the revision matches, the loop is a
+    // no-op (no DOM mutation, no flash). When the user navigates away,
+    // `switchView` clears the interval.
+    state.cachedPresentationRevision = wp ? wp.presentationRevision : null;
+    state.detailPollTimer = setInterval(async function () {
+      // Re-entry guard: if the user already navigated away, bail.
+      if (state.activeView !== 'situationDetail' || state.currentSituationId !== situationId) {
+        if (state.detailPollTimer) {
+          clearInterval(state.detailPollTimer);
+          state.detailPollTimer = null;
+        }
+        return;
+      }
+      try {
+        const fresh = await apiGet('/api/situations/' + situationId);
+        const freshWp = fresh && fresh.workspacePresentation;
+        if (!freshWp) return; // unexpected shape — skip this tick
+        if (freshWp.presentationRevision === state.cachedPresentationRevision) return;
+        state.cachedPresentationRevision = freshWp.presentationRevision;
+        // Re-render the entire detail body from the new snapshot. We
+        // re-call loadSituationDetail (idempotent — clears the prior
+        // interval at the top) so the same render path drives the
+        // first paint and every subsequent tick.
+        loadSituationDetail(situationId);
+      } catch {
+        // Network blip — keep the cached body, try again next tick.
+      }
+    }, DETAIL_POLL_MS);
   } catch (e) {
     content.innerHTML = '<p class="muted placeholder">加载失败 (' + e.message + ')</p>';
   }

@@ -10,6 +10,8 @@
 // App.js is the caller that wires these helpers to the live DOM and
 // to `state.panelMode`. Tests use them directly.
 
+import { formatLocalTime as formatLocalTimeTz, formatUtcTime, formatBusinessDate, formatProxyTime, formatRelative } from './time-format.js';
+
 /**
  * baseline §3: "What happened" — Business Situation, not ranking-engine event.
  *
@@ -660,12 +662,20 @@ function actorLabel(actor) {
   return actor || '';
 }
 
-/** Format an ISO timestamp for display in the timeline row. */
+/** Format an ISO timestamp for display in the timeline row.
+ *  Delegates to time-format.js (browser local timezone, second precision).
+ *  Kept as a local wrapper so existing call sites that import
+ *  `formatLocalTime` from this module keep working. */
 function formatLocalTime(iso) {
-  if (!iso) return '';
-  // Slice(0, 16) gives "YYYY-MM-DDTHH:mm". Replace the T with a space for the operator UI.
-  return String(iso).slice(0, 16).replace('T', ' ');
+  return formatLocalTimeTz(iso);
 }
+
+// ---- re-exports for backward-compat ----
+//
+// Some legacy code paths import the time formatters directly from
+// `presentation.js`. Re-export them here so we don't have to update
+// every call site just to switch to the new module.
+export { formatLocalTimeTz as formatLocalTimeStrict, formatUtcTime, formatBusinessDate, formatProxyTime, formatRelative };
 
 /** Push an event only if its timestamp is present. Skips silently on missing data. */
 function pushIfTimed(events, ev) {
@@ -891,4 +901,102 @@ export function flattenRespondsToActivityIds(type, content) {
     return typeof x === 'string' && x.length > 0;
   });
 }
+
+// ---- P0010.2.x — WorkspacePresentation wrapper for the browser ----
+//
+// The authoritative state is computed server-side by
+// `apps/ecommerce/workspace/presentation-state.ts`. The browser MUST
+// consume the pre-computed snapshot via `/api/situations/:id`'s
+// `workspacePresentation` field, NOT recompute state from raw
+// `learningContext` fields.
+//
+// These two thin functions are the browser-side accessors. They
+// handle the three possible response shapes:
+//
+//   * `detail.workspacePresentation` is set  → return it as-is
+//   * `detail.workspacePresentation` is null → return null (e.g. 404
+//                                             or a non-Workspace
+//                                             consumer endpoint)
+//   * `detail` itself is null/undefined      → return null
+//
+// The two P0010.1/P0010.2.4 helpers above (`deriveInvestigationStatus`
+// in p0007.ts and `deriveInvestigationDisplayState` here) are KEPT for
+// back-compat with any caller still using them. New code MUST use
+// these two functions instead.
+
+/**
+ * Get the single WorkspacePresentation snapshot for one situation.
+ * @param {object|null|undefined} detail The `/api/situations/:id` response body.
+ * @returns {WorkspacePresentationOutput|null}
+ */
+export function getWorkspacePresentation(detail) {
+  if (!detail) return null;
+  var wp = detail.workspacePresentation;
+  if (!wp) return null;
+  return wp;
+}
+
+/**
+ * Get a FeedEntrySummary for a situation, projecting from the full
+ * WorkspacePresentation snapshot. The server already returns a
+ * pre-computed FeedEntrySummary at `/api/situations` (each list row
+ * carries `presentation` / `headline` / `presentationRevision`), so
+ * the browser usually reads those directly. This function is for
+ * callers that only have the Detail response.
+ *
+ * @param {object|null|undefined} detail
+ * @returns {FeedEntrySummary|null}
+ */
+export function getFeedEntrySummary(detail) {
+  var wp = getWorkspacePresentation(detail);
+  if (!wp) return null;
+  return {
+    situationId: wp.situationId,
+    presentation: wp.presentation,
+    headline: wp.banner ? wp.banner.headline : '',
+    shortLabel: wp.banner ? wp.banner.detail : '',
+    observedAt: (detail.temporal && detail.temporal.observedAt) || detail.createdAt || '',
+    interventionCount: Array.isArray(wp.interventions) ? wp.interventions.length : 0,
+    hasAcceptedDecision: false, // Detail endpoint does not compute this; caller falls back to /api/situations.
+    judgmentPreview: wp.investigation && wp.investigation.judgment
+      ? (wp.investigation.judgment.length > 70 ? wp.investigation.judgment.slice(0, 70) : wp.investigation.judgment)
+      : '',
+    presentationRevision: wp.presentationRevision,
+  };
+}
+
+/**
+ * Read the `availableActions` flags from a WorkspacePresentation banner.
+ * The browser renders the generate-recommendation / clear-block /
+ * legacy-start buttons based on these flags rather than re-deriving
+ * from the presentation state.
+ *
+ * @param {WorkspacePresentationOutput|null|undefined} wp
+ * @returns {{showGenerateRecommendation: boolean, showClearBlock: boolean, showLegacyStart: boolean}}
+ */
+export function getAvailableActions(wp) {
+  if (!wp || !wp.banner || !wp.banner.availableActions) {
+    return { showGenerateRecommendation: false, showClearBlock: false, showLegacyStart: false };
+  }
+  return wp.banner.availableActions;
+}
+
+// ---- P0010.2.x — Presentation state code path (DEPRECATED comment) ----
+//
+// The 5-state enum + `INVESTIGATION_DISPLAY_BANNER` +
+// `deriveInvestigationDisplayState` above (P0010.2.4) are KEPT for
+// back-compat with any code path that still derives the operator-
+// facing state client-side from raw investigation fields. They are
+// SUPERSEDED by the server-side WorkspacePresentation reducer
+// (presentation-state.ts → p0007.ts → `workspacePresentation` field).
+// The 7-state enum (pending / investigating / recoverable / completed
+// / observing / waiting_human / blocked) is the single source of
+// truth.
+//
+// New UI code MUST consume `getWorkspacePresentation()` and read the
+// `banner` / `availableActions` from there. Do NOT add new code
+// paths that re-derive presentation state from raw
+// `investigation.*` fields or from the old 5-state enum — they
+// contradict the server-side reducer and reintroduce audit dead-leg
+// #1 (multiple state sources disagreeing on the same Situation).
 
