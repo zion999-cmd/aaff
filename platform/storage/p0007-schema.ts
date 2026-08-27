@@ -22,6 +22,35 @@ export const HUMAN_INTERVENTION_ALLOWED_TYPES: readonly string[] = [
 const HUMAN_INTERVENTION_TYPE_GUARD_TRIGGER =
   'trg_human_interventions_type_guard';
 
+// P0010.2.5 closure — Area B "防止脏 Situation 再生":
+//   The DB column `situations.lifecycle` is a free-form TEXT and the
+//   Zod SituationSchema has no `lifecycle` field. The audit found 1
+//   historical row with `lifecycle='completed'` (a value not in the
+//   canonical set) that hid the situation from the recovery queue
+//   (recovery-candidates.ts filters WHERE lifecycle IN ('open','partial')).
+//
+//   We DO NOT add a CHECK constraint (SQLite doesn't support
+//   ALTER TABLE … ADD CONSTRAINT, and the existing rows already contain
+//   historical drift). Instead we mirror the human_interventions pattern
+//   above: a BEFORE INSERT/UPDATE trigger that raises ABORT on
+//   non-canonical values, fail-closed at the write boundary.
+//
+//   The canonical set is shared with `learning_contexts.lifecycle` and
+//   `ContextLifecycleSchema` (shared/schemas/learning-context.ts). Keeping
+//   both columns on the same vocabulary is the long-term invariant — the
+//   two lifecycles describe the same situation from two layers (DB row
+//   vs. document body), and they MUST stay in lockstep.
+//
+//   This trigger does NOT introduce a new business state machine. It
+//   enforces the existing canonical vocabulary at the write boundary,
+//   matching what the Zod layer already does for learning_contexts.
+export const SITUATION_LIFECYCLE_ALLOWED_VALUES: readonly string[] = [
+  'open',
+  'partial',
+  'mature',
+] as const;
+const SITUATION_LIFECYCLE_GUARD_TRIGGER = 'trg_situations_lifecycle_guard';
+
 const STATEMENTS = [
   // ── Situations ──────────────────────────────────────────
   `CREATE TABLE IF NOT EXISTS situations (
@@ -142,6 +171,42 @@ export const applyHumanInterventionTypeGuard = (
   db.exec(updateTriggerBody);
 };
 
+/**
+ * P0010.2.5 closure — install the lifecycle-allowlist trigger on
+ * `situations`. Mirrors the `human_interventions` pattern above. Idempotent.
+ *
+ * The historical drift (1 row with lifecycle='completed') is rewritten
+ * by `scripts/fix-dirty-lifecycle.ts` — this trigger only protects
+ * future writes.
+ */
+export const applySituationLifecycleGuard = (db: Database.Database): void => {
+  const allowed = SITUATION_LIFECYCLE_ALLOWED_VALUES.map((v) => `'${v}'`).join(', ');
+  const insertTriggerBody = `
+    CREATE TRIGGER ${SITUATION_LIFECYCLE_GUARD_TRIGGER}
+    BEFORE INSERT ON situations
+    FOR EACH ROW
+    WHEN NEW.lifecycle IS NULL OR NEW.lifecycle NOT IN (${allowed})
+    BEGIN
+      SELECT RAISE(ABORT, 'situations.lifecycle is not in the allowlist (open|partial|mature); see trg_situations_lifecycle_guard comment');
+    END;
+  `;
+  const updateTriggerBody = `
+    CREATE TRIGGER ${SITUATION_LIFECYCLE_GUARD_TRIGGER}_update
+    BEFORE UPDATE OF lifecycle ON situations
+    FOR EACH ROW
+    WHEN NEW.lifecycle IS NULL OR NEW.lifecycle NOT IN (${allowed})
+    BEGIN
+      SELECT RAISE(ABORT, 'situations.lifecycle is not in the allowlist (open|partial|mature); see trg_situations_lifecycle_guard comment');
+    END;
+  `;
+  db.exec(`
+    DROP TRIGGER IF EXISTS ${SITUATION_LIFECYCLE_GUARD_TRIGGER};
+    DROP TRIGGER IF EXISTS ${SITUATION_LIFECYCLE_GUARD_TRIGGER}_update;
+  `);
+  db.exec(insertTriggerBody);
+  db.exec(updateTriggerBody);
+};
+
 /** Apply P0007 schema tables. Safe to call multiple times (IF NOT EXISTS). */
 export const applyP0007Schema = (db: Database.Database): void => {
   db.exec(STATEMENTS.join(';\n'));
@@ -151,4 +216,9 @@ export const applyP0007Schema = (db: Database.Database): void => {
   // install the trigger so future writes are validated.
   rewriteLegacyActionIntentInterventions(db);
   applyHumanInterventionTypeGuard(db);
+  // P0010.2.5 closure — Area B: install the lifecycle-allowlist trigger.
+  // The historical drift has already been rewritten by
+  // scripts/fix-dirty-lifecycle.ts before this runs (when applied at boot,
+  // no drift is expected to exist; the trigger is a forward-looking guard).
+  applySituationLifecycleGuard(db);
 };
