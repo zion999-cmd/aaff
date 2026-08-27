@@ -903,3 +903,214 @@ re-prompt path (still a short follow-up).
   on null-string fields is a known agnes-2.0-flash behavior and route these
   straight to `observe` instead of `investigate`.
 
+
+---
+
+# Handoff — P0010.2.x Clean Runtime Baseline Reset (2026-08-27)
+
+## Session goal
+
+Before continuing P0010.2 engineering acceptance, the user requested a
+**destructive reset** of the dev DB and runtime filesystem to remove all
+runtime facts produced by previous Hermes turns, demo seed, mock
+collection, test-fix runs, and CDP screenshots — while preserving
+knowledge, capability, environment, configuration, and code.
+
+User's principle: keep what the Agent has **learned / can do**, delete
+what the Agent **saw / judged / produced / remembered**.
+
+## What was changed
+
+| File | Change | Why |
+|---|---|---|
+| `scripts/reset-runtime-baseline.ts` (NEW, ~330 LOC) | One-shot reset tool. `--dry-run` (default) / `--execute`. FK-safe DB DELETE order, filesystem pattern-aware cleanup, KEEP-path hash check, idempotent re-runs | The reusable, auditable tool that satisfies the user's "可重用的 reset 工具" requirement |
+
+## DB DELETE order (FK-safe, children first)
+
+1. `hourly_snapshot_signals` (M2M join for hourly_snapshots × signals)
+2. `feedback` (child of reviews)
+3. `human_interventions` (child of situations)
+4. `learning_contexts` (child of situations)
+5. `situations`
+6. `hourly_snapshots`
+7. `reviews`
+8. `signals` / `signal_weights` / `business_traces` / `ranking_results`
+9. `context_memories` / `operator_memories`
+10. `jd_dataset_metadata` / `jd_collection_runs` / `jd_raw_data` / `jd_metric_timeseries`
+
+All wrapped in a single `db.transaction(() => { ... })()` for atomic
+rollback. Triggers (`trg_situations_lifecycle_guard`,
+`trg_human_interventions_type_guard`) are NOT dropped — they only fire on
+INSERT/UPDATE, so they don't block DELETE.
+
+## Filesystem cleanup
+
+| Path | Action |
+|---|---|
+| `data/evidence` | full-rm + recreate empty (1416 runtime evidence files) |
+| `data/fabric-workspace/{situations,investigations,investigation,investigation_contracts,logs,screenshots,reports,references}` | full-rm + recreate empty |
+| `data/fabric-workspace/.hermes` | full-rm + recreate empty |
+| `data/discovery-schema`, `data/test-fabric-workspace` | full-rm + recreate empty |
+| `data/fabric-workspace` (top-level) | contentsOnly with patterns: only `investigation-*.json` / `investigation_result*.json` / `investigation_sit_*.json` / `recommendation*.json` (12 files) |
+| `data/fabric-workspace/context` | contentsOnly with pattern: only `investigation_contract_*.json` (1 file) |
+| `data/fabric-workspace/knowledge/cases` | contentsOnly with pattern: only `case-sit_*.md` (1 file) |
+| **KEPT**: `data/fabric-workspace/knowledge/**` (long-term KB) | hash check confirms zero unexpected changes |
+| **KEPT**: `data/fabric-workspace/{capabilities,systems,AGENTS.md,README.md}` | hash check confirms projector-managed files untouched |
+| **KEPT**: `data/fabric-workspace/context/handoff_*.md` | operator handoff preserved |
+| **KEPT**: `data/jd_shangzhi_features/**` (static discovery corpus) | not touched |
+| **KEPT**: `data/jd_full_discovery.json`, `data/jd_live_data.json` (static discovery corpus) | not touched |
+| **KEPT**: `generated/**` (capability contract + blueprint) | not touched |
+| **KEPT**: `apps/ecommerce/knowledge/**`, `data/fabric-workspace/knowledge-sources/raw/**` (12 user-uploaded raw files) | not touched |
+| **KEPT**: `.env`, Hermes config, ADR-064 topology, `HERMES_WS_URL`, `~/.agentfabric/chrome-jd-profile/`, `.collector-auth/jd.json` (operator credentials) | not touched |
+
+## Reset execution report
+
+| Runtime artifact | Persistence | Pre | Post | Reset? |
+|---|---:|---:|---:|:---:|
+| `situations` | DB | 19 | 0 | ✓ |
+| `learning_contexts` | DB | 19 | 0 | ✓ |
+| `human_interventions` | DB | 0 | 0 | ✓ |
+| `signals` | DB | 443 | 0 | ✓ |
+| `signal_weights` | DB | 9 | 0* | ✓ |
+| `business_traces` | DB | 798 | 0 | ✓ |
+| `ranking_results` | DB | 9 | 0 | ✓ |
+| `hourly_snapshots` | DB | 0 | 0 | ✓ |
+| `hourly_snapshot_signals` | DB | 0 | 0 | ✓ |
+| `context_memories` | DB | 0 | 0 | ✓ |
+| `operator_memories` | DB | 0 | 0 | ✓ |
+| `feedback` | DB | 0 | 0 | ✓ |
+| `reviews` | DB | 0 | 0 | ✓ |
+| `jd_dataset_metadata` | DB | 10 | 0* | ✓ |
+| `jd_collection_runs` | DB | 0 | 0 | ✓ |
+| `jd_raw_data` | DB | 0 | 0 | ✓ |
+| `jd_metric_timeseries` | DB | 0 | 0 | ✓ |
+| `data/evidence/**` | FS | 1416 | 0 | ✓ |
+| `data/fabric-workspace/situations/**` | FS | 18 | 0 | ✓ |
+| `data/fabric-workspace/investigations/**` | FS | 13 | 0 | ✓ |
+| `data/fabric-workspace/investigation/**` | FS | 1 | 0 | ✓ |
+| `data/fabric-workspace/investigation_contracts/**` | FS | 1 | 0 | ✓ |
+| `data/fabric-workspace/{top-level cognition files}` | FS | 12 | 0 | ✓ |
+| `data/fabric-workspace/{logs,screenshots,reports,references}` | FS | 11 | 0 | ✓ |
+| `data/fabric-workspace/.hermes` | FS | 1 | 0 | ✓ |
+| `data/fabric-workspace/knowledge/cases/case-sit_*.md` | FS | 1 | 0 | ✓ |
+| `data/fabric-workspace/context/investigation_contract_*.json` | FS | 1 | 0 | ✓ |
+| `data/discovery-schema/**` | FS | 1 | 0 | ✓ |
+| `data/test-fabric-workspace/**` | FS | 9 | 0 | ✓ |
+| `data/fabric-workspace/knowledge/**` (non-case-sit) | FS | hash before | hash after | ✗ unchanged |
+| `data/fabric-workspace/knowledge-sources/raw/**` | FS | hash before | hash after | ✗ unchanged |
+| `data/fabric-workspace/capabilities/**` | FS | hash before | hash after | ✗ unchanged |
+| `data/fabric-workspace/systems/**` | FS | hash before | hash after | ✗ unchanged |
+| `data/fabric-workspace/AGENTS.md` / `README.md` | FS | hash before | hash after | ✗ unchanged |
+| `generated/capability-contract.json` | FS | hash before | hash after | ✗ unchanged |
+| `data/jd_shangzhi_features/**` | FS | hash before | hash after | ✗ unchanged |
+| `data/jd_full_discovery.json` | FS | hash before | hash after | ✗ unchanged |
+| `data/jd_live_data.json` | FS | hash before | hash after | ✗ unchanged |
+| `apps/ecommerce/knowledge/**` | FS | hash before | hash after | ✗ unchanged |
+| `.env` / Hermes config / `HERMES_WS_URL` / ADR-064 | FS | hash before | hash after | ✗ unchanged |
+
+**\* Note**: `signal_weights` (9 rows) and `jd_dataset_metadata` (10 rows)
+re-appeared after restart because the server's bootstrap projector
+re-emits these on every boot (same pattern as `data/fabric-workspace/
+{capabilities,systems,AGENTS.md}`). The reset successfully deleted
+them; the next `npm run dev` re-established the default config baseline.
+This is **expected and correct** — the projector is the system's
+normal startup behavior and is not part of runtime state.
+
+Total runtime facts deleted: **1307 DB rows + 1485 filesystem entries**
+(26 paths cleaned).
+
+## Post-reset state
+
+After restart + autonomous loop's first tick + smoke test:
+
+- **Loop**: `running=true, tickCount=3, blockedCount=0, lastTickAt=2026-08-27T10:53:59.556Z`
+- **Workspace UI on empty state**:
+  - `/api/situations` → `{"success":true,"data":[]}`
+  - `/api/outputs` → `{"success":true,"data":[],"meta":{"total":0,...}}`
+  - `/api/readiness` → `hermes: {gateway: not_checked, sessionRuntime: ..., agentTurn: never_attempted}` (no fake `'ready'` chip)
+- **Smoke test** (POST `/api/runtime/collect` with `mock:true`):
+  - 25 new signals (real `ingested_at` timestamps, real metrics: gmv=4980, orders=51, uv=926, cvr=...)
+  - 3 new evidence files
+  - DB signals count: 12 (loop tick) + 25 (smoke) → 36
+- **Situations**: 0 produced by the natural loop. The situation rules
+  require **at least 2 days of signal data** (latest vs prior day) to
+  fire `meaningful_change` (`apps/ecommerce/runtime/situation/rules.ts:231`:
+  "A + C need at least two daily observations"). With only 1 day of
+  data (2026-08-27), no situations can fire. This is **correct**
+  behavior for a clean baseline — the polluted-data set had 7+ days
+  of backfill that let rules fire; the clean baseline has 1 day, so
+  rules correctly say "no meaningful change to report".
+
+## Verification
+
+- **typecheck**: `npm run typecheck` — 21 errors total, 0 new from
+  `scripts/reset-runtime-baseline.ts` (baseline 21 are pre-existing —
+  cdp-client.ts, runtime.ts, situation-chat.ts, learning-context.contract.ts,
+  token-resolver tests — all unrelated to this slice).
+- **Knowledge hash diff**: only the intended `case-sit_*.md` removed;
+  zero unexpected changes to KEEP paths.
+- **Independent filesystem audit**: `find data -name "sit_*" -o -name
+  "investigation*" -o -name "recommendation*" -o -name "case-sit_*"`
+  returns only the recreated empty dirs (`investigations`,
+  `investigation_contracts`, `investigation`); 0 actual files.
+- **DB post-check**: all 17 RUNTIME tables at 0 rows; all 6 KEEP tables
+  preserved (products=1, orders=0, ranking_profiles=3, schema_version=1,
+  knowledge=0, collector_registry=0).
+- **Workspace UI acceptance**: all 4 key APIs return the empty baseline.
+- **Smoke test**: real signals + evidence produced via the full kernel
+  path; no fake INSERT, no demo seed, no fabricated timestamps.
+
+## Architectural decisions
+
+### ADR-065 (new): Runtime Baseline Reset contract
+
+- **Decision**: A `scripts/reset-runtime-baseline.ts` tool with
+  `--dry-run` (default) / `--execute` is the canonical way to reset
+  the dev DB and runtime filesystem to a known-empty baseline. The
+  reset deletes runtime facts only (Evidence, Signal, Situation,
+  Investigation, Output, Intervention, business_traces, ranking_results,
+  JD runtime history) and preserves capability (generated/, products,
+  ranking_profiles, knowledge) and knowledge (knowledge/, raw
+  knowledge-sources/) and configuration (env, Hermes config, ADR-064
+  topology, .collector-auth/, chrome-jd-profile/).
+- **Default safety**: dry-run is the default (opposite of
+  `fix-dirty-lifecycle.ts` / `cleanup-polluted-situations.ts` which
+  default to APPLY). The reset is significantly more destructive than
+  a single-row UPDATE, so the default is flipped to prevent
+  accidental destructive runs.
+- **Idempotency**: re-running on a clean baseline exits 0 with
+  "Already clean — nothing to do".
+- **KEEP path hash check**: post-reset, a `shasum -a 256`-style
+  snapshot of KEEP paths is diffed against the pre-snapshot. The
+  only acceptable diff is the intentional `case-sit_*.md` removal.
+- **Projector awareness**: `signal_weights` and `jd_dataset_metadata`
+  re-appear on next server boot because the bootstrap projector
+  re-emits them. This is expected and correct; the reset successfully
+  wiped the rows, and the next boot establishes the default config
+  baseline.
+
+## Risk + suggestions
+
+- **Risk 1**: If the dev server is running during `--execute`, the
+  autonomous loop can write a new `situations` row between pre-snapshot
+  and DELETE. Mitigation: stop the dev server before `--execute`
+  (verified: I killed PID 63670 + 93876 + 16730 before applying).
+- **Risk 2**: Filesystem ops are NOT atomic with the DB commit. If
+  `rmSync` fails after the DB DELETE, the script logs the failure and
+  continues. Re-running is idempotent and will retry. Documented in
+  the script header.
+- **Risk 3**: 0 situations on the empty baseline is the correct
+  behavior given the 2-day minimum data requirement, but it may look
+  like "the loop is broken" to a casual operator. The dev server log
+  shows `situation updated created=0 skipped=0` on every tick — this
+  is the rules' honest "nothing meaningful yet" verdict. To produce
+  a Situation, the operator must wait for the second day's data
+  (2026-08-28) and trigger a manual `/api/runtime/collect` for
+  2026-08-26 + 2026-08-27 to backfill 2 days of comparison data.
+- **Suggested next step**: Continue P0010.2 engineering acceptance.
+  The clean baseline proves the chain is wired end-to-end and that
+  the system can produce real signals + evidence from a minimal
+  `kernel.execute({ mock: true })` call. The next meaningful gate
+  is waiting for 2 days of data to materialize a Situation
+  naturally, or backfilling 2 days of historical data for an
+  immediate demonstration.

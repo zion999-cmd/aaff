@@ -1873,3 +1873,90 @@ Runtime Kernel 不属于 HermesAgent 内部。它是 agentFabric 的公共执行
 - `npm test`: 968 passed / 2 pre-existing flaky (chat.contract + coverage) / +43 net new.
 - Pre-existing 3 loop test failures verified NOT introduced by this slice (via `git stash`).
 - **Live verify (real Hermes 0.20.5 port 9120, real agentFabric :3000)**: full chain worked — connect → turn → parse → persisted; one full success (5 hypotheses canonical, judgment + recommendation materialized); one `contract_invalid` correctly classified; no manual field picking; no fake success.
+
+---
+
+## ADR-065 — Runtime Baseline Reset contract (2026-08-27)
+
+**Status**: accepted (P0010.2.x Reset slice)
+
+**Context**: P0010.2 engineering acceptance was about to continue, but
+the dev DB and runtime filesystem held ~1307 DB rows + 1485 filesystem
+entries of runtime facts from earlier Hermes turns, demo seed, mock
+collection, test-fix runs, CDP screenshots, and 7-day backfill. To
+honestly evaluate the engineering chain end-to-end, the runtime needed
+to be reset to a known-empty baseline while preserving knowledge,
+capability, environment, configuration, and code.
+
+**Decision**: A `scripts/reset-runtime-baseline.ts` tool with
+`--dry-run` (default) / `--execute` is the canonical way to reset the
+dev DB and runtime filesystem to a known-empty baseline.
+
+**What it deletes** (runtime facts):
+- DB: situations, learning_contexts, human_interventions, signals,
+  signal_weights, business_traces, ranking_results, hourly_snapshots,
+  hourly_snapshot_signals, context_memories, operator_memories, feedback,
+  reviews, jd_dataset_metadata, jd_collection_runs, jd_raw_data,
+  jd_metric_timeseries (17 tables, FK-safe order, in a single transaction)
+- FS: data/evidence/** (1416 files), data/fabric-workspace/{situations,
+  investigations, investigation, investigation_contracts, logs,
+  screenshots, reports, references, .hermes} (54 files + dirs),
+  top-level investigation-*.json / investigation_result*.json /
+  investigation_sit_*.json / recommendation*.json (12 files),
+  context/investigation_contract_*.json (1 file),
+  knowledge/cases/case-sit_*.md (1 file), data/discovery-schema/**,
+  data/test-fabric-workspace/** (10 files)
+
+**What it preserves** (capability / knowledge / config / code):
+- DB schema + triggers (we DELETE rows, NOT the file)
+- DB tables: products, orders, ranking_profiles, schema_version,
+  knowledge, collector_registry
+- FS: data/fabric-workspace/knowledge/** (long-term KB),
+  knowledge-sources/raw/** (12 user-uploaded raw files),
+  capabilities/, systems/, AGENTS.md, README.md (projector-managed),
+  context/handoff_*.md (operator handoff)
+- FS: data/jd_shangzhi_features/**, data/jd_full_discovery.json,
+  data/jd_live_data.json (static discovery corpus)
+- FS: generated/** (capability contract + blueprint)
+- FS: apps/ecommerce/knowledge/**
+- FS: .env, Hermes config, ADR-064 topology, HERMES_WS_URL,
+  ~/.agentfabric/chrome-jd-profile/ (operator credentials),
+  .collector-auth/jd.json (JD extracted cookie file)
+- All code (platform/, apps/, tests/, scripts/ except the new tool)
+- All tests/fixtures/* source files
+
+**Key invariants**:
+- **Default to dry-run** (opposite of `fix-dirty-lifecycle.ts` /
+  `cleanup-polluted-situations.ts` which default to APPLY). The reset
+  is significantly more destructive than a single-row UPDATE, so the
+  default is flipped to prevent accidental destructive runs.
+- **FK-safe DELETE order** (children first) inside a single
+  `db.transaction(() => { ... })()` for atomic rollback.
+- **Idempotency**: re-running on a clean baseline exits 0 with
+  "Already clean — nothing to do".
+- **KEEP path hash check**: post-reset, a snapshot of KEEP paths is
+  diffed against the pre-snapshot. The only acceptable diff is the
+  intentional `case-sit_*.md` removal.
+- **Projector awareness**: `signal_weights` and `jd_dataset_metadata`
+  re-appear on next server boot because the bootstrap projector
+  re-emits them. This is expected; the reset wipes the rows, and
+  the next boot establishes the default config baseline.
+
+**Verified**:
+- 1307 DB rows + 1485 filesystem entries deleted in one shot.
+- 0 new typecheck errors from the new script (21 baseline, all pre-existing).
+- Workspace UI acceptance: all 4 key APIs return the empty baseline.
+- Smoke test: real signals + evidence produced via the full kernel path.
+- Knowledge hash diff: only the intended `case-sit_*.md` removed.
+- 0 situations on the empty baseline is correct (rules need 2 days of
+  data to fire `meaningful_change`).
+
+**Hard constraints honored**:
+- ❌ Did NOT touch Hermes config, .env, HERMES_WS_URL, ADR-064 topology
+- ❌ Did NOT modify the Hermes installation or session token contract
+- ❌ Did NOT delete any Hermes user data or unrelated sessions
+- ❌ Did NOT modify Hermes model, proxy, or Session Runtime topology
+- ❌ Did NOT delete any test fixture source files
+- ❌ Did NOT delete any user-uploaded raw knowledge sources
+- ❌ Did NOT change business Situation lifecycle rules
+- ❌ Did NOT introduce Event Bus / SSE / WebSocket / Wake Engine
