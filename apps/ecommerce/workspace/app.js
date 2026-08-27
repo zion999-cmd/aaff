@@ -227,7 +227,25 @@ function setDecisionPanelState(mode) {
     panel.classList.add('rail');
     layout.classList.add('decision-rail');
   }
-  // mode === 'hidden' leaves both classless (mobile uses .open for show/hide)
+  // P0010.2.7 follow-up — keep the empty-state placeholder in sync with
+  // the actual content. Before this, when the panel opened with real
+  // content (loadOutputDetail / loadSituationDetail), the bottom of the
+  // panel kept showing the long "点击左侧 AI 发现卡片查看决策依据。"
+  // hint, taking vertical space and confusing the operator. The rail
+  // mode already hides it via CSS; the open mode just needs to check
+  // whether `decisionContent` has rendered any children.
+  syncDecisionPlaceholder();
+}
+
+// P0010.2.7 follow-up — show the .decision-placeholder only when the
+// right panel has no rendered content. Called from setDecisionPanelState
+// and any direct decisionContent.innerHTML assignment.
+function syncDecisionPlaceholder() {
+  var content = document.getElementById('decisionContent');
+  var placeholder = document.getElementById('decisionPlaceholder');
+  if (!content || !placeholder) return;
+  var hasContent = content.children.length > 0 || (content.textContent || '').trim().length > 0;
+  placeholder.style.display = hasContent ? 'none' : 'flex';
 }
 
 function showToast(msg) { toastNode.textContent = msg; toastNode.classList.add('show'); setTimeout(() => toastNode.classList.remove('show'), 1500); }

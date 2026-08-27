@@ -149,7 +149,12 @@
             <h2 class="view-title">📦 交付物详情</h2>
             <span class="muted">Agent 交付物独立视图（与 Situation 详情解耦）</span>
           </div>
-          <div id="outputDetailContent" class="muted placeholder">加载中...</div>
+          <!-- P0010.2.7 follow-up: the output-detail view had no inner
+               scroll wrapper, so long 交付物 detail (recommendation text,
+               judgment, trust tags) could be cut off at the bottom of
+               the viewport with no scroll. Wrap in .view-scroll so the
+               container scrolls inside the (overflow:hidden) view. -->
+          <div id="outputDetailContent" class="view-scroll muted">加载中...</div>
         </div>
         <div id="view-trend" class="view-container"><div class="view-title-row"><h2 class="view-title" data-i18n="trend.title">趋势观察</h2><span class="muted" data-i18n="trend.subtitle">信号变化与排名漂移时间轴</span></div><div id="trendContent" class="muted placeholder">加载中...</div></div>
         <div id="view-archive" class="view-container"><div class="view-title-row"><h2 class="view-title" data-i18n="archive.title">历史归档</h2><select id="archiveProfileSelect" class="input select" style="font-size:0.8rem;"><option value="operator_mode" data-i18n="profile.operator">运营推荐</option><option value="growth_discovery" data-i18n="profile.growth">增长发现</option><option value="sales_leaderboard" data-i18n="profile.sales">销售排行</option></select></div><div id="archiveTimeline"></div></div>
