@@ -197,6 +197,91 @@ describe('collectTurn — terminal-event detection (P0010.2)', () => {
     expect(reply).toContain('OpenAIException');
   });
 
+  test('REGRESSION (P0010.2 review-2): Agent JSON embedding ❌ Non-retryable as a quoted log line is NOT provider_failed', async () => {
+    // The Agent can legitimately paste a real upstream log line into
+    // its evidenceRefs / judgment as quoted evidence. The top-level
+    // envelope matcher MUST ignore the substring; only matches at the
+    // TOP of payload.text (after trimStart) count.
+    const investigationJsonWithQuotedLog = JSON.stringify({
+      situationId: 'sit_test_002',
+      currentUnderstanding: 'A prior turn was rejected; the agent log shows the upstream error.',
+      knownEvidence: ['prior log: ❌ Non-retryable error (HTTP 400): the model id "agnes-2.0-flash" is not on the allow-list'],
+      hypotheses: [{ statement: 'model id not on provider allow-list', status: 'supported' }],
+      unknowns: ['the correct model id'],
+      nextQuestion: 'what model id is allowed?',
+      requiredEvidence: ['provider allow-list'],
+      investigationRequest: 'check the allow-list',
+      findings: [{
+        question: 'why was the prior turn rejected?',
+        evidenceRefs: ['ev_1'],
+        answer: 'the model id was not on the allow-list; the upstream returned a Non-retryable error.',
+        impactOnHypothesis: 'supports wrong-model-id hypothesis',
+      }],
+      judgment: 'the prior ❌ Non-retryable error (HTTP 400) was caused by a misconfigured model id; not a Fabric bug.',
+      stopReason: 'judgment',
+      capabilityUsed: 'env.inspect',
+      evidenceAcquired: ['ev_1'],
+      recommendation: {
+        recommendation: 'fix the model id in agentFabric config',
+        rationale: 'the upstream Non-retryable error points to model id mismatch',
+        expectedOutcome: 'next turn succeeds',
+        risks: 'none',
+        prerequisites: ['read AGENTFABRIC_MODEL_ID env'],
+        humanNeeded: ['confirm correct model id with provider'],
+      },
+    });
+    const client = makeClient([
+      { type: 'message.complete', session_id: 'sess-1', payload: { text: investigationJsonWithQuotedLog } },
+    ]);
+    const reply = await collectTurn(client as unknown as SituationChatClient, 'sess-1', 1000);
+    // MUST NOT throw — the quoted log line is data, not a real envelope.
+    expect(reply).toContain('Non-retryable error (HTTP 400)');
+    expect(reply).toContain('"judgment"');
+  });
+
+  test('REGRESSION (P0010.2 review-2): Agent JSON embedding OpenAIException JSON body as a quoted evidence string is NOT provider_failed', async () => {
+    // The Agent can paste a JSON-bodied exception into its evidence
+    // string. The top-level matcher ignores it; only matches if it is
+    // the FIRST non-whitespace run of `payload.text`.
+    const investigationJsonWithQuotedEnvelope = JSON.stringify({
+      situationId: 'sit_test_003',
+      currentUnderstanding: 'A prior turn failed with an OpenAI-style exception body.',
+      knownEvidence: ['prior turn returned: OpenAIException - {"error":{"message":"model not found"}}'],
+      hypotheses: [{ statement: 'model not found', status: 'supported' }],
+      unknowns: ['the correct model name'],
+      nextQuestion: 'which model is available?',
+      requiredEvidence: ['provider model list'],
+      investigationRequest: 'enumerate models',
+      findings: [{
+        question: 'what did the prior turn return?',
+        evidenceRefs: ['ev_1'],
+        answer: 'the upstream returned an OpenAIException JSON body; the model name was unrecognised.',
+        impactOnHypothesis: 'supports model-not-found hypothesis',
+      }],
+      judgment: 'the model name in agentFabric config does not match the provider allow-list; switch to a valid one.',
+      stopReason: 'judgment',
+      capabilityUsed: 'env.inspect',
+      evidenceAcquired: ['ev_1'],
+      recommendation: {
+        recommendation: 'switch to a model id that the provider recognises',
+        rationale: 'upstream OpenAIException body confirms model-not-found',
+        expectedOutcome: 'next turn succeeds',
+        risks: 'slightly higher latency on a different model',
+        prerequisites: ['read provider allow-list'],
+        humanNeeded: ['choose a model from the allow-list'],
+      },
+    });
+    const client = makeClient([
+      { type: 'message.complete', session_id: 'sess-1', payload: { text: investigationJsonWithQuotedEnvelope } },
+    ]);
+    const reply = await collectTurn(client as unknown as SituationChatClient, 'sess-1', 1000);
+    // MUST NOT throw — the quoted envelope is data, not a real envelope.
+    // (JSON.stringify escapes inner quotes, so the test asserts the
+    // escaped form that actually round-trips through the WS frame.)
+    expect(reply).toContain('OpenAIException - {\\"error\\"');
+    expect(reply).toContain('"judgment"');
+  });
+
   // ---- P0010.2 Review Repair: turn.completed lifecycle signal ----
 
   test('REGRESSION: delta → turn.completed → message.complete(full) uses the FULL message.complete', async () => {

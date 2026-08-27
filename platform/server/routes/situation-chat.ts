@@ -405,20 +405,29 @@ export const collectTurn = (client: SituationChatClient, sessionId: string, time
 //   - bare "OpenAIException" / "BadRequestError" / "AuthenticationError"
 //     / "RateLimitError" — these are class names that the Agent may
 //     legitimately mention in the recommendation rationale;
-//   - bare "Non-retryable" — same reason.
+//   - bare "Non-retryable" — same reason;
+//   - any of the above as an ANYWHERE-IN-STRING substring, even when
+//     the substring LOOKS like an envelope. The Agent can paste a real
+//     log line as a quoted evidence string. The envelope must be at
+//     the TOP-LEVEL of `payload.text` (after `trimStart`), the same
+//     place Hermes actually puts upstream rejects.
 //
-// We DO match the upstream-error envelope shape:
+// We DO match the upstream-error envelope shape at the top of the
+// payload text (after leading whitespace is stripped):
 //   - starts with `HTTP <3-digit>:` (provider reject with code),
-//   - OR contains the `❌ Non-retryable error (HTTP <3-digit>):`
-//     sentinel that Hermes 0.20.5 emits for hard rejects,
-//   - OR contains the OpenAI provider's standard exception envelope
-//     `OpenAIException - {"error":` (a JSON-bodied class throw, the
-//     canonical "model rejected" shape).
+//   - OR starts with `❌ Non-retryable error (HTTP <3-digit>)`
+//     (the hard-reject sentinel Hermes 0.20.5 emits),
+//   - OR starts with `OpenAIException - {"error":` (the OpenAI
+//     provider's standard JSON-bodied class throw).
 const isProviderErrorEnvelope = (s: string): boolean => {
   if (!s) return false;
-  return /^HTTP\s+\d{3}\s*:/i.test(s)
-    || /❌\s*Non-retryable\s+error\s*\(\s*HTTP\s+\d{3}\b/i.test(s)
-    || /OpenAIException\s*-\s*\{["']error["']\s*:/i.test(s);
+  // trimStart only — leading whitespace is common in WS frames, but
+  // we MUST NOT trimEnd because the envelope terminator (e.g. the
+  // trailing `}` of the OpenAI JSON body) is part of the shape.
+  const top = s.trimStart();
+  return /^HTTP\s+\d{3}\s*:/i.test(top)
+    || /^❌\s*Non-retryable\s+error\s*\(\s*HTTP\s+\d{3}\b/i.test(top)
+    || /^OpenAIException\s*-\s*\{["']error["']\s*:/i.test(top);
 };
 
 // ---- P0010 Investigation turn (shared by the route + automatic trigger) ----
