@@ -263,11 +263,23 @@ export const connectWithSituationTrace = async (
   );
 };
 
+/**
+ * P0010.2 Review Repair — grace window for `turn.completed` /
+ * `turn.complete` to be treated as a hard terminal. Hermes 0.20.5 does
+ * NOT emit these on the wire today (tui_gateway/server.py audited),
+ * but if a future Hermes variant does, we wait this long for the
+ * canonical `message.complete` to arrive before falling back to the
+ * accumulated delta text. 2s is short enough to keep the turn
+ * responsive; long enough to cover WS reordering on a slow relay.
+ */
+const TURN_COMPLETE_GRACE_MS = 2_000;
+
 /** Accumulate message.delta text until message.complete, resolve with full reply. */
 export const collectTurn = (client: SituationChatClient, sessionId: string, timeoutMs = 300_000): Promise<string> => {
   return new Promise((resolveTurn, rejectTurn) => {
     let text = '';
     let timedOut = false;
+    let turnGraceTimer: ReturnType<typeof setTimeout> | null = null;
 
     // P0010.2 — bug fix: declare `unsubscribe` as `let` and assign it
     // AFTER the closure is created. The previous `const unsubscribe =
@@ -281,6 +293,10 @@ export const collectTurn = (client: SituationChatClient, sessionId: string, time
 
     const timeout = setTimeout(() => {
       timedOut = true;
+      if (turnGraceTimer) {
+        clearTimeout(turnGraceTimer);
+        turnGraceTimer = null;
+      }
       unsubscribe();
       rejectTurn(new Error('Turn timed out waiting for message.complete'));
       // Hermes model latency is unstable (documented: 71-77s fast path, >180s
@@ -295,50 +311,114 @@ export const collectTurn = (client: SituationChatClient, sessionId: string, time
         const delta = String(event.payload?.text ?? '');
         text += delta;
       } else if (event.type === 'message.complete') {
-        // Terminal event (Hermes WS gateway emits message.complete, not turn.end).
+        // CANONICAL terminal event (Hermes 0.20.5 tui_gateway/server.py
+        // _emit() calls — we audited the source: server.py:9116 / 11943
+        // / 6879 etc. all emit `message.complete`, NEVER `turn.completed`
+        // or `turn.complete` as wire events). If a `turn.*` event arrived
+        // first, we already set up the grace timer; cancel it now and
+        // resolve with the full message.complete text.
         if (timedOut) return;
         clearTimeout(timeout);
+        if (turnGraceTimer) {
+          clearTimeout(turnGraceTimer);
+          turnGraceTimer = null;
+        }
         unsubscribe();
         // P0010.2 — provider-error detection. The canonical signal is
-        // `payload.status === 'error'`, but Hermes 0.20.5 sometimes
-        // sends upstream-rejection text (HTTP 4xx, BadRequestError, etc.)
-        // without setting the flag. We sniff the text so the operator
-        // sees `provider_failed` instead of a confusing "Hermes message
-        // error" that gets routed into the wrong failure bucket.
+        // `payload.status === 'error'`. When Hermes does NOT set the flag
+        // but the upstream LLM provider rejected the request, Hermes
+        // emits a recognisable envelope in `payload.text`:
+        //
+        //   - `HTTP <3-digit>: <class>.<Error>: <message>`
+        //     (e.g. `HTTP 400: ***.BadRequestError: OpenAIException - {...}`)
+        //   - `❌ Non-retryable error (HTTP <3-digit>): ...`
+        //
+        // We MUST NOT do a generic keyword sniff on Agent's normal prose:
+        // the Agent's investigation JSON may legitimately quote "HTTP
+        // 400" / "BadRequestError" / "OpenAIException" as text inside the
+        // judgment. So `isProviderError` only matches the upstream-error
+        // envelope (HTTP <code>: ***, or the Non-retryable sentinel),
+        // and treats `OpenAIException` / `BadRequestError` / etc. as
+        // provider signals ONLY when they co-occur with the HTTP code.
         const payload = event.payload ?? {};
         const status = (payload as { status?: string }).status;
         const complete = String(payload.text ?? '');
-        const isProviderError = (s: string): boolean => {
-          if (!s) return false;
-          return /^HTTP\s+\d{3}\b/i.test(s)
-            || /\bNon-retryable\b/i.test(s)
-            || /\bBadRequestError\b/i.test(s)
-            || /\bAuthenticationError\b/i.test(s)
-            || /\bRateLimitError\b/i.test(s)
-            || /\bOpenAIException\b/i.test(s);
-        };
-        if (status === 'error' || isProviderError(complete)) {
+        if (status === 'error' || isProviderErrorEnvelope(complete)) {
           rejectTurn(new Error(`Hermes message error: ${complete || '<empty>'}`));
           return;
         }
-        // message.complete carries the full text; prefer accumulated if non-empty.
-        resolveTurn((text.trim() || complete.trim()).trim());
+        // message.complete carries the full text; prefer it (the
+        // accumulated delta is a streaming prefix that may be partial).
+        resolveTurn((complete.trim() || text.trim()).trim());
       } else if (event.type === 'turn.completed' || event.type === 'turn.complete') {
-        // Older Hermes variants and some proxies emit turn.completed
-        // instead of message.complete. Treat as terminal but only resolve
-        // if we have accumulated text — otherwise the caller is still
-        // waiting for a meaningful reply.
+        // LIFECYCLE-ONLY signal. Hermes 0.20.5 tui_gateway/server.py does
+        // NOT emit these as wire events today (we audited the source —
+        // there is no `_emit("turn.completed", ...)` call anywhere), so
+        // treating them as a hard terminal here would cause us to resolve
+        // with a half-accumulated delta stream before `message.complete`
+        // arrives. That is exactly the bug the previous P0010.2 version
+        // introduced: `delta → turn.completed → message.complete(full)`
+        // would resolve on the partial delta and then `message.complete`
+        // would never reach the parser.
+        //
+        // Correct behaviour: mark the lifecycle event, set a short grace
+        // window for `message.complete` to arrive, and ONLY resolve
+        // ourselves with the accumulated text if the grace window
+        // expires without a `message.complete`. The 2000ms grace is
+        // short enough to keep the investigation turn responsive, long
+        // enough to let Hermes deliver the canonical terminal.
         if (timedOut) return;
-        clearTimeout(timeout);
-        unsubscribe();
-        if (text.trim()) {
-          resolveTurn(text.trim());
-        } else {
-          rejectTurn(new Error(`Turn completed (${event.type}) but no message text was accumulated.`));
-        }
+        if (turnGraceTimer) return; // already saw a turn.* event this turn
+        turnGraceTimer = setTimeout(() => {
+          if (timedOut) return;
+          clearTimeout(timeout);
+          unsubscribe();
+          if (text.trim()) {
+            // Best-effort fallback for hypothetical Hermes variants that
+            // emit `turn.completed` as the SOLE terminal without a
+            // follow-up `message.complete`. Today (0.20.5) this path
+            // should never fire — we keep it as a forward-compat net.
+            resolveTurn(text.trim());
+          } else {
+            rejectTurn(new Error(`Turn completed (${event.type}) but no message text was accumulated.`));
+          }
+        }, TURN_COMPLETE_GRACE_MS);
       }
     });
   });
+};
+
+// P0010.2 Review Repair — Hermes 0.20.5 upstream-error envelope matcher.
+//
+// Real envelopes observed on 2026-08-27 with hermes serve --port 9120 +
+// agnes-2.0-flash on https://apihub.agnes-ai.com/v1:
+//
+//   - "HTTP 400: ***.BadRequestError: OpenAIException - {\"error\":{...}}"
+//   - "❌ Non-retryable error (HTTP 400): <message>"
+//
+// Hermes 0.20.5 puts the upstream error text in `payload.text` but does
+// NOT set `payload.status = 'error'`, so we need envelope matching.
+//
+// We deliberately DO NOT match:
+//   - bare "HTTP 400" alone (Agent's investigation JSON may quote the
+//     number as data, e.g. "the HTTP 400 was caused by ...");
+//   - bare "OpenAIException" / "BadRequestError" / "AuthenticationError"
+//     / "RateLimitError" — these are class names that the Agent may
+//     legitimately mention in the recommendation rationale;
+//   - bare "Non-retryable" — same reason.
+//
+// We DO match the upstream-error envelope shape:
+//   - starts with `HTTP <3-digit>:` (provider reject with code),
+//   - OR contains the `❌ Non-retryable error (HTTP <3-digit>):`
+//     sentinel that Hermes 0.20.5 emits for hard rejects,
+//   - OR contains the OpenAI provider's standard exception envelope
+//     `OpenAIException - {"error":` (a JSON-bodied class throw, the
+//     canonical "model rejected" shape).
+const isProviderErrorEnvelope = (s: string): boolean => {
+  if (!s) return false;
+  return /^HTTP\s+\d{3}\s*:/i.test(s)
+    || /❌\s*Non-retryable\s+error\s*\(\s*HTTP\s+\d{3}\b/i.test(s)
+    || /OpenAIException\s*-\s*\{["']error["']\s*:/i.test(s);
 };
 
 // ---- P0010 Investigation turn (shared by the route + automatic trigger) ----
@@ -387,22 +467,34 @@ export interface InvestigationTurnResult {
   error?: string;
   /**
    * P0010.2 — structured failure reason. `undefined` when `ok === true`.
-   * Persisted on the investigation marker so the Workspace can show
-   * "Agent 已完成推理，但返回格式不符合 Investigation Contract；系统正在
-   * 自动兼容已知状态词并重试解析" instead of a generic "调查失败".
+   *
+   * P0010.2 Review Repair — durability note: `failureReason` is NOT a
+   * first-class column on the investigation marker. It surfaces in two
+   * places:
+   *   (1) the in-memory `LoopEvent.investigation_failed.failureReason`
+   *       field (TraceEvent detail) — consumed live by the Workspace;
+   *   (2) the durable `error` string on the marker, prefixed with the
+   *       reason in square brackets, e.g. `"[provider_failed] HTTP 400: ..."`.
+   *
+   * The bracket-prefixed error is the ONLY durable form. A future
+   * schema widening that adds a real `failure_reason` column is a
+   * separate ADR (and would let operators query the failure taxonomy
+   * over time). For now, parse the prefix on read if you need it.
    */
   failureReason?: InvestigationFailureReason;
   /**
    * P0010.2 — drift the parser successfully normalized at the raw
    * boundary. Surfaced in the TraceEvent so the operator can see that a
    * near-synonym was accepted and rewritten. `undefined` when the
-   * contract was already canonical.
+   * contract was already canonical. Same durability as `failureReason`:
+   * only in the LoopEvent + agent trace; not a marker column.
    */
   drift?: Array<{ field: string; original: string; canonical: string }>;
   /**
    * P0010.2 — drift the parser REFUSED (not on the allow-list). Present
    * only when `failureReason === 'contract_invalid'`. The operator can
    * use this list to know exactly which field tripped the contract.
+   * Same durability caveat as `failureReason` / `drift`.
    */
   unmappable?: Array<{ field: string; original: string }>;
   /** First 2 KB of the raw Agent reply for diagnosis. Never logged at INFO. */
