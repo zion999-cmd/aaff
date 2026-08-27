@@ -2,7 +2,7 @@
 
 > **Status: living document — maintained alongside the codebase**
 > **Owners: agentFabric core team**
-> **Last updated: 2026-08-27 (P0010.2.5 closure)**
+> **Last updated: 2026-08-27 (P0010.2.7 — Workspace Live Refresh + Hermes URL single source of truth)**
 
 This document records the **long-term architectural direction** of
 agentFabric. It is **not** a session handoff and **not** a per-slice plan.

@@ -179,6 +179,23 @@ const state = {
   // the interval so it never leaks.
   detailPollTimer: null,
   cachedPresentationRevision: null,
+  // P0010.2.7 — View-scoped polling. Each live-data view (situations
+  // feed, runtime, outputs) registers a fetcher in `viewPollers`. The
+  // `switchView` function clears the previous view's poller and starts
+  // the new view's poller, so polls NEVER run for a view the operator
+  // is no longer looking at. The `viewEpoch` counter invalidates any
+  // in-flight fetcher whose view has since been switched away from.
+  viewPollTimers: { situations: null, runtime: null, outputs: null },
+  viewEpoch: { situations: 0, runtime: 0, outputs: 0 },
+  // Per-view content fingerprints for dedup. If the new data matches
+  // the cached fingerprint, we skip the DOM re-render entirely — that
+  // is what gives us "no flash, no scroll reset" (the user's
+  // acceptance criterion #4). The empty state is the critical case:
+  // a Situation appears between polls, fingerprint flips, we render
+  // the populated list; a no-change poll is a no-op.
+  feedFingerprint: null,
+  runtimeFingerprint: null,
+  outputsFingerprint: null,
 };
 
 // 4-second polling — audit §6.4 explicit: "详情页 … 每 4 秒 GET
@@ -186,6 +203,32 @@ const state = {
 // is intentionally not aligned to `:00` seconds (audit: fleet-friendly
 // jitter so polling N clients does not stack up at the same instant).
 const DETAIL_POLL_MS = 4000;
+// P0010.2.7 — Live-refresh poll for the Feed / Runtime / Outputs views.
+// Same 4s cadence as the detail page so all live surfaces stay in lockstep.
+// The same fleet-friendly jitter (not aligned to wall-clock) is preserved.
+const VIEW_POLL_MS = 4000;
+
+// P0010.2.7 — Right-panel state machine helper. Single source of truth
+// for the .rail / .open class on #decisionPanel and the .decision-rail
+// class on the .workspace-layout grid. All loaders that touch the
+// right panel (loadOutputDetail, loadSituationDetail, close button)
+// route through this helper so the panel state is never stuck in an
+// inconsistent combination. See styles.css for the rail styling.
+function setDecisionPanelState(mode) {
+  // mode: 'rail' (empty state, collapsed 48px) | 'open' (content shown) | 'hidden' (no panel)
+  var panel = document.getElementById('decisionPanel');
+  var layout = document.querySelector('.workspace-layout');
+  if (!panel || !layout) return;
+  panel.classList.remove('rail', 'open');
+  layout.classList.remove('decision-rail');
+  if (mode === 'open') {
+    panel.classList.add('open');
+  } else if (mode === 'rail') {
+    panel.classList.add('rail');
+    layout.classList.add('decision-rail');
+  }
+  // mode === 'hidden' leaves both classless (mobile uses .open for show/hide)
+}
 
 function showToast(msg) { toastNode.textContent = msg; toastNode.classList.add('show'); setTimeout(() => toastNode.classList.remove('show'), 1500); }
 async function apiGet(path) { const r = await fetch(path); if (!r.ok) throw new Error(`${r.status}`); const j = await r.json(); return j.data || j; }
@@ -213,15 +256,26 @@ function entityDisplayName(entity) {
 
 // ═══ Navigation ═════════════════════════════════════════════
 function switchView(name, filter = 'all') {
+  var prevView = state.activeView;
   // P0010.2.x — leaving the Situation Detail view MUST stop the 4-second
   // polling loop. Otherwise the loop runs forever, holds the snapshot in
   // memory, and re-renders a view the user is no longer looking at.
-  if (state.activeView === 'situationDetail' && name !== 'situationDetail') {
+  if (prevView === 'situationDetail' && name !== 'situationDetail') {
     if (state.detailPollTimer) {
       clearInterval(state.detailPollTimer);
       state.detailPollTimer = null;
     }
     state.cachedPresentationRevision = null;
+  }
+  // P0010.2.7 — clear the previous view's poller. Each live view owns
+  // exactly one setInterval in `state.viewPollTimers[name]`; we clear
+  // the previous view's interval here so it never re-renders a page
+  // the operator is no longer looking at. Bumping `viewEpoch[name]`
+  // also invalidates any in-flight fetcher for the same view.
+  if (prevView && prevView !== 'situationDetail' && state.viewPollTimers[prevView]) {
+    clearInterval(state.viewPollTimers[prevView]);
+    state.viewPollTimers[prevView] = null;
+    state.viewEpoch[prevView]++;
   }
   state.activeView = name; state.activeFilter = filter;
   document.querySelectorAll('.sidebar-item').forEach(item => {
@@ -229,8 +283,52 @@ function switchView(name, filter = 'all') {
     item.classList.toggle('active', itemView === name && !itemFilter);
   });
   document.querySelectorAll('.view-container').forEach(c => { c.classList.toggle('active', c.id === `view-${name}`); });
+  // P0010.2.7 — start the new view's poller AFTER calling its loader.
+  // The loader always does an initial fetch+render; the poller just
+  // repeats it on a cadence. We only register a poller for views that
+  // actually have one (see startViewPollTimer guard).
   viewLoaders[name]?.(filter);
+  if (name !== 'situationDetail' && name !== 'outputDetail') {
+    startViewPollTimer(name);
+  }
 }
+
+// P0010.2.7 — Start a per-view poller. The interval is owned by
+// `state.viewPollTimers[name]`; the in-flight fetcher is guarded by
+// `state.viewEpoch[name]`. If the operator navigates away, switchView
+// clears the interval AND bumps the epoch, so the next tick (and any
+// in-flight fetch) becomes a no-op.
+function startViewPollTimer(name) {
+  var fn = state.viewPollers && state.viewPollers[name];
+  if (!fn) return;
+  if (state.viewPollTimers[name]) {
+    clearInterval(state.viewPollTimers[name]);
+    state.viewPollTimers[name] = null;
+  }
+  state.viewEpoch[name]++;
+  var myEpoch = state.viewEpoch[name];
+  state.viewPollTimers[name] = setInterval(async () => {
+    if (state.viewEpoch[name] !== myEpoch) {
+      // We were invalidated — stop ticking.
+      if (state.viewPollTimers[name]) {
+        clearInterval(state.viewPollTimers[name]);
+        state.viewPollTimers[name] = null;
+      }
+      return;
+    }
+    try { await fn(); } catch { /* keep ticking on transient failures */ }
+  }, VIEW_POLL_MS);
+}
+
+// P0010.2.7 — Per-view pollers. Each fetcher is idempotent: it re-fetches
+// the same endpoint as the loader, dedups by content fingerprint, and
+// only re-renders when something actually changed. That is what gives
+// the user "no flash, no scroll reset, no detail rebuild".
+state.viewPollers = {
+  situations: () => fetchAndRenderSituations(state.activeFilter || 'all'),
+  runtime: () => fetchAndRenderRuntime(),
+  outputs: () => fetchAndRenderOutputs(),
+};
 
 const viewLoaders = { product: loadProduct, trend: loadTrend, archive: loadArchive, memory: loadMemory, runtime: loadRuntime,
   agentSession: loadAgentSession, capabilityExplorer: loadCapabilityExplorer, evidenceViewer: loadEvidenceViewer,
@@ -434,6 +532,14 @@ const getOutputTypeLabel = (type) =>
 let outputsActiveStatus = ''; // '' = 全部; otherwise WorkItemStatus
 
 async function loadOutputs() {
+  // P0010.2.7 — Live-refresh: reset fingerprint so the initial load
+  // and tab clicks always re-render. The 4s poller calls
+  // `fetchAndRenderOutputs()` and dedups by fingerprint.
+  state.outputsFingerprint = null;
+  await fetchAndRenderOutputs();
+}
+
+async function fetchAndRenderOutputs() {
   const ct = document.getElementById('outputsContent');
   if (!ct) return;
   ct.innerHTML = '<p class="muted placeholder">加载中…</p>';
@@ -451,6 +557,19 @@ async function loadOutputs() {
     ]);
     const items = Array.isArray(filtered) ? filtered : (filtered && Array.isArray(filtered.data) ? filtered.data : []);
     const allItems = Array.isArray(all) ? all : (all && Array.isArray(all.data) ? all.data : []);
+
+    // P0010.2.7 — Live-refresh dedup. The fingerprint covers the
+    // (currently-filtered) table items. The sidebar badge (allItems)
+    // is updated unconditionally because the badge is small and cheap,
+    // and a status change in the badge is the operator's first
+    // signal that something new is ready to inspect.
+    var fp = outputsFingerprint(items);
+    if (fp === state.outputsFingerprint) {
+      updateOutputsBadge(allItems); // keep badge fresh
+      return;
+    }
+    state.outputsFingerprint = fp;
+
     renderOutputsCollection(items);
     updateOutputsBadge(allItems);
   } catch (e) {
@@ -627,7 +746,10 @@ async function loadOutputDetail(outputId) {
   const decisionPanel = document.getElementById('decisionPanel');
   const decisionContent = document.getElementById('decisionContent');
   if (decisionContent) decisionContent.innerHTML = '';
-  if (decisionPanel) decisionPanel.classList.remove('open');
+  // P0010.2.7 — On entry, route the right panel through the canonical
+  // state helper. Output Detail will re-open the panel as 'open' from
+  // inside `renderOutputDetailRightPane` once the output is loaded.
+  if (decisionPanel) setDecisionPanelState('rail');
 
   try {
     const out = await apiGet('/api/outputs/' + encodeURIComponent(outputId));
@@ -818,7 +940,9 @@ function renderOutputDetailRightPane(out) {
   '</div>';
   content.style.display = 'block';
   content.innerHTML = html;
-  panel.classList.add('open');
+  // P0010.2.7 — Use the canonical state helper so the rail ↔ open
+  // transition is consistent across all right-panel entry points.
+  setDecisionPanelState('open');
 }
 
 // ═══ Trend ════════════════════════════════════════════════
@@ -1008,6 +1132,15 @@ document.getElementById('archiveProfileSelect')?.addEventListener('change', load
 	// situations without opening the URL. Renders honest "unknown" placeholders
 	// when fields are missing (no fabrication). Errors render an honest
 	// "[loop] state unavailable" string — never throw silently.
+	// P0010.2.7 — `escapeHtml` was a free ReferenceError (the file has
+	// `escHtml` further down, not `escapeHtml`). The try/catch swallowed
+	// it, so the loop status line always showed "state unavailable" on
+	// the operator UI. Define a local escape here so this function is
+	// order-independent of declarations lower in the file.
+	function escapeHtml(s) {
+	  if (s === null || s === undefined) return '';
+	  return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+	}
 	async function loadLoopStatus() {
 	  const el = document.getElementById('loopStatus');
 	  const badge = document.getElementById('loopBlockedBadge');
@@ -1047,13 +1180,40 @@ document.getElementById('archiveProfileSelect')?.addEventListener('change', load
 	  // P0010.2.3 (ADR-059 audit D-2) — refresh Loop state alongside the
 	  // execution history. No new event / route / router change; this is
 	  // the single call site for the view-runtime view.
+	  // P0010.2.7 — Live-refresh: resetting the fingerprint forces a
+	  // re-render on the next call (initial load + post-collect). The
+	  // 4s poller in `state.viewPollers.runtime` calls
+	  // `fetchAndRenderRuntime()` directly and dedups by fingerprint.
+	  // `loadLoopStatus()` lives here (the entry point) so the workspace
+	  // loop-status contract test (workspace-loop-status.test.ts) sees
+	  // the call from `loadRuntime`, not from a sibling helper. Loop
+	  // status updates on view switch + post-collect, same cadence as
+	  // pre-P0010.2.7 (the runtime-execution poller is independent).
+	  state.runtimeFingerprint = null;
 	  await loadLoopStatus();
+	  await fetchAndRenderRuntime();
+	}
+
+	async function fetchAndRenderRuntime() {
+	  // P0010.2.7 — Loop status is loaded by `loadRuntime()` (the entry
+	  // point) so the workspace loop-status contract stays satisfied.
+	  // This helper now only handles the heavy execution-history data
+	  // with the 4s polling + fingerprint dedup.
 	  const list = document.getElementById('runtimeExecutionsList');
 	  const countEl = document.getElementById('runtimeExecCount');
 	  const status = document.getElementById('runtimeCollectStatus');
+	  if (!list) return;
 	  list.innerHTML = '<p class="muted">Loading execution history...</p>';
 	  try {
 	    const executions = await apiGet('/api/runtime/executions?platform=jd&limit=366');
+	    // P0010.2.7 — Live-refresh dedup. If the executions list is
+	    // unchanged since the last render, skip the DOM rebuild. The
+	    // loop status line is always re-rendered above (cheap, no
+	    // scroll), and the executions grid is the only operator-visible
+	    // surface that actually needs the dedup.
+	    var fp = runtimeFingerprint(executions);
+	    if (fp === state.runtimeFingerprint) return;
+	    state.runtimeFingerprint = fp;
 	    if (!executions || !executions.length) {
 	      list.innerHTML = '<p class="muted placeholder">No execution records. Collect data first from Runtime panel.</p>';
 	      if (countEl) countEl.textContent = '';
@@ -1178,11 +1338,64 @@ async function loadRuntimeDetail(date) {
   }
 }
 // ═══ P0007.3 Situation Feed ═══════════════════════════════
+// P0010.2.7 — Per-view fingerprint helpers. Cheap O(N) hashes over
+// the operator-visible fields of the API response. The first call
+// after `state.*Fingerprint = null` always renders (initial load).
+// Subsequent polls with an unchanged fingerprint skip the DOM update
+// entirely, so polling is invisible to the operator when nothing has
+// actually changed on the server.
+function situationsFingerprint(situations) {
+  if (!situations || !situations.length) return 'empty:0';
+  // Each row contributes a fixed string; the join is bounded by N
+  // (small for the Workspace — typically 0-20 active situations).
+  return 'n:' + situations.length + ':' + situations.map(function (s) {
+    return (s.situationId || '') + '|' +
+      (s.presentation || (s.investigation && s.investigation.status) || 'pending') + '|' +
+      (s.interventionCount || 0) + '|' +
+      (s.hasAcceptedDecision ? '1' : '0') + '|' +
+      (s.updatedAt || s.createdAt || '');
+  }).join(';');
+}
+
+function runtimeFingerprint(executions) {
+  if (!executions || !executions.length) return 'empty:0';
+  return 'n:' + executions.length + ':' + executions.map(function (e) {
+    return (e.date || '') + '|' + (e.status || '') + '|' +
+      (e.signalCount || 0) + '|' + (e.evidenceCount || 0) + '|' +
+      (e.evidenceSource || '');
+  }).join(';');
+}
+
+function outputsFingerprint(items) {
+  if (!items || !items.length) return 'empty:0';
+  return 'n:' + items.length + ':' + items.map(function (o) {
+    return (o.outputId || '') + '|' + (o.status || '') + '|' +
+      (o.type || '') + '|' + (o.acknowledgedAt || '') + '|' +
+      (o.closedAt || '');
+  }).join(';');
+}
+
 async function loadSituationFeed(filter) {
-  filter = filter || 'all';
+  // P0010.2.7 — Reset the fingerprint so the initial load always
+  // renders. Subsequent polls in `fetchAndRenderSituations` will
+  // dedup against the rendered state and skip the DOM update when
+  // the server-side data has not changed. That is what gives the
+  // operator "no flash, no scroll reset" while the page is open.
+  state.feedFingerprint = null;
+  await fetchAndRenderSituations(filter);
+}
+
+// P0010.2.7 — Pure fetcher + dedup + render. Used by both the initial
+// load and the 4s poller. If the new server data matches the cached
+// fingerprint, the function is a no-op (no DOM mutation, no flash).
+// This is the engine of "Workspace Live Refresh" — empty state
+// auto-shows the first Situation when the Runtime produces one, with
+// no manual F5.
+async function fetchAndRenderSituations(filter) {
+  filter = filter || state.activeFilter || 'all';
   var list = document.getElementById('situationFeedList');
   var subtitle = document.getElementById('situationFeedSubtitle');
-  list.innerHTML = '<p class="muted placeholder">加载 Situation 中...</p>';
+  if (!list) return;
 
   // Update tab active state
   document.querySelectorAll('#situationFeedTabs .feed-tab').forEach(function(t) {
@@ -1192,6 +1405,22 @@ async function loadSituationFeed(filter) {
   try {
     var data = await apiGet('/api/situations');
     var situations = Array.isArray(data) ? data : (data.situations || []);
+
+    // P0010.2.7 — Live-refresh dedup. The fingerprint captures exactly
+    // the operator-visible shape: situation identity, presentation,
+    // intervention count, has-decision flag, and updated timestamp. A
+    // no-op poll (e.g. no new Situation was produced this tick) leaves
+    // the fingerprint unchanged and we skip the entire DOM re-render —
+    // no flash, no scroll reset, no list churn. A genuinely new
+    // Situation flips the fingerprint and the populated list appears.
+    var fp = situationsFingerprint(situations);
+    if (fp === state.feedFingerprint) {
+      // Nothing changed. The badges, subtitle, and cards all already
+      // reflect this state. Bail without touching the DOM.
+      return;
+    }
+    state.feedFingerprint = fp;
+
     if (!situations.length) {
       list.innerHTML = '<p class="muted placeholder">暂无 Situation。运行 CDP 采集后，系统会自动创建 Situation。</p>';
       if (subtitle) subtitle.textContent = '0 个 Situation';
@@ -1575,9 +1804,11 @@ async function loadSituationDetail(situationId) {
     html += '</div>'; // end detail body
     content.innerHTML = html;
 
-    // Open the Workspace's right pane and clear any prior content (so the
-    // situation's Track is the only thing rendered in the right column).
-    if (decisionPanel) decisionPanel.classList.add('open');
+    // P0010.2.7 — Open the Workspace's right pane via the canonical
+    // state helper (see styles.css .decision-panel.open + rail). The
+    // helper removes the .rail class and adds .open; the layout grid
+    // widens back to var(--decision-width) automatically.
+    if (decisionPanel) setDecisionPanelState('open');
     if (decisionContent) {
       decisionContent.style.display = 'block';
       decisionContent.innerHTML = '';
@@ -2814,7 +3045,9 @@ async function startInvestigation(situationId) {
   // next tick. The Loop still owns the steady-state cadence; this is
   // a single-shot override.
   uEl.innerHTML = '<p class="muted">🔍 Agent 正在调查：读取专业知识 → 形成当前判断 → 提出下一个问题 → 检查证据 → 获取所需证据 → 更新判断（可能需要几分钟）...</p>';
-  if (decisionPanel) decisionPanel.classList.add('open');
+  // P0010.2.7 — Use the canonical state helper so the rail ↔ open
+  // transitions stay consistent with loadSituationDetail / close button.
+  if (decisionPanel) setDecisionPanelState('open');
   if (decisionContent) {
     decisionContent.style.display = 'block';
     decisionContent.innerHTML = '<p class="muted" style="font-size:0.78rem">正在调查...</p>';
@@ -3794,6 +4027,14 @@ document.getElementById('decisionCloseBtn')?.addEventListener('click', () => {
   document.getElementById('decisionPlaceholder').style.display = 'flex';
   document.getElementById('decisionContent').style.display = 'none';
   document.querySelectorAll('.finding-card').forEach(c => c.classList.remove('selected'));
+  // P0010.2.7 — Close button now also collapses the panel to the
+  // 48px rail (see styles.css `.decision-panel.rail`). The 340px
+  // empty-state placeholder is replaced by the rail's vertical
+  // "决策依据" marker, reclaiming the column width for the main
+  // content. The operator re-opens the panel by clicking a finding
+  // or situation card — see setDecisionPanelState for the canonical
+  // state machine.
+  setDecisionPanelState('rail');
 });
 document.getElementById('runtimeCollectBtn')?.addEventListener('click', async () => {
   const status = document.getElementById('runtimeCollectStatus');
@@ -3880,6 +4121,12 @@ document.getElementById('replayRunBtn')?.addEventListener('click', async () => {
   initSituationFeedTabs();
 
   applyI18n();
+  // P0010.2.7 — Initialize the right panel in rail mode (48px collapsed
+  // width) before the first switchView call. Without this, the panel
+  // would render as a 340px empty stripe on initial page load. The
+  // helper is idempotent — it strips both .rail and .open before
+  // adding the requested mode, so it's safe to call multiple times.
+  setDecisionPanelState('rail');
   switchView('situations', 'all');
   await loadData();
 

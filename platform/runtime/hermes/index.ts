@@ -13,6 +13,9 @@ export { HermesSessionClient, HermesAuthError, probeAuthRequired, resetHealthCac
 export type { HermesEvent, HermesSessionClientOptions, CreateSessionParams, CreateSessionResult, HermesConnectInfo, HermesConnectLogger } from './session-client.js';
 export { resolveHermesSessionToken, resolveHermesSessionTokenWithSource, resetTokenCache, ENV_TOKEN_NAMES } from './token-resolver.js';
 export type { ResolveOptions, ResolveHermesTokenResult } from './token-resolver.js';
+// P0010.2.7 — exported so the readiness / status routes can resolve the
+// exact same URL that the agent-turn / session-client uses.
+export { resolveHermesWsUrl, resolveHermesPort, DEFAULT_HERMES_WS_URL, DEFAULT_HERMES_PORT } from './resolve-url.js';
 
 const isTest = process.env.NODE_ENV === 'test' || process.env.VITEST === 'true';
 

@@ -134,7 +134,7 @@ describe('HermesSessionClient', () => {
   });
 
   it('connect opens a WebSocket to /api/ws and appends ?token=', async () => {
-    const client = new HermesSessionClient({ url: 'ws://localhost:9119/api/ws', token: 'explicit-secret' });
+    const client = new HermesSessionClient({ url: 'ws://localhost:9120/api/ws', token: 'explicit-secret' });
     const connectPromise = client.connect();
     // 4 microtask flushes: probeAuthRequired (fetch + .json) →
     // resolveToken (callerToken path) → tryOnce → new WebSocket.
@@ -145,7 +145,7 @@ describe('HermesSessionClient', () => {
     const ws = MockWebSocket.instances[0]!;
     ws.emitOpen();
     await connectPromise;
-    expect(ws.url).toBe('ws://localhost:9119/api/ws?token=explicit-secret');
+    expect(ws.url).toBe('ws://localhost:9120/api/ws?token=explicit-secret');
   });
 
   it('reads the token from HERMES_DASHBOARD_SESSION_TOKEN env when none passed', async () => {
@@ -154,7 +154,7 @@ describe('HermesSessionClient', () => {
     const { ws } = await beginConnect(client);
     ws.emitOpen();
     await Promise.resolve();
-    expect(ws.url).toBe('ws://localhost:9119/api/ws?token=env-secret');
+    expect(ws.url).toBe('ws://localhost:9120/api/ws?token=env-secret');
     // The resolver should NOT be called when env is set.
     expect(resolveTokenMock).not.toHaveBeenCalled();
   });
@@ -165,7 +165,7 @@ describe('HermesSessionClient', () => {
     const { ws } = await beginConnect(client);
     ws.emitOpen();
     await Promise.resolve();
-    expect(ws.url).toBe('ws://localhost:9119/api/ws?token=option-secret');
+    expect(ws.url).toBe('ws://localhost:9120/api/ws?token=option-secret');
     expect(resolveTokenMock).not.toHaveBeenCalled();
   });
 
@@ -179,7 +179,7 @@ describe('HermesSessionClient', () => {
     resolveTokenMock.mockResolvedValue(undefined);
     const client = new HermesSessionClient();
     await expect(client.connect()).rejects.toThrow(
-      /Hermes Session Runtime unavailable at ws:\/\/localhost:9119\/api\/ws\./,
+      /Hermes Session Runtime unavailable at ws:\/\/localhost:9120\/api\/ws\./,
     );
     await expect(client.connect().catch((e: Error) => e.message)).resolves.toMatch(
       /AgentFabric requires 'hermes serve' for the configured session adapter\./,
@@ -205,8 +205,8 @@ describe('HermesSessionClient', () => {
       /WebSocket upgrade failed after token accepted/,
     );
     // The WS URL is the same for both attempts because the token is the same.
-    expect(MockWebSocket.instances[0]!.url).toBe('ws://localhost:9119/api/ws?token=wrong-secret');
-    expect(MockWebSocket.instances[1]!.url).toBe('ws://localhost:9119/api/ws?token=wrong-secret');
+    expect(MockWebSocket.instances[0]!.url).toBe('ws://localhost:9120/api/ws?token=wrong-secret');
+    expect(MockWebSocket.instances[1]!.url).toBe('ws://localhost:9120/api/ws?token=wrong-secret');
   });
 
   it('createSession sends a valid session.create JSON-RPC frame', async () => {
@@ -296,7 +296,7 @@ describe('HermesSessionClient — auto-discovered token', () => {
     expect(resolveTokenMock).toHaveBeenCalledTimes(1);
     ws.emitOpen();
     await Promise.resolve();
-    expect(ws.url).toBe('ws://localhost:9119/api/ws?token=discovered-secret');
+    expect(ws.url).toBe('ws://localhost:9120/api/ws?token=discovered-secret');
   });
 
   it('explicit token option still wins over the auto-discovered value', async () => {
@@ -308,6 +308,6 @@ describe('HermesSessionClient — auto-discovered token', () => {
     expect(resolveTokenMock).not.toHaveBeenCalled();
     ws.emitOpen();
     await Promise.resolve();
-    expect(ws.url).toBe('ws://localhost:9119/api/ws?token=option-wins');
+    expect(ws.url).toBe('ws://localhost:9120/api/ws?token=option-wins');
   });
 });

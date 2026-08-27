@@ -1960,3 +1960,74 @@ dev DB and runtime filesystem to a known-empty baseline.
 - ❌ Did NOT delete any user-uploaded raw knowledge sources
 - ❌ Did NOT change business Situation lifecycle rules
 - ❌ Did NOT introduce Event Bus / SSE / WebSocket / Wake Engine
+
+---
+
+# ADR-066 — Hermes URL/port single source of truth + dev wrapper (P0010.2.7)
+
+- **Date**: 2026-08-27
+- **Status**: Accepted
+- **Decider**: implementation team (P0010.2.7 live review)
+
+## Context
+
+P0010.2.4 (ADR-064) established that `HERMES_WS_URL` is the only
+configuration source for the `/api/ws` session transport. The chosen
+endpoint in this project is `ws://localhost:9120/api/ws`. But the
+following four files each carried a hardcoded `9119` fallback that
+silently overrode `HERMES_WS_URL` when the env var was unset:
+
+1. `platform/runtime/hermes/health-state.ts` — IIFE port resolver
+   with `const port = parsePortFromUrl(url) ?? 9119;`
+2. `platform/runtime/hermes/token-resolver.ts` —
+   `const port = parsePort(options.url) ?? 9119;` (×2)
+3. `platform/runtime/hermes/session-client.ts` —
+   `const port = parsePortFromUrl(url) ?? 9119;` (×3)
+4. `platform/server/routes/runtime.ts` —
+   `process.env['HERMES_WS_URL'] ?? 'ws://localhost:9119/api/ws'`
+
+When the operator's env does NOT set `HERMES_WS_URL` (the dev case),
+each of these independently defaulted to the historical `9119` —
+which is now a dead port. Port `9120` is the project-chosen Hermes.
+The result: `/api/readiness` says `healthy`, the actual connect
+target is `:9119`, and the operator's UI says
+`"Hermes Session Runtime unavailable at ws://localhost:9119/api/ws"`.
+
+Auto-discovery (lsof + ps eww) is documented as a deferred diagnostic
+(MEMORY: `hermes-auto-discovery-vs-explicit-contract`) and is not
+allowed to override explicit configuration.
+
+## Decision
+
+1. **Single source of truth**: `platform/runtime/hermes/resolve-url.ts`
+   - exports `DEFAULT_HERMES_WS_URL = 'ws://localhost:9120/api/ws'`
+   - exports `DEFAULT_HERMES_PORT = 9120`
+   - exports `resolveHermesWsUrl(): string` — env > default
+   - exports `resolveHermesPort(url?): number` — parse URL > default
+2. All four files import from this helper. No file hardcodes
+   `9119` anymore.
+3. New dev wrapper `scripts/with-hermes-env.ts`:
+   - Resolves `HERMES_WS_URL` from env or default 9120.
+   - Sets it for the child process (does NOT mutate parent env).
+   - Prints a prominent banner on every dev start so the operator
+     sees the configured endpoint.
+   - Forwards SIGINT / SIGTERM / SIGHUP to the child.
+   - Exits with the child's exit code.
+4. `package.json` `dev` script routes through the wrapper.
+
+## Consequences
+
+- **Positive**: The invariant
+  `configured endpoint == readiness endpoint == status endpoint ==
+   actual agent-turn endpoint` now holds. Drift is no longer
+  possible from a missing env var.
+- **Positive**: Future changes to the default endpoint require
+  editing exactly one file.
+- **Positive**: The dev banner is the operator's first signal that
+  the URL contract is in effect.
+- **Neutral**: The wrapper is an extra process boundary in dev. It
+  is intentionally NOT used in production (`start:hermes` is the
+  production path, used by the deploy pipeline).
+- **Risk**: If `HERMES_WS_URL` is mis-set in env, the wrapper will
+  print that value and use it everywhere. There is no override. The
+  operator must edit env to fix.

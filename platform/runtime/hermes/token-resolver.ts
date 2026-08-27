@@ -44,6 +44,11 @@
 import { execFile } from 'node:child_process';
 import { readFile } from 'node:fs/promises';
 import { promisify } from 'node:util';
+// P0010.2.7 — single source of truth for the default port. The token
+// resolver now shares the same default with health-state, session-client,
+// and the readiness route, so the auto-discovery lsof+ps eww probe
+// targets the SAME port that readiness/turn use.
+import { resolveHermesPort } from './resolve-url.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -115,9 +120,12 @@ export interface ResolveHermesTokenResult {
 export async function resolveHermesSessionToken(
   options: ResolveOptions = {},
 ): Promise<string | undefined> {
-  // 9119 is the `hermes serve` default (Session Runtime that backs /api/ws).
-  // It is NOT a hermes gateway port — gateway uses 8642 and API_SERVER_KEY.
-  const port = parsePort(options.url) ?? 9119;
+  // P0010.2.7 — port resolution routes through the project-wide helper.
+  // The previous 9119 default drifted to the wrong port when the
+  // project's chosen Hermes was moved to 9120; the helper now keeps
+  // all four call sites (health-state, token-resolver, session-client,
+  // runtime readiness route) in lockstep.
+  const port = resolveHermesPort(options.url);
 
   // (1) Operator-pinned env var wins. Never cached, never auto-refreshed.
   const fromOperator = resolveFromOperatorEnv();
@@ -146,9 +154,12 @@ export async function resolveHermesSessionToken(
 export async function resolveHermesSessionTokenWithSource(
   options: ResolveOptions = {},
 ): Promise<ResolveHermesTokenResult> {
-  // 9119 is the `hermes serve` default (Session Runtime that backs /api/ws).
-  // It is NOT a hermes gateway port — gateway uses 8642 and API_SERVER_KEY.
-  const port = parsePort(options.url) ?? 9119;
+  // P0010.2.7 — port resolution routes through the project-wide helper.
+  // The previous 9119 default drifted to the wrong port when the
+  // project's chosen Hermes was moved to 9120; the helper now keeps
+  // all four call sites (health-state, token-resolver, session-client,
+  // runtime readiness route) in lockstep.
+  const port = resolveHermesPort(options.url);
 
   const fromOperator = resolveFromOperatorEnv();
   if (fromOperator.token !== undefined) {
@@ -267,16 +278,4 @@ function parseLinuxProcEnv(buf: Buffer): Record<string, string> {
     out[part.slice(0, eq)] = part.slice(eq + 1);
   }
   return out;
-}
-
-function parsePort(url?: string): number | undefined {
-  if (!url) return undefined;
-  try {
-    const u = new URL(url);
-    if (!u.port) return undefined;
-    const n = Number.parseInt(u.port, 10);
-    return Number.isFinite(n) && n > 0 ? n : undefined;
-  } catch {
-    return undefined;
-  }
 }

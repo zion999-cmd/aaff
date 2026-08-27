@@ -27,8 +27,14 @@ import { resolve } from 'node:path';
 // call so the cached layer state does not go stale. `health-state` holds the
 // agent-turn layer (only updated by the loop) and a stale-tolerant view of the
 // session runtime layer.
-import { probeAuthRequired, parsePortFromUrl } from '#platform/runtime/hermes/session-client.js';
+import { probeAuthRequired } from '#platform/runtime/hermes/session-client.js';
 import { getHermesHealth, recordSessionRuntimeProbe } from '#platform/runtime/hermes/health-state.js';
+// P0010.2.7 — single source of truth for the Hermes URL. The readiness
+// + status routes resolve through the same helper as health-state /
+// session-client / token-resolver so a probe against `url` is
+// guaranteed to target the same port that the next investigation
+// turn will hit. See resolve-url.ts.
+import { resolveHermesWsUrl, resolveHermesPort } from '#platform/runtime/hermes/resolve-url.js';
 
 // ---- Request Schemas ----
 
@@ -373,8 +379,8 @@ export const runtimeRouter = (db: Db): Router => {
         // network cost); the readiness + hermes/status routes are
         // monitoring seams and must be live.
         (async () => {
-          const url = process.env['HERMES_WS_URL'] ?? 'ws://localhost:9119/api/ws';
-          const port = parsePortFromUrl(url) ?? 9119; // `hermes serve` default
+          const url = resolveHermesWsUrl();
+          const port = resolveHermesPort(url);
           try {
             const probe = await probeAuthRequired(url, { forceRefresh: true });
             recordSessionRuntimeProbe({
@@ -424,8 +430,8 @@ export const runtimeRouter = (db: Db): Router => {
   // useful for the turn-time connect path; this route is a monitoring
   // seam and must be live.
   router.get('/runtime/hermes/status', async (_req, res) => {
-    const url = process.env['HERMES_WS_URL'] ?? 'ws://localhost:9119/api/ws';
-    const port = parsePortFromUrl(url) ?? 9119; // `hermes serve` default
+    const url = resolveHermesWsUrl();
+    const port = resolveHermesPort(url);
     try {
       const probe = await probeAuthRequired(url, { forceRefresh: true });
       recordSessionRuntimeProbe({

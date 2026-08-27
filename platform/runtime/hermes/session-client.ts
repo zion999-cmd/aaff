@@ -31,6 +31,11 @@ import {
   type ResolveHermesTokenResult,
 } from './token-resolver.js';
 import { traceBuffer, makeTraceEvent } from '#app/runtime/loop/trace-ring-buffer.js';
+// P0010.2.7 — single source of truth for the Hermes URL/port default.
+// The session client is the one that actually opens a WS connection
+// to /api/ws, so the URL it picks MUST be the same one the readiness
+// probe and status probe are reporting on. See resolve-url.ts.
+import { resolveHermesWsUrl, resolveHermesPort } from './resolve-url.js';
 import {
   recordSessionRuntimeProbe,
   recordSessionRuntimeConnectOk,
@@ -238,7 +243,7 @@ export async function probeAuthRequired(
   url: string,
   options: { forceRefresh?: boolean } = {},
 ): Promise<{ authRequired: boolean; probeFailed: boolean }> {
-  const port = parsePortFromUrl(url) ?? 9119;
+  const port = resolveHermesPort(url);
   const cached = healthCache.get(port);
   if (!options.forceRefresh && cached && Date.now() - cached.cachedAt < HEALTH_PROBE_TTL_MS) {
     return { authRequired: cached.authRequired, probeFailed: cached.probeFailed };
@@ -342,21 +347,16 @@ export class HermesSessionClient {
 
   constructor(options: HermesSessionClientOptions = {}) {
     // P0010.2 closure Repair — the WS URL is overridable via the
-    // `HERMES_WS_URL` env var. Default 9119 is the `hermes serve` default
-    // port (the Session Runtime that backs `/api/ws`); it is NOT a
-    // hermes gateway port (gateway defaults to 8642 with API_SERVER_KEY
-    // Bearer auth and is a separate service — see ADR-064). The dev env
-    // commonly runs Hermes on a non-default port (e.g. 9120) so an
-    // explicit env var lets the same agentFabric binary talk to a
-    // non-standard Hermes without code changes. The `options.url`
-    // parameter still wins (programmatic override), then the env var,
-    // then the default.
-    const DEFAULT_PORT = 9119; // `hermes serve` default (Session Runtime)
+    // P0010.2.7 — `options.url` (programmatic) wins, then the operator
+    // env var, then the project-wide default from resolve-url.ts. The
+    // previous hard-coded 9119 default drifted when the project's
+    // chosen Hermes was moved to 9120; the helper now keeps this
+    // constructor in lockstep with the readiness probe and the
+    // auto-discovery lsof+ps eww probe in token-resolver.ts.
     const fromEnv = typeof process !== 'undefined' && process.env
       ? process.env['HERMES_WS_URL']
       : undefined;
-    const port = parsePortFromUrl(options.url ?? fromEnv ?? `ws://localhost:${DEFAULT_PORT}/api/ws`) ?? DEFAULT_PORT;
-    this.url = options.url ?? fromEnv ?? `ws://localhost:${port}/api/ws`;
+    this.url = options.url ?? fromEnv ?? resolveHermesWsUrl();
     this.callerToken = options.token;
     this.connectTimeoutMs = options.connectTimeoutMs ?? 10_000;
   }
@@ -387,7 +387,9 @@ export class HermesSessionClient {
   async connect(): Promise<void> {
     this.closedByUser = false;
     // 9119 is the `hermes serve` default (Session Runtime), not gateway.
-    const port = parsePortFromUrl(this.url) ?? 9119;
+    // P0010.2.7 — resolved through the project-wide helper so the actual
+    // WS connect targets the same port readiness/turn use.
+    const port = resolveHermesPort(this.url);
     const startedAt = Date.now();
     const log = (info: Partial<HermesConnectInfo> & { attempt: 1 | 2 }): void => {
       const merged: HermesConnectInfo = {

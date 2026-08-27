@@ -35,6 +35,12 @@
 // does not exist in the production chain.
 
 import type { ResolveHermesTokenResult } from './token-resolver.js';
+// P0010.2.7 — single source of truth for the Hermes URL/port default.
+// All four files (health-state, token-resolver, session-client, the
+// runtime readiness route) now resolve through this helper so the
+// readiness probe, status probe, and the actual agent-turn endpoint
+// ALWAYS agree on the same URL. See resolve-url.ts for the contract.
+import { resolveHermesWsUrl, resolveHermesPort } from './resolve-url.js';
 
 export type SessionRuntimeState =
   | 'healthy' // most recent /api/health probe succeeded
@@ -91,14 +97,14 @@ export interface HermesHealth {
 
 // ---- Module singleton state ----
 
-const FALLBACK_PORT = 9119; // `hermes serve` default (Session Runtime)
+// P0010.2.7 — replaced the local 9119 fallback with the project-wide
+// helper. The explicit goal is: readiness probe, status probe, and
+// the actual agent-turn endpoint MUST agree on the same URL. If any
+// of them drifts, the operator's "/api/readiness says healthy" and
+// "investigation turn says unavailable" results contradict each
+// other (this is the exact bug the user screenshotted).
 
-const initialUrl = (): string => {
-  const fromEnv = typeof process !== 'undefined' && process.env
-    ? process.env['HERMES_WS_URL']
-    : undefined;
-  return fromEnv ?? `ws://localhost:${FALLBACK_PORT}/api/ws`;
-};
+const initialUrl = (): string => resolveHermesWsUrl();
 
 const state: {
   url: string;
@@ -113,10 +119,7 @@ const state: {
   lastFailureReason: string | null;
 } = {
   url: initialUrl(),
-  port: (() => {
-    const m = initialUrl().match(/:(\d+)\//);
-    return m && m[1] ? Number.parseInt(m[1], 10) : FALLBACK_PORT;
-  })(),
+  port: resolveHermesPort(initialUrl()),
   sessionRuntime: 'unavailable', // pessimistic default until first probe
   authRequired: null,
   probeFailed: false,
@@ -231,10 +234,7 @@ export function getHermesHealth(): HermesHealth {
  */
 export function resetHermesHealthState(): void {
   state.url = initialUrl();
-  state.port = (() => {
-    const m = initialUrl().match(/:(\d+)\//);
-    return m && m[1] ? Number.parseInt(m[1], 10) : FALLBACK_PORT;
-  })();
+  state.port = resolveHermesPort(initialUrl());
   state.sessionRuntime = 'unavailable';
   state.authRequired = null;
   state.probeFailed = false;

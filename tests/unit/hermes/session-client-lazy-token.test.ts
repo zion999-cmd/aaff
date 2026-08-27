@@ -146,7 +146,7 @@ describe('HermesSessionClient — lazy token + retry-once (P0010.2)', () => {
     expect(resolveTokenMock).toHaveBeenCalledTimes(1);
     ws.emitOpen();
     await connectPromise;
-    expect(ws.url).toBe('ws://localhost:9119/api/ws?token=lazy-secret');
+    expect(ws.url).toBe('ws://localhost:9120/api/ws?token=lazy-secret');
   });
 
   it('retries exactly once with a fresh token when the first handshake fails (auto-discovered)', async () => {
@@ -163,8 +163,8 @@ describe('HermesSessionClient — lazy token + retry-once (P0010.2)', () => {
 
     expect(resolveTokenMock).toHaveBeenCalledTimes(2);
     expect(resetCacheMock).toHaveBeenCalledTimes(1);
-    expect(first.url).toBe('ws://localhost:9119/api/ws?token=stale-secret');
-    expect(second.url).toBe('ws://localhost:9119/api/ws?token=fresh-secret');
+    expect(first.url).toBe('ws://localhost:9120/api/ws?token=stale-secret');
+    expect(second.url).toBe('ws://localhost:9120/api/ws?token=fresh-secret');
   });
 
   it('throws an actionable error when the first AND second attempts both fail', async () => {
@@ -199,8 +199,8 @@ describe('HermesSessionClient — lazy token + retry-once (P0010.2)', () => {
     second.emitError('handshake rejected (retry)');
     await expect(connectPromise).rejects.toThrow(/Hermes Session Runtime unavailable at/);
     expect(resetCacheMock).not.toHaveBeenCalled();
-    expect(first.url).toBe('ws://localhost:9119/api/ws?token=pinned-secret');
-    expect(second.url).toBe('ws://localhost:9119/api/ws?token=pinned-secret');
+    expect(first.url).toBe('ws://localhost:9120/api/ws?token=pinned-secret');
+    expect(second.url).toBe('ws://localhost:9120/api/ws?token=pinned-secret');
   });
 
   it('does NOT reset the cache when the failing token was supplied via options.token', async () => {
@@ -214,8 +214,8 @@ describe('HermesSessionClient — lazy token + retry-once (P0010.2)', () => {
     second.emitError('handshake rejected (retry)');
     await expect(connectPromise).rejects.toThrow(/Hermes Session Runtime unavailable at/);
     expect(resetCacheMock).not.toHaveBeenCalled();
-    expect(first.url).toBe('ws://localhost:9119/api/ws?token=option-pinned');
-    expect(second.url).toBe('ws://localhost:9119/api/ws?token=option-pinned');
+    expect(first.url).toBe('ws://localhost:9120/api/ws?token=option-pinned');
+    expect(second.url).toBe('ws://localhost:9120/api/ws?token=option-pinned');
   });
 
   it('throws an actionable error when the second re-resolve returns no token', async () => {
@@ -249,7 +249,7 @@ describe('HermesSessionClient — lazy token + retry-once (P0010.2)', () => {
     const second = MockWebSocket.instances[1]!;
     second.emitError('retry also failed');
     await expect(connectPromise).rejects.toThrow(/Hermes Session Runtime unavailable at/);
-    expect(first.url).toBe('ws://localhost:9119/api/ws?token=will-timeout');
+    expect(first.url).toBe('ws://localhost:9120/api/ws?token=will-timeout');
   });
 
   it('close() before connect() does not affect the next connect()', async () => {
@@ -265,7 +265,7 @@ describe('HermesSessionClient — lazy token + retry-once (P0010.2)', () => {
     const second = MockWebSocket.instances[1]!;
     second.emitOpen();
     await connectPromise;
-    expect(first.url).toBe('ws://localhost:9119/api/ws?token=token-x');
-    expect(second.url).toBe('ws://localhost:9119/api/ws?token=token-x');
+    expect(first.url).toBe('ws://localhost:9120/api/ws?token=token-x');
+    expect(second.url).toBe('ws://localhost:9120/api/ws?token=token-x');
   });
 });

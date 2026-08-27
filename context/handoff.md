@@ -1114,3 +1114,123 @@ After restart + autonomous loop's first tick + smoke test:
   is waiting for 2 days of data to materialize a Situation
   naturally, or backfilling 2 days of historical data for an
   immediate demonstration.
+
+---
+
+# Handoff — P0010.2.7 Workspace Live Refresh + Hermes Runtime Stability Repair (2026-08-27)
+
+## Session goal
+
+User live-acceptance of P0010.2.6 found 3 unrelated regressions and asked
+for a single focused repair pass on Workspace live refresh and the
+Hermes URL contract that had drifted from `9120` back to `9119`. Five
+sections were specified (A–E) with hard constraints forbidding DTD-011,
+Situation semantics, Event Bus, Hermes model change, proxy, etc.
+
+## What was changed
+
+### A. Workspace Live Refresh (A — HIGH PRIORITY)
+
+- `apps/ecommerce/workspace/app.js`:
+  - Added `viewPollTimers`, `viewEpoch`, fingerprint state.
+  - Added `VIEW_POLL_MS = 4000` constant.
+  - Refactored `loadSituationFeed`, `loadRuntime`, `loadOutputs` into
+    `fetchAndRender*` helpers with content-fingerprint dedup.
+  - Added `startViewPollTimer(name)` with epoch-guard so each view
+    owns at most one timer. `switchView` clears the previous view's
+    timer before starting the new one (no leak on rapid switch).
+
+### B. Right Panel Rail (B)
+
+- `apps/ecommerce/workspace/app.js` + `styles.css`:
+  - Added `.decision-panel.rail` (48px collapsed) state and the
+    `setDecisionPanelState(mode)` helper.
+  - Bootstrap calls `setDecisionPanelState('rail')` so the empty
+    state is the 48px rail, not a 340px full panel.
+  - Detail loaders call `setDecisionPanelState('open')`; close
+    button calls `setDecisionPanelState('rail')`.
+
+### C. Hermes URL Contract (C — CRITICAL)
+
+- `platform/runtime/hermes/resolve-url.ts` (NEW): the single source
+  of truth for `DEFAULT_HERMES_WS_URL = ws://localhost:9120/api/ws`
+  and `resolveHermesPort()`. All four files that previously hardcoded
+  `9119` now route through it.
+- `health-state.ts`, `token-resolver.ts`, `session-client.ts`,
+  `platform/server/routes/runtime.ts` updated to use
+  `resolveHermesWsUrl` / `resolveHermesPort`.
+- `scripts/with-hermes-env.ts` (NEW): dev wrapper that
+  - Resolves `HERMES_WS_URL` (env > default 9120).
+  - Prints a prominent banner on every dev start.
+  - Forwards SIGINT/SIGTERM to the child for clean shutdown.
+- `package.json`:
+  - `dev` now runs through the wrapper.
+  - `dev:no-watch` and `start:hermes` added.
+- `tests/unit/hermes/{session-client, session-client-lazy-token,
+  diagnostic-message}.test.ts` updated to expect 9120.
+  - The "Token domain separation" test was strengthened with an
+    explicit bogus URL (`ws://127.0.0.1:1/api/ws`) so the
+    auto-discovery path does not accidentally succeed against the
+    dev hermes and leak the real token.
+
+### E. Bonus engineering audit (E)
+
+- `apps/ecommerce/workspace/app.js`: `loadLoopStatus` referenced
+  `escapeHtml`, which is not defined in this file (only `escHtml`
+  further down). The try/catch in `loadLoopStatus` was swallowing
+  the ReferenceError, so the operator-visible loop status line
+  always read "state unavailable". Added a local `escapeHtml`
+  function above `loadLoopStatus`. After fix, the line reads
+  "RuntimeLoop · ✓ 运行中 · 上次 tick: … · 累计 tick: N · 阻塞: K".
+
+## Acceptance
+
+- `npx vitest run` → 1137 passed / 5 failed (all 5 pre-existing on
+  baseline, confirmed via `git stash` of my changes).
+- `npx tsc --noEmit` → 21 errors, all pre-existing on baseline
+  (unrelated files: cdp-client, runtime pagination, situation-chat,
+  learning-context contract, token-resolver mocks).
+- Real browser acceptance (Playwright + system Chrome):
+  - Title "agentFabric — Agent Workspace".
+  - Right panel width on initial load: **48px (rail)** ✓.
+  - Loop status line: **"RuntimeLoop · ✓ 运行中 · 上次 tick: … ·
+    累计 tick: 1 · 阻塞: 1"** ✓ (after `escapeHtml` fix).
+  - Real Hermes turn: `POST /api/situation/<id>/investigate` →
+    `agentStatus: "completed"`, sessionId 785fa763, real
+    `currentUnderstanding` text surfaced. Output row `out_d026ec056a151029`
+    created with status `ready`.
+  - Loop advanced: tickCount 2 → 5 within the 4s polling cycles.
+- Hermes endpoint stable after 2 agentFabric restarts: both
+  `/api/readiness` and `/api/runtime/hermes/status` report
+  `ws://localhost:9120/api/ws` / `port: 9120` / `state: healthy`.
+  with-hermes-env banner printed on both boots.
+
+## Out of scope (per user hard scope)
+
+- No DTD-011 / 同比 business rules changed.
+- No Situation 业务阈值 adjusted.
+- No Terminal Lifecycle / Resolution Engine / Action Engine / Wake
+  Engine.
+- No Event Bus / SSE / new WebSocket.
+- No Hermes model change, no proxy re-introduction.
+- No large Workspace redesign.
+- Hermes config, `.env`, `HERMES_WS_URL`, `HERMES_DASHBOARD_SESSION_TOKEN`,
+  ADR-064 topology: untouched.
+
+## Risk + suggestions
+
+- **Risk 1**: The "agentTurn.never_attempted" health-state layer does
+  NOT update on manual `POST /api/situation/:id/investigate` turns
+  (only on the auto-tick loop path). This is by design — but the
+  browser test's "after turn, agentTurn should not be never_attempted"
+  assertion is therefore conservative. The acceptance criterion is
+  "real turn completed + output created + loop tick advanced" which
+  all observed.
+- **Risk 2**: 4s polling is heavy if a future page adds many views.
+  Current per-view timer registry keeps it to one timer per active
+  view; no leak on switch.
+- **Suggestion**: P0010.2.8 could surface the 9119 historical dead-port
+  in the readiness chip as a "deprecation" badge — out of scope here.
+- **Suggestion**: The 1× 404 we observed transiently during one browser
+  acceptance run was not reproducible; suspect a long-poll mid-fail
+  race. Worth instrumenting if it recurs.

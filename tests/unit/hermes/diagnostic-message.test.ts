@@ -45,8 +45,8 @@ describe('Hermes health state — 3-layer shape (ADR-064)', () => {
 
   it('records session runtime probe success as healthy', () => {
     recordSessionRuntimeProbe({
-      url: 'ws://localhost:9119/api/ws',
-      port: 9119,
+      url: 'ws://localhost:9120/api/ws',
+      port: 9120,
       authRequired: false,
       probeFailed: false,
       tokenSource: null,
@@ -55,14 +55,14 @@ describe('Hermes health state — 3-layer shape (ADR-064)', () => {
     expect(h.sessionRuntime.state).toBe('healthy');
     expect(h.sessionRuntime.probeFailed).toBe(false);
     expect(h.sessionRuntime.lastProbedAt).not.toBeNull();
-    expect(h.sessionRuntime.url).toBe('ws://localhost:9119/api/ws');
-    expect(h.sessionRuntime.port).toBe(9119);
+    expect(h.sessionRuntime.url).toBe('ws://localhost:9120/api/ws');
+    expect(h.sessionRuntime.port).toBe(9120);
   });
 
   it('records session runtime probe failure as unavailable', () => {
     recordSessionRuntimeProbe({
-      url: 'ws://localhost:9119/api/ws',
-      port: 9119,
+      url: 'ws://localhost:9120/api/ws',
+      port: 9120,
       authRequired: null,
       probeFailed: true,
       tokenSource: null,
@@ -74,8 +74,8 @@ describe('Hermes health state — 3-layer shape (ADR-064)', () => {
 
   it('records connect ok as healthy with token source', () => {
     recordSessionRuntimeConnectOk({
-      url: 'ws://localhost:9119/api/ws',
-      port: 9119,
+      url: 'ws://localhost:9120/api/ws',
+      port: 9120,
       tokenSource: 'env-dashboard',
     });
     const h = getHermesHealth();
@@ -85,14 +85,14 @@ describe('Hermes health state — 3-layer shape (ADR-064)', () => {
 
   it('records connect failure as unavailable (overrides prior healthy)', () => {
     recordSessionRuntimeConnectOk({
-      url: 'ws://localhost:9119/api/ws',
-      port: 9119,
+      url: 'ws://localhost:9120/api/ws',
+      port: 9120,
       tokenSource: 'env-dashboard',
     });
     expect(getHermesHealth().sessionRuntime.state).toBe('healthy');
     recordSessionRuntimeConnectFailure({
-      url: 'ws://localhost:9119/api/ws',
-      port: 9119,
+      url: 'ws://localhost:9120/api/ws',
+      port: 9120,
       reason: 'connect failed twice',
     });
     const h = getHermesHealth();
@@ -120,8 +120,8 @@ describe('Hermes health state — 3-layer shape (ADR-064)', () => {
 
   it('3 layers are independent (changing one does not touch the others)', () => {
     recordSessionRuntimeProbe({
-      url: 'ws://localhost:9119/api/ws',
-      port: 9119,
+      url: 'ws://localhost:9120/api/ws',
+      port: 9120,
       authRequired: false,
       probeFailed: false,
       tokenSource: 'auto-dashboard',
@@ -142,7 +142,7 @@ describe('Hermes diagnostic message contract (ADR-064)', () => {
     const mod = await import('#platform/runtime/hermes/session-client.js');
     const err = new mod.HermesAuthError(
       'session_runtime_unreachable',
-      'Hermes Session Runtime unavailable at ws://localhost:9119/api/ws.',
+      'Hermes Session Runtime unavailable at ws://localhost:9120/api/ws.',
     );
     expect(err.reason).toBe('session_runtime_unreachable');
     expect(err.message).toMatch(/Hermes Session Runtime unavailable at/);
@@ -151,7 +151,7 @@ describe('Hermes diagnostic message contract (ADR-064)', () => {
   it('HermesAuthError accepts the missing_token reason with the required wording', async () => {
     const mod = await import('#platform/runtime/hermes/session-client.js');
     const required =
-      'Hermes Session Runtime unavailable at ws://localhost:9119/api/ws. ' +
+      'Hermes Session Runtime unavailable at ws://localhost:9120/api/ws. ' +
       `AgentFabric requires 'hermes serve' for the configured session adapter.`;
     const err = new mod.HermesAuthError('missing_token', required);
     expect(err.reason).toBe('missing_token');
@@ -168,7 +168,15 @@ describe('Token domain separation (ADR-064)', () => {
       process.env.HERMES_GATEWAY_TOKEN = 'gateway-secret-should-not-leak';
       const mod = await import('#platform/runtime/hermes/token-resolver.js');
       mod.resetTokenCache();
-      const result = await mod.resolveHermesSessionToken();
+      // P0010.2.7 — pin a bogus URL so auto-discovery (lsof+ps eww)
+      // targets port 1, not the project-chosen default 9120. Without
+      // this, the test would accidentally succeed against any hermes
+      // serve running on the dev machine and read its real
+      // HERMES_DASHBOARD_SESSION_TOKEN from the process env. The test
+      // is asserting that, with the env-var branch blanked, the
+      // resolver returns undefined — auto-discovery on a dead port
+      // is the only way to assert that deterministically.
+      const result = await mod.resolveHermesSessionToken({ url: 'ws://127.0.0.1:1/api/ws' });
       expect(result).toBeUndefined();
     } finally {
       process.env = saved;

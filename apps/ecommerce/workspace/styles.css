@@ -29,6 +29,7 @@
   --sidebar-active: #eff6ff;
   --sidebar-width: 240px;
   --decision-width: 340px;
+  --decision-rail-width: 48px; /* P0010.2.7: empty-state rail width */
   --shadow-sm: 0 1px 2px rgba(0,0,0,0.05);
   --shadow: 0 4px 12px rgba(0,0,0,0.06);
   --shadow-lg: 0 12px 32px rgba(0,0,0,0.08);
@@ -260,7 +261,7 @@ ul, ol { list-style: none; }
 }
 
 /* ═══ Agent Transparency / Trace Panel ═══════════════════════ */
-.decision-panel { background: var(--panel); border-left: 1px solid var(--border); display: flex; flex-direction: column; overflow: hidden; }
+.decision-panel { background: var(--panel); border-left: 1px solid var(--border); display: flex; flex-direction: column; overflow: hidden; transition: width 0.15s ease; }
 .decision-header { min-height: 48px; display: flex; flex-direction: column; padding: 6px 16px; border-bottom: 1px solid var(--border); position: relative; }
 .decision-header-row { display: flex; align-items: center; justify-content: space-between; width: 100%; }
 .decision-header-title { font-size: 0.85rem; font-weight: 600; }
@@ -270,6 +271,40 @@ ul, ol { list-style: none; }
 .decision-placeholder { flex: 1; display: flex; align-items: center; justify-content: center; padding: 20px; color: var(--muted); font-size: 0.84rem; text-align: center; }
 #panelBusiness { display: block; }
 #panelDeveloper { display: none; }
+
+/* P0010.2.7 — Right-panel empty-state rail. When the panel has no
+   explainability content to show, it collapses from --decision-width
+   (340px) to --decision-rail-width (48px) so the main content gets
+   the reclaimed space. The grid track also collapses (the layout gets
+   the .decision-rail class in JS, alongside the panel itself). The
+   vertical "决策" marker is the only content of the rail — it stays
+   discoverable without being a 340px-wide empty stripe. Scoped to
+   desktop because mobile already uses position:fixed + display:none. */
+@media (min-width: 851px) {
+  .workspace-layout.decision-rail { grid-template-columns: var(--sidebar-width) 1fr var(--decision-rail-width); }
+  .decision-panel.rail { width: var(--decision-rail-width); min-width: var(--decision-rail-width); max-width: var(--decision-rail-width); align-items: center; }
+  .decision-panel.rail .decision-header { border-bottom: none; padding: 8px 0; min-height: 0; }
+  .decision-panel.rail .decision-header-row { justify-content: center; }
+  .decision-panel.rail .decision-header-title,
+  .decision-panel.rail .decision-entity-label,
+  .decision-panel.rail #decisionCloseBtn,
+  .decision-panel.rail .decision-content,
+  .decision-panel.rail .decision-placeholder { display: none; }
+  /* Vertical "决策" label so the rail is not just an invisible stripe. */
+  .decision-panel.rail::after {
+    content: "决策依据";
+    writing-mode: vertical-rl;
+    text-orientation: mixed;
+    font-size: 0.78rem;
+    color: var(--muted);
+    letter-spacing: 0.18em;
+    margin-top: 14px;
+    font-weight: 500;
+  }
+  /* Hover affordance — clicking the rail re-opens the last entity if any. */
+  .decision-panel.rail:hover { background: var(--sidebar-active); }
+  .decision-panel.rail:hover::after { color: var(--primary); }
+}
 
 .trace-section { margin-bottom: 14px; }
 .trace-section-title { font-size: 0.68rem; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); margin-bottom: 6px; font-weight: 600; }

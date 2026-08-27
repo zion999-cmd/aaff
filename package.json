@@ -16,7 +16,9 @@
     "db:init": "tsx platform/storage/init.ts",
     "migrate:agentcms": "tsx scripts/migrate-agentcms-data.ts",
     "seed:demo-situations": "tsx scripts/seed-demo-situations.ts",
-    "dev": "tsx watch platform/server/index.ts",
+    "dev": "tsx scripts/with-hermes-env.ts --watch platform/server/index.ts",
+    "dev:no-watch": "tsx scripts/with-hermes-env.ts platform/server/index.ts",
+    "start:hermes": "tsx scripts/with-hermes-env.ts dist/platform/server/index.js",
     "build": "tsc",
     "start": "node dist/platform/server/index.js",
     "cli": "tsx scripts/cli.ts"
