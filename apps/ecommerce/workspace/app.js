@@ -3096,9 +3096,9 @@ async function startInvestigation(situationId) {
     // already writes "Hermes Session Runtime unavailable at <url>..." with
     // the right recovery instructions; we just surface it here. We do NOT
     // re-invent a different "hermes may be down" message, because the
-    // backend distinguishes session runtime (9119) from gateway (8642).
+    // backend distinguishes session runtime (9120 in this project) from gateway (8642).
     uEl.innerHTML = '<p class="muted placeholder">调查失败: ' + escHtml(e.message) +
-      '<br/><small>检查方向：Session Runtime 是 <code>hermes serve</code>（默认端口 9119），不是 hermes gateway（端口 8642）。' +
+      '<br/><small>检查方向：Session Runtime 是 <code>hermes serve</code>（本项目默认端口 9120），不是 hermes gateway（端口 8642）。' +
       'gateway 存活 ≠ Session Runtime 存活。</small></p>';
   } finally {
     if (btn) btn.disabled = false;
@@ -3698,7 +3698,7 @@ async function runIngest(opts) {
       if (st) renderKnowledgeSources(st, resp.status);
     } else {
       result.innerHTML = '<p class="muted placeholder">Agent 执行失败: ' + escHtml(resp.error || '未知错误') +
-        '<br/><small>检查方向：Session Runtime 是 <code>hermes serve</code>（默认端口 9119），不是 hermes gateway（端口 8642）。' +
+        '<br/><small>检查方向：Session Runtime 是 <code>hermes serve</code>（本项目默认端口 9120），不是 hermes gateway（端口 8642）。' +
         'gateway 存活 ≠ Session Runtime 存活。</small></p>';
     }
     // 刷新主状态（含生成的知识）——无论 Agent 状态如何，都以磁盘为准。
@@ -3706,7 +3706,7 @@ async function runIngest(opts) {
     else loadKnowledge();
   } catch (e) {
     result.innerHTML = '<p class="muted placeholder">请求失败: ' + escHtml(e.message) +
-      '<br/><small>请确认 Hermes serve 已启动（hermes serve，端口 9119）。</small></p>';
+      '<br/><small>请确认 Hermes serve 已启动（hermes serve，本项目默认端口 9120）。</small></p>';
   } finally {
     if (btn) btn.disabled = false;
   }

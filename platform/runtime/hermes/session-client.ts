@@ -623,9 +623,10 @@ export class HermesSessionClient {
       'missing_token',
       `Hermes Session Runtime unavailable at ${this.url}. ` +
         `AgentFabric requires 'hermes serve' for the configured session adapter.${modeHint}\n` +
-        `Resolution: (a) start the Session Runtime with 'hermes serve' (default port 9119) and ` +
+        `Resolution: (a) start the Session Runtime with 'hermes serve' and ` +
         `export HERMES_DASHBOARD_SESSION_TOKEN=<chosen_value> in BOTH the 'hermes serve' shell and the agentFabric shell, OR ` +
-        `(b) set HERMES_WS_URL to point at an already-running 'hermes serve' instance.\n` +
+        `(b) set HERMES_WS_URL to point at an already-running 'hermes serve' instance. ` +
+        `The configured endpoint is ${this.url} (project default: ws://localhost:9120/api/ws). ` +
         `NOT a fallback: hermes gateway (port 8642, API_SERVER_KEY Bearer) is a separate service and is NOT supported by the configured session adapter.`,
     );
   }
