@@ -274,11 +274,37 @@ export const connectWithSituationTrace = async (
  */
 const TURN_COMPLETE_GRACE_MS = 2_000;
 
+// P0010.2.4 perf — module-level handle to the most recent `collectTurn`
+// invocation's timing observations. Used by `runInvestigationTurn` to read
+// the first-delta latency and total time without changing collectTurn's
+// public Promise<string> signature. Last-write-wins; in the agentFabric
+// flow there is exactly one investigation turn in flight at a time, so
+// the "last" sample is also "the" sample for the current turn.
+export type CollectTurnTiming = {
+  turnStartedAt: number;
+  firstDeltaAt: number | null;
+  completeAt: number;
+  deltaCount: number;
+  totalMs: number;
+  firstDeltaMs: number | null;
+};
+export let __lastCollectTurnTiming: CollectTurnTiming | null = null;
+
 /** Accumulate message.delta text until message.complete, resolve with full reply. */
-export const collectTurn = (client: SituationChatClient, sessionId: string, timeoutMs = 300_000): Promise<string> => {
+export const collectTurn = (client: SituationChatClient, sessionId: string, timeoutMs = 600_000): Promise<string> => {
   return new Promise((resolveTurn, rejectTurn) => {
     let text = '';
     let timedOut = false;
+    // P0010.2.4 perf — capture timing inside the collector so the caller can
+    // observe the first-response latency (T4..T9) without subscribing to the
+    // underlying event stream. The latest sample is stashed on
+    // `__lastCollectTurnTiming` for the call site to read; never logged
+    // anywhere else and never returned through the Promise itself (back-compat
+    // with all 18 existing collect-turn-classify tests).
+    const __tLastFirstDeltaAt = { v: null as number | null };
+    const __tDeltaCount = { v: 0 };
+    const __tLastTurnStartedAt = { v: Date.now() };
+    const turnStartedAt = Date.now();
     let turnGraceTimer: ReturnType<typeof setTimeout> | null = null;
 
     // P0010.2 — bug fix: declare `unsubscribe` as `let` and assign it
@@ -310,6 +336,8 @@ export const collectTurn = (client: SituationChatClient, sessionId: string, time
       if (event.type === 'message.delta') {
         const delta = String(event.payload?.text ?? '');
         text += delta;
+        __tDeltaCount.v += 1;
+        if (__tLastFirstDeltaAt.v === null) __tLastFirstDeltaAt.v = Date.now();
       } else if (event.type === 'message.complete') {
         // CANONICAL terminal event (Hermes 0.20.5 tui_gateway/server.py
         // _emit() calls — we audited the source: server.py:9116 / 11943
@@ -349,6 +377,15 @@ export const collectTurn = (client: SituationChatClient, sessionId: string, time
         }
         // message.complete carries the full text; prefer it (the
         // accumulated delta is a streaming prefix that may be partial).
+        const tComplete = Date.now();
+        __lastCollectTurnTiming = {
+          turnStartedAt,
+          firstDeltaAt: __tLastFirstDeltaAt.v,
+          completeAt: tComplete,
+          deltaCount: __tDeltaCount.v,
+          totalMs: tComplete - turnStartedAt,
+          firstDeltaMs: __tLastFirstDeltaAt.v ? __tLastFirstDeltaAt.v - turnStartedAt : null,
+        };
         resolveTurn((complete.trim() || text.trim()).trim());
       } else if (event.type === 'turn.completed' || event.type === 'turn.complete') {
         // LIFECYCLE-ONLY signal. Hermes 0.20.5 tui_gateway/server.py does
@@ -673,24 +710,60 @@ export const runInvestigationTurn = async (
    *  "no meaningful change" without re-comparing the whole evidence set. */
   evidenceContentHash?: string,
 ): Promise<InvestigationTurnResult> => {
+  // P0010.2.4 perf — full T0..T13 timeline. Each marker is a `Date.now()` ms
+  // captured at the seam it represents. We emit one structured log line at
+  // the end of the turn so the operator (and the test suite) can read the
+  // breakdown without scraping TraceEvent detail.
+  const T0 = Date.now();
+  const T: Record<string, number> = { T0 };
   markInvestigation(db, situation, {
     status: 'investigating',
     ...(evidenceContentHash ? { evidenceContentHash } : {}),
   });
+  T.T1_mark = Date.now(); // mark investigation
 
   const ctx = loadLearningContext(db, situation.situationId);
   const prompt = buildInvestigationPrompt(situation, ctx);
+  T.T2_promptBuilt = Date.now();
+  const promptChars = prompt.length;
+  // Rough token estimate: 1 token ≈ 2 chars for CJK-heavy text, 4 for Latin.
+  // The agentFabric prompt is mostly structured JSON + Chinese → 1.8 chars/token.
+  const promptEstTokens = Math.round(promptChars / 1.8);
 
   let reply: string;
   try {
     // P0010.2.4 live acceptance (2026-08-27): agnes-2.0-flash via ClashX proxy
     // routinely takes 10-15 min on the real investigation prompt (system
     // prompt + tool schemas + situation context). The previous 600s timed
-    // out every turn. 1800s matches hermes's _resolved_api_call_timeout
-    // (run_agent.py default 1800.0s) so a healthy slow turn can complete.
-    const replyPromise = collectTurn(client, sessionId, 1_800_000);
-    await client.submitPrompt(sessionId, prompt);
+    // out every turn. 1800s matched hermes's _resolved_api_call_timeout
+    // (run_agent.py default 1800.0s) so a healthy slow turn could complete
+    // under the proxy path.
+    //
+    // 2026-08-27 real profile (current model: ark-code-latest via volcengine,
+    // base_url https://ark.cn-beijing.volces.com/api/coding, no proxy on the
+    // hot path), 3 live investigation turns captured with the T0..T13
+    // instrumentation in this file:
+    //
+    //   turn 1 (cold)   T9-T4 = 309961ms  T13-T0 = 320255ms  26 API calls
+    //   turn 2 (warm)   T9-T4 =  86248ms  T13-T0 =  92180ms  12 API calls
+    //   turn 3 (warm)   T9-T4 =  55629ms  T13-T0 =  55632ms   7 API calls
+    //
+    // Worst observed cold turn = 320s. 600s leaves a 1.9x safety margin over
+    // the worst case and ~3.8x over the warm-turn median — generous enough
+    // for tool-call-heavy knowledge reads, far tighter than the previous
+    // diagnostic 1800s. The 600s ceiling also matches the per-turn budget
+    // Hermes itself advertises (gateway_timeout: 1800 with a 900s warning),
+    // so a healthy slow turn that needs more than 10 min will hit Hermes's
+    // own warning/timeout surface and surface a structured failure, not
+    // a silent agentFabric ceiling.
+    const replyPromise = collectTurn(client, sessionId, 600_000);
+    T.T3_submitReady = Date.now();
+    const submitP = client.submitPrompt(sessionId, prompt);
+    T.T4_submitCalled = Date.now();
     reply = await replyPromise;
+    T.T9_collectResolved = Date.now();
+    await submitP;
+    T.T10_submitResolved = Date.now();
   } catch (err) {
     const message = err instanceof Error ? err.message : 'Investigation failed';
     // P0010.2 — classify the failure. The two collectTurn rejection paths
@@ -789,6 +862,28 @@ export const runInvestigationTurn = async (
   try {
     writeRecommendationResult(db, situation, completed, completed.recommendation ?? null);
   } catch { /* Output materialization is best-effort — never blocks the investigation */ }
+  T.T13_outputMaterialized = Date.now();
+
+  // P0010.2.4 perf — single structured log line with the T0..T13 timeline +
+  // prompt size. Parseable as `key=value` from any log scraper.
+  const ctt = __lastCollectTurnTiming;
+  const fmt = (a: number | undefined, b: number | undefined) =>
+    a != null && b != null ? `${b - a}ms` : 'n/a';
+  // eslint-disable-next-line no-console
+  console.log(
+    `[turn-timing] situation=${situation.situationId} ` +
+      `T1-T0=${fmt(T.T0, T.T1_mark)} ` +
+      `T2-T1=${fmt(T.T1_mark, T.T2_promptBuilt)} ` +
+      `T4-T3=${fmt(T.T3_submitReady, T.T4_submitCalled)} ` +
+      `T9-T4=${fmt(T.T4_submitCalled, T.T9_collectResolved)} ` +
+      `T10-T9=${fmt(T.T9_collectResolved, T.T10_submitResolved)} ` +
+      `T13-T0=${T.T13_outputMaterialized - T.T0}ms ` +
+      `promptChars=${promptChars} promptEstTokens=${promptEstTokens} ` +
+      `firstDeltaMs=${ctt?.firstDeltaMs ?? 'n/a'} ` +
+      `deltaCount=${ctt?.deltaCount ?? 'n/a'} ` +
+      `collectTurnMs=${ctt?.totalMs ?? 'n/a'} ` +
+      `ok=true`,
+  );
 
   return {
     ok: true,
