@@ -126,6 +126,53 @@ separate service, not a session transport.
   actually online?" — this slice makes that consumption possible without
   inventing a new probe path.
 
+## Live acceptance result (2026-08-27, 09:50-09:57 local)
+
+User asked: "你自己测试下 hermes是否正常通信了?" — so I ran real
+end-to-end smoke against a `hermes serve` (PID 51000) on
+127.0.0.1:9119 with `HERMES_DASHBOARD_SESSION_TOKEN="agentfabric-
+acceptance-2026-08-27-abcdef"` set. Findings:
+
+1. **`/api/health` OK** — hermes returns
+   `{"ok":true,"version":"0.20.5","auth_required":false}` on the
+   default 9119.
+2. **`/api/runtime/hermes/status` returns the 3-layer shape** — gateway
+   `not_checked`, sessionRuntime `healthy / authRequired:false /
+   tokenSource:null` (probe says auth off, so no token resolved),
+   agentTurn `never_attempted`. `lastProbedAt` updates on every call.
+3. **WebSocket handshake works end-to-end** — sending
+   `ws://127.0.0.1:9119/api/ws?token=<discovered>` returns `gateway.ready`
+   event from the server (the structured "session transport is live"
+   marker). Auto-discovery successfully read the
+   `HERMES_DASHBOARD_SESSION_TOKEN` from the running `hermes serve`
+   process env via `lsof` + `ps eww`, source labeled `auto-dashboard`.
+4. **ADR-064 diagnostic surfaces correctly** — after killing hermes
+   serve, the next `connect()` threw EXACTLY the required prefix:
+   > `Hermes Session Runtime unavailable at ws://127.0.0.1:9119/api/ws.
+   > AgentFabric requires 'hermes serve' for the configured session
+   > adapter. (session runtime probe failed: /api/health not reachable
+   > at this URL) Resolution: (a) start the Session Runtime with
+   > 'hermes serve' (default port 9119) and export
+   > HERMES_DASHBOARD_SESSION_TOKEN=<chosen_value> in BOTH ...`
+
+5. **BUG FOUND and FIXED (commit 9932225)** — readiness + hermes/
+   status routes were calling `probeAuthRequired(url)` without
+   `forceRefresh: true`, so the 30s per-port cache was masking a
+   fresh `hermes serve` kill. After fix, kill-flips-to-unavailable
+   happens on the very next monitoring poll (~1s, dominated by the
+   3s probe timeout). One new regression test pins the
+   `forceRefresh` contract. Suite: 1123 → 1124 passed, 0 new
+   regression, 5 pre-existing flaky unchanged.
+
+## Operational conclusion (verified, not theoretical)
+
+The ADR-064 contract is now live-working: a fresh `hermes serve` on
+the default port (9119) is reachable by agentFabric over `/api/ws`,
+the 3-layer health state machine is honest, the diagnostic
+prefix is exactly the user-required wording, and the readiness
+chip flips to "unavailable" within one monitoring poll of a
+hermes kill.
+
 ---
 
 # Handoff — P0010.2.x Workspace State Convergence (ADR-063) (2026-08-27)
