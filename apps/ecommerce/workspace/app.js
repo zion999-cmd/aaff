@@ -190,6 +190,12 @@ const DETAIL_POLL_MS = 4000;
 function showToast(msg) { toastNode.textContent = msg; toastNode.classList.add('show'); setTimeout(() => toastNode.classList.remove('show'), 1500); }
 async function apiGet(path) { const r = await fetch(path); if (!r.ok) throw new Error(`${r.status}`); const j = await r.json(); return j.data || j; }
 async function apiPost(path, body) { const r = await fetch(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }); if (!r.ok) throw new Error(`${r.status}`); const j = await r.json(); return j.data || j; }
+// P0010.2.6: apiPatch for the WorkItem status-transition route
+// (PATCH /api/situations/:id/outputs/:oid). The old apiPost always
+// sends POST, which the route explicitly does NOT accept (Express
+// returns 404 for an unregistered method), so operator ack/close
+// clicks silently failed in the browser.
+async function apiPatch(path, body) { const r = await fetch(path, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }); if (!r.ok) throw new Error(`${r.status}`); const j = await r.json(); return j.data || j; }
 function clearNode(n) { while (n.firstChild) n.removeChild(n.firstChild); }
 
 /**
@@ -523,6 +529,25 @@ function renderCollectionOutputItem(o) {
       viewOutputBtn +
     '</div>' +
   '</div>';
+}
+
+/** Tab click dispatcher for #situationFeedTabs (init once). */
+let situationFeedTabsInit = false;
+function initSituationFeedTabs() {
+  if (situationFeedTabsInit) return;
+  situationFeedTabsInit = true;
+  const tabs = document.getElementById('situationFeedTabs');
+  if (!tabs) return;
+  tabs.addEventListener('click', function (ev) {
+    var btn = ev.target.closest && ev.target.closest('.feed-tab');
+    if (!btn) return;
+    ev.preventDefault();
+    var filter = btn.getAttribute('data-filter') || 'all';
+    // loadSituationFeed re-applies the .active class to the matching
+    // tab (line 1163), so we do NOT toggle the class here — we just
+    // re-fetch + re-render the feed with the new filter.
+    loadSituationFeed(filter);
+  });
 }
 
 /** Tab click dispatcher (init once). */
@@ -2163,7 +2188,10 @@ function initOutputsDispatcher() {
     var targetStatus = action === 'ack' ? 'acknowledged' : 'closed';
     btn.disabled = true;
     try {
-      await apiPost('/api/situations/' + encodeURIComponent(sitIdResolved) + '/outputs/' + encodeURIComponent(outputId),
+      // P0010.2.6: the route is `router.patch` in
+      // platform/server/routes/outputs.ts:145; apiPost (method:POST)
+      // would 404. Use apiPatch.
+      await apiPatch('/api/situations/' + encodeURIComponent(sitIdResolved) + '/outputs/' + encodeURIComponent(outputId),
         { status: targetStatus });
       // Re-render in place. For Output Detail we re-load the detail view;
       // for Situation Detail we re-render the Output Surface host.
@@ -3844,6 +3872,12 @@ document.getElementById('replayRunBtn')?.addEventListener('click', async () => {
   // REPAIR-3: workspace 工作输出 collection page — tab + row click dispatchers.
   initOutputsTabs();
   initOutputsCollectionDispatcher();
+  // P0010.2.6: Situation Feed tab click dispatcher. The 6 filter chips
+  // (全部 / 待调查 / 调查中 / 观察中 / 需人工 / 已判断) inside
+  // #situationFeedTabs were previously non-clickable — operators had to
+  // use the sidebar items instead, which is confusing because the
+  // sidebar has chips that look identical.
+  initSituationFeedTabs();
 
   applyI18n();
   switchView('situations', 'all');

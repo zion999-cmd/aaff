@@ -77,10 +77,14 @@ describe('situations.lifecycle allowlist trigger (P0010.2.5 closure)', () => {
   });
 
   test('canonical allowed values match ContextLifecycleSchema options', () => {
-    // The "two lifecycles in lockstep" invariant: situations.lifecycle and
-    // learning_contexts.lifecycle MUST share the same canonical set, so
-    // a Zod-validated reading_context never sees a value that the DB
-    // column refuses (or vice versa).
+    // Vocabulary-compatibility invariant: situations.lifecycle and
+    // learning_contexts.lifecycle currently share the same canonical
+    // set, so a Zod-validated reading_context never sees a value that
+    // the DB column refuses (or vice versa). This pins the VOCABULARY
+    // compatibility — it does NOT claim that the two columns must
+    // transition in lockstep. State synchronization between the two
+    // is out of scope (P0010.3 will decide the long-term role of
+    // situations.lifecycle).
     expect([...SITUATION_LIFECYCLE_ALLOWED_VALUES].sort()).toEqual(
       [...ContextLifecycleSchema.options].sort(),
     );

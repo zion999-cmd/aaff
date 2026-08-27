@@ -35,11 +35,21 @@ const HUMAN_INTERVENTION_TYPE_GUARD_TRIGGER =
 //   above: a BEFORE INSERT/UPDATE trigger that raises ABORT on
 //   non-canonical values, fail-closed at the write boundary.
 //
-//   The canonical set is shared with `learning_contexts.lifecycle` and
-//   `ContextLifecycleSchema` (shared/schemas/learning-context.ts). Keeping
-//   both columns on the same vocabulary is the long-term invariant — the
-//   two lifecycles describe the same situation from two layers (DB row
-//   vs. document body), and they MUST stay in lockstep.
+//   Vocabulary compatibility is the CURRENT invariant: `situations.lifecycle`
+//   shares the canonical set `{open, partial, mature}` with
+//   `learning_contexts.lifecycle` (validated by `ContextLifecycleSchema` in
+//   shared/schemas/learning-context.ts).
+//
+//   What is NOT an invariant: state-transition synchronization between the
+//   two columns. The two lifecycles are written by DIFFERENT paths on
+//   different schedules (situation producer writes 'open' on insert; p0007
+//   route writes 'partial' on first human intervention; the
+//   learning_contexts.lifecycle is set by the document body writer). We
+//   DO NOT claim they must move in lockstep. DO NOT add a sync service,
+//   reconciliation worker, or DB trigger that mutates one from the other.
+//   P0010.3 will decide the long-term role of `situations.lifecycle`
+//   (Terminal Lifecycle / Resolution Engine). Until then, the two columns
+//   share a vocabulary but not a state machine.
 //
 //   This trigger does NOT introduce a new business state machine. It
 //   enforces the existing canonical vocabulary at the write boundary,

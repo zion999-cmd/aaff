@@ -199,40 +199,14 @@ export const formatPriorHumanGuidance = (ctx: LearningContext | null): string =>
 /**
  * Build the investigation instruction for one situation.
  *
- * P0010.2.5 closure — Behavior policy, NOT Runtime enforcement.
- * This prompt is a **prompt-level behavior policy**, not a Hermes security
- * sandbox. Hermes 0.20.5 (the underlying Runtime) does NOT enforce any of
- * the tool-namespace allow/deny lists, the per-turn call caps, or the
- * status-vocabulary constraint expressed here. Hermes exposes the full
- * `search_files` / `read_file` surface over the Workspace directory and
- * `tool_search` / `tool_describe` are unlimited.
+ * P0010.2.6 — consolidated the prompt-level-vs-Runtime trust boundary
+ * into a single `## Runtime Trust Boundary` section. The 3 ADVISORY
+ * sub-blocks (tool discovery / source code / side-effect tools) used
+ * to each carry a "Hermes does not enforce" note. Now they just state
+ * the rule; the trust boundary is explained once, up top.
  *
- * What this means concretely:
- *   - "ALLOWED" / "FORBIDDEN" sections below are **advisory contracts the
- *     Foundation Model is expected to honor** when generating its output.
- *     A sufficiently creative or confused model can still violate them
- *     (read a forbidden path, retry a failed call 5 times, return a
- *     non-canonical status string). The platform's job is to:
- *       (a) prompt the model to do the right thing, and
- *       (b) validate the model's *output* (canonical Investigation
- *           Contract, normalized status vocabulary, materialized
- *           WorkItem) — NOT to police the model's tool calls.
- *   - "HARD CONSTRAINT" status vocabulary, the "at most once" tool caps,
- *     and the "turn-failure" framing are all **prompt-level**, not
- *     Runtime-enforced. We document this here so the system is honest
- *     about its trust boundary. If/when Hermes grows a real tool-call
- *     sandbox, this section will become Runtime-enforced and the wording
- *     can be tightened.
- *
- * Per-turn rules (advisory):
- *  - the Agent reads professional Knowledge from knowledge/INDEX.md + pages;
- *    no SOP is copied into this prompt;
- *  - Next Question is chosen by the Agent from Situation + Knowledge + Evidence;
- *  - if existing evidence cannot answer it, the Agent checks Fabric capabilities
- *    (fabric_list_capabilities) and acquires evidence via fabric_execute_capability;
- *  - if no capability exists for the needed evidence, it MUST stop with
- *    stop_reason = "missing_capability" (never guess, never invent capability);
- *  - the final answer is a JSON Investigation Contract.
+ * Knowledge / Evidence / Fabric separation and zh-CN business output
+ * contract are unchanged from P0010.2.5.
  */
 export const buildInvestigationPrompt = (
   situation: Situation,
@@ -242,16 +216,14 @@ export const buildInvestigationPrompt = (
   return [
     `You are investigating ONE business situation in a Fabric Agent Workspace.`,
     ``,
-    `> [P0010.2.5 closure] This document is a **prompt-level behavior policy**,`,
-    `> NOT a Hermes Runtime security sandbox. The tool-allow / tool-forbid`,
-    `> lists, "at most once" call caps, and the canonical status-vocabulary`,
-    `> below are advisory contracts the Foundation Model is expected to honor.`,
-    `> Hermes 0.20.5 does not enforce any of them at the Runtime layer. The`,
-    `> platform validates the OUTPUT (canonical Investigation Contract +`,
-    `> normalized status vocabulary + materialized WorkItem) and trusts the`,
-    `> model to follow the prompt. If you find yourself unable to follow a`,
-    `> section, the right move is to return a canonical stopReason explaining`,
-    `> why (e.g. "missing_capability") — not to violate it.`,
+    // ===== P0010.2.6 — Runtime Trust Boundary (single source of truth) =====
+    `## Runtime Trust Boundary`,
+    ``,
+    `Read this ONCE. It applies to every section below.`,
+    ``,
+    `- **Tool / path restrictions are behavior policies, not a sandbox.** Hermes 0.20.5 does not enforce a path allowlist, a per-session tool-call quota, or a tool-deny list. The \`search_files\` / \`read_file\` surface covers the full Workspace; \`tool_search\` / \`tool_describe\` are unlimited; \`terminal\` / \`execute_code\` are present and work.`,
+    `- **The platform validates your OUTPUT, not your tool calls.** The Investigation Contract must be canonical (see Status vocabulary). Canonical status values are normalized by the platform; the WorkItem is materialized ONLY when Zod + normalization pass. If a rule below is impossible to follow, return \`stopReason=missing_capability\` and explain — do not silently violate it.`,
+    `- **What this means for the rules below:** the \`ALLOWED\` / \`ADVISORY\` labels describe what the platform EXPECTS you to do. The model is trusted; the platform is the trust boundary.`,
     ``,
     // ===== P0010.2.5 — Three concepts MUST NOT be conflated =====
     `## Three Concepts — DO NOT CONFLATE`,
@@ -286,17 +258,14 @@ export const buildInvestigationPrompt = (
     ``,
     `### ADVISORY — Tool discovery (recommended once per session)`,
     `Call \`tool_search\` / \`tool_describe\` at most once at the start of the session to discover the \`mcp__fabric__fabric_*\` tools. After that, the tool universe is fixed.`,
-    `**Note (P0010.2.5 closure)**: this is a recommendation, NOT a Runtime quota. Hermes does not enforce a per-session call cap on tool_search; if you call it again, the call will succeed. The recommendation exists to keep tool-budget noise out of the trace log.`,
     ``,
-    `### ADVISORY — Source code exploration (behavior policy, not enforced)`,
+    `### ADVISORY — Source code exploration`,
     `Do NOT read or search any of: \`platform/\`, \`apps/\`, \`shared/\`, \`tests/\`, \`README\`, \`AGENTS.md\`, \`package.json\`, or any file under the agentFabric repository source tree.`,
     `The investigation is about a business situation, not about the agentFabric code base.`,
-    `**Note (P0010.2.5 closure)**: this is a prompt-level policy, not a Hermes sandbox. Hermes exposes the entire Workspace via \`search_files\` / \`read_file\` without a path allowlist; the only enforcement is in the model. If you stray into these paths anyway, the output will still be validated, but the investigation will be off-topic and the WorkItem will be rejected as low-quality.`,
     ``,
-    `### ADVISORY — Side-effect tools (behavior policy, not enforced)`,
+    `### ADVISORY — Side-effect tools`,
     `Do NOT use: \`terminal\`, \`execute_code\`, \`run_command\`, \`sleep\`, \`wait\`, \`setTimeout\`. Investigation is read/think/acquire, not execute.`,
     `Do NOT write any file. Workspace presentation is computed by the platform, not by the Agent.`,
-    `**Note (P0010.2.5 closure)**: Hermes does not deny these tools at the Runtime layer. The advisory exists because the Investigation layer has no Action Engine — using a side-effect tool cannot produce a valid WorkItem and is wasted tool budget.`,
     ``,
     // ===== Investigation Workflow — concept-driven =====
     `## Investigation Workflow`,
@@ -310,7 +279,7 @@ export const buildInvestigationPrompt = (
     `7. **Stop with a canonical stopReason** — one of: \`judgment\` (evidence suffices), \`observe\` (within normal variation), \`missing_capability\` (Fabric has no capability for the needed fact), \`ask_human\` (fact is not machine-observable).`,
     `8. **Emit the canonical Investigation Contract** (JSON shape below). All business prose in Simplified Chinese.`,
     ``,
-    `   ### Status vocabulary — canonical contract (prompt policy + output-side normalization)`,
+    `   ### Status vocabulary — canonical contract (prompt contract + platform normalization)`,
     `   `,
     `   hypotheses[].status MUST be EXACTLY one of these four strings, with no synonyms, no variants, no leading/trailing whitespace, and no extra punctuation:`,
     `     - "proposed"   — hypothesis stated, not yet tested`,
@@ -320,9 +289,7 @@ export const buildInvestigationPrompt = (
     `   `,
     `   The same rule applies to stopReason — one of EXACTLY: "judgment", "observe", "missing_capability", "ask_human".`,
     `   `,
-    `   **P0010.2.5 closure — what is and isn't enforced**: the canonical-vocabulary rule is a prompt-level contract AND is enforced on the OUTPUT side by a normalization layer in \`apps/ecommerce/runtime/investigation/normalize.ts\` (the safety-net allow-list of "confirmed" → "supported", "strongly_supported" → "supported", "partially_rejected" → "weakened"). Use the canonical four yourself; the normalization is a safety net, not a license to drift. The model is trusted to follow the contract; the platform validates the result.`,
-    `   `,
-    `   This is fundamentally different from the tool-allow / tool-forbid rules above: those are advisory-only (no Runtime sandbox), while the status vocabulary is prompt-policy PLUS output-side normalization. Both layers cooperate to keep the Investigation Contract canonical.`,
+    `   The platform normalizes a TINY allow-list of known drift ("confirmed" → "supported", "strongly_supported" → "supported", "partially_rejected" → "weakened") at the output boundary (see Runtime Trust Boundary above). Use the canonical four yourself; the normalization is a safety net, not a license to drift.`,
     ``,
     `## Situation`,
     `- id: ${situation.situationId}`,
