@@ -39,13 +39,19 @@ describe('Binding Layer Contract', () => {
   });
 
   test('indicator mapping consistency: overrides + generated dict produce correct canonical names', () => {
-    // Golden keys must map to their override values
+    // P0010.2.9: shop-level (primary for trade.overview) and
+    // product/industry level (preserved for other capabilities).
     const goldenKeys: Record<string, string> = {
+      // Core deal metrics
       'jdr_sch_trade_deal_ord_ord_amt_sz_trade_deal_snapshot': 'gmv',
       'jdr_sch_trade_deal_ord_ord_qtty_sz_trade_deal_snapshot': 'orders',
-      'jdr_sch_traffic_brow_sku__page_cnt_traffic_plat_item_di_sz_bsg': 'visitors',
       'jdr_sch_user_deal_ord_user_cnt_sz_user_deal_snapshot': 'customers',
-      'fo_jdr_sch_industry_deal_rate': 'conversion_rate',
+      // Shop-level
+      'jdr_sch_traffic_enter_shop__browse_page_cnt_shop_last_src': 'shop_visitors',
+      'fo_jdr_sch_shop_deal_rate': 'shop_conversion_rate',
+      // Product / industry level
+      'jdr_sch_traffic_brow_sku__page_cnt_traffic_plat_item_di_sz_bsg': 'product_visitors',
+      'fo_jdr_sch_industry_deal_rate': 'industry_conversion_rate',
     };
 
     for (const [jdKey, expected] of Object.entries(goldenKeys)) {

@@ -44,6 +44,7 @@
 //                       Situation.
 
 import { z } from 'zod';
+import { RecommendationKindSchema, RECOMMENDATION_KIND_LABEL } from './investigation.js';
 
 /** What kind of deliverable is this. */
 export const WorkItemTypeSchema = z.enum([
@@ -90,6 +91,14 @@ export const WorkItemSchema = z.object({
   resultRef: WorkItemResultRefSchema.optional(),
   /** Operator-facing prose summary of the deliverable. */
   content: z.string().min(1),
+  /**
+   * P0010.2.x — Recommendation kind (observe | act). Drives the
+   * Workspace chip split (grey "保持观察" vs yellow/red "待交付").
+   * Optional for backward compatibility with pre-C WorkItems; the
+   * API layer defaults to 'act' for missing values (the historical
+   * behavior — every WorkItem was treated as a to-do).
+   */
+  kind: RecommendationKindSchema.optional(),
   createdAt: z.string().min(1),
   acknowledgedAt: z.string().optional(),
   closedAt: z.string().optional(),
@@ -111,4 +120,19 @@ export const WORK_ITEM_TYPE_LABEL: Readonly<Record<WorkItemType, string>> = Obje
   analysis: '分析',
   work_item: '工作项',
   report: '报告',
+});
+
+/** P0010.2.x — Kind label for the Operator surface (Chinese). */
+export const WORK_ITEM_KIND_LABEL: Readonly<Record<'observe' | 'act', string>> = Object.freeze({
+  observe: RECOMMENDATION_KIND_LABEL.observe,
+  act: RECOMMENDATION_KIND_LABEL.act,
+});
+
+/** P0010.2.x — CSS class for the kind chip. Workspace renders two
+ *  chip styles: `output-kind-observe` (grey status pill) and
+ *  `output-kind-act` (yellow/red to-do). The class is the single
+ *  source of truth for both the JSX and the stylesheet. */
+export const WORK_ITEM_KIND_CSS_CLASS: Readonly<Record<'observe' | 'act', string>> = Object.freeze({
+  observe: 'output-kind-observe',
+  act: 'output-kind-act',
 });

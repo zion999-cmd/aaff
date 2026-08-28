@@ -89,10 +89,16 @@ const completedInvestigation = (overrides: Partial<{
   rationale: string;
   judgment: string;
   updatedAt: string;
+  kind: 'observe' | 'act';
 }> = {}) => ({
   judgment: overrides.judgment ?? 'GMV dropped 30% week-over-week — likely traffic-side.',
   updatedAt: overrides.updatedAt ?? '2026-08-25T01:00:00.000Z',
   recommendation: {
+    // P0010.2.x — every test fixture must declare `kind` (the new
+    // required field on RecommendationSchema). Default to 'act' so
+    // existing assertion shape is preserved; tests that care about
+    // 'observe' pass it explicitly via overrides.
+    kind: overrides.kind ?? 'act',
     recommendation: overrides.recommendation ?? '先排查昨日流量来源变化，再决定是否调价。',
     rationale: overrides.rationale ?? 'Linked judgment',
     expectedOutcome: '稳定 GMV',
@@ -180,6 +186,12 @@ describe('writeRecommendationResult — unified seam', () => {
     // Operator pushes a follow-up question; Agent produces a new
     // recommendation. /recommend writes the new content.
     const newRec = {
+      // P0010.2.x — explicit `kind: 'act'` (the new required field on
+      // RecommendationSchema). The test wants a "different"
+      // recommendation to verify dedup distinguishes content; `kind`
+      // stays 'act' for both — what changes is the recommendation
+      // prose and rationale.
+      kind: 'act' as const,
       recommendation: '调整主推位 + 同步提高广告出价',
       rationale: 'traffic + position',
       expectedOutcome: '稳定 GMV',

@@ -13,6 +13,7 @@ import type { Recommendation } from '#shared/schemas/investigation.js';
 import type { LearningContext, Situation } from '#shared/schemas/learning-context.js';
 import { nowIso } from '#shared/utils/time.js';
 import { fingerprint } from '#shared/utils/crypto.js';
+import { normalizeForFingerprint } from '#shared/utils/text.js';
 import type { WorkItem } from '#shared/schemas/output.js';
 import {
   readLearningContextBody,
@@ -30,11 +31,14 @@ export type MaterializeResult =
 
 /**
  * Minimal shape of an Investigation the materializer reads. The function
- * only inspects (recommendation, judgment, updatedAt) — it does NOT need
- * the full Knowledge-Guided Investigation contract (hypotheses, findings,
- * etc.) because the dedup fingerprint is over the recommendation content
- * only. This keeps the test surface small and the call site honest: the
- * single caller in `routes/situation-chat.ts` passes the full
+ * only inspects (recommendation, judgment) — it does NOT need the full
+ * Knowledge-Guided Investigation contract (hypotheses, findings,
+ * updatedAt, etc.) because the dedup fingerprint is over the normalized
+ * recommendation content + judgment. `updatedAt` is intentionally
+ * excluded from the fingerprint (it is re-run metadata, not content —
+ * see the materializeWorkItem docstring for the full reasoning). This
+ * keeps the test surface small and the call site honest: the single
+ * caller in `routes/situation-chat.ts` passes the full
  * `LearningContext['investigation']` (it satisfies this Pick<>), and tests
  * can pass a minimal object.
  */
@@ -47,9 +51,30 @@ export interface InvestigationLike {
 /**
  * Persist a `recommendation` WorkItem for a situation's completed
  * investigation, idempotently. The fingerprint is over the
- * (situationId, recommendation, rationale, judgment, updatedAt) tuple, so:
- *   - same content → same outputId → no duplicate
+ * (situationId, recommendation-normalized, rationale-normalized,
+ * judgment) tuple, so:
+ *   - same essential content → same outputId → no duplicate
  *   - new judgment  → different outputId → new output
+ *
+ * P0010.2.x — Why `updatedAt` is NOT in the fingerprint:
+ *   `updatedAt` is metadata (when the investigation ran), not content
+ *   (what the recommendation is). A re-investigation on the same
+ *   Situation with a different `updatedAt` (the typical pattern:
+ *   re-tick every 60s) was producing a new `outputId` on every tick,
+ *   accumulating 90+ near-identical WorkItems in the audit. Dropping
+ *   `updatedAt` from the fingerprint means "the same judgment + the
+ *   same advice" stays the same WorkItem regardless of when the
+ *   turn ran.
+ *
+ * P0010.2.x — Why text is NORMALIZED before fingerprinting:
+ *   The LLM produces surface variations across re-runs of the same
+ *   judgment — round counters ("第 7 轮" → "第 8 轮"), embedded
+ *   timestamps ("18:56:48"), date stamps ("2026-08-27"), and
+ *   durations ("3 天" → "5 天"). These are NOT part of the
+ *   recommendation substance; they are re-run metadata. The stored
+ *   WorkItem content keeps the FULL text (so the Operator sees the
+ *   round count if they look), but the fingerprint sees the
+ *   normalized form so two re-runs collapse to one WorkItem.
  *
  * Returns a structured result. The Loop uses the `created` flag to
  * decide whether to emit the `output_created` event.
@@ -65,10 +90,9 @@ export const materializeWorkItem = (
 
   const sig = fingerprint({
     situationId,
-    recommendation: recommendation.recommendation,
-    rationale: recommendation.rationale,
+    recommendation: normalizeForFingerprint(recommendation.recommendation),
+    rationale: normalizeForFingerprint(recommendation.rationale),
     judgment: investigation.judgment ?? '',
-    updatedAt: investigation.updatedAt ?? '',
   });
   const outputId = `out_${sig.slice(0, 16)}`;
 
@@ -87,6 +111,15 @@ export const materializeWorkItem = (
     status: 'ready',
     content: recommendation.recommendation,
     resultRef: { kind: 'learning_context', ref: situationId },
+    // P0010.2.x — capture the recommendation kind at materialization
+    // time. The Zod default on RecommendationSchema is 'act' (so a
+    // non-C Agent that never set `kind` still materializes as a
+    // yellow-chip to-do, matching the historical behavior). The
+    // boundary normalizer in `runtime/investigation/normalize.ts`
+    // may have rewritten `kind` to a derived value before it
+    // reached this materializer; we just read the post-rewrite
+    // canonical value.
+    ...(recommendation.kind ? { kind: recommendation.kind } : {}),
     createdAt: nowIso(),
   };
 
@@ -179,19 +212,17 @@ export const writeRecommendationResult = (
 
   // Step 2 — materialize the WorkItem. Idempotent on fingerprint.
   //
-  // CRITICAL: the fingerprint MUST use the *original* investigation
-  // `updatedAt` (the one that came in with `investigation`), NOT the
-  // `nextInvestigation.updatedAt` we just stamped. Otherwise every
-  // re-run of the seam would generate a fresh `outputId` and produce
-  // duplicate WorkItems — exactly the audit dead-leg #3 we are
-  // trying to fix. The seam re-stamps `updatedAt` only for the
-  // persisted record; the fingerprint sees the unchanged `updatedAt`
-  // (or no `updatedAt`) so the dedup check works.
-  const fingerprintInvestigation = {
+  // P0010.2.x — `updatedAt` is no longer part of the fingerprint (it was
+  // metadata, not content — see `materializeWorkItem`'s docstring), so we
+  // no longer need the prior "preserve the original updatedAt" dance to
+  // avoid a fresh outputId per re-run. The investigation we pass here
+  // carries the post-stamp `updatedAt`, but `materializeWorkItem` does
+  // not include `updatedAt` in the fingerprint, so re-runs with the
+  // same judgment + same advice still dedup correctly.
+  const materialize = materializeWorkItem(db, situation.situationId, {
     ...investigation,
     recommendation,
-  };
-  const materialize = materializeWorkItem(db, situation.situationId, fingerprintInvestigation);
+  });
 
   return { investigationPersisted, materialize };
 };

@@ -340,6 +340,63 @@ describe('WorkItem schema — minimal Output/WorkItem contract', () => {
     expect(WorkItemTypeSchema.options).toEqual(['recommendation', 'analysis', 'work_item', 'report']);
   });
 
+  // P0010.2.x — kind is an OPTIONAL additive field. Pre-C WorkItems
+  // (already persisted in the dev DB) do not have a `kind` field —
+  // they must continue to parse successfully so a C server can read
+  // a pre-C learning_context without crashing.
+  test('P0010.2.x: WorkItem without `kind` still parses (pre-C backward compat)', () => {
+    const ok = WorkItemSchema.safeParse({
+      outputId: 'out_legacy',
+      situationId: 'sit_legacy',
+      type: 'recommendation',
+      status: 'ready',
+      content: 'Legacy WorkItem (no kind)',
+      createdAt: '2026-08-22T08:00:00.000Z',
+    });
+    expect(ok.success).toBe(true);
+  });
+
+  test('P0010.2.x: WorkItem with `kind: "observe"` parses', () => {
+    const ok = WorkItemSchema.safeParse({
+      outputId: 'out_obs',
+      situationId: 'sit_obs',
+      type: 'recommendation',
+      status: 'ready',
+      kind: 'observe',
+      content: '持续观察',
+      createdAt: '2026-08-22T08:00:00.000Z',
+    });
+    expect(ok.success).toBe(true);
+    if (ok.success) expect(ok.data.kind).toBe('observe');
+  });
+
+  test('P0010.2.x: WorkItem with `kind: "act"` parses', () => {
+    const ok = WorkItemSchema.safeParse({
+      outputId: 'out_act',
+      situationId: 'sit_act',
+      type: 'recommendation',
+      status: 'ready',
+      kind: 'act',
+      content: '调整主推位',
+      createdAt: '2026-08-22T08:00:00.000Z',
+    });
+    expect(ok.success).toBe(true);
+    if (ok.success) expect(ok.data.kind).toBe('act');
+  });
+
+  test('P0010.2.x: WorkItem with INVALID kind fails (not in enum)', () => {
+    const bad = WorkItemSchema.safeParse({
+      outputId: 'out_x',
+      situationId: 'sit_x',
+      type: 'recommendation',
+      status: 'ready',
+      kind: 'maybe_observe', // not in {observe, act}
+      content: 'x',
+      createdAt: '2026-08-22T08:00:00.000Z',
+    });
+    expect(bad.success).toBe(false);
+  });
+
   test('LearningContextSchema body has outputs[] defaulting to []', () => {
     const ctx = LearningContextSchema.parse({
       contextId: 'ctx_x',

@@ -6,12 +6,20 @@
 //   Policy:  what to do with each newly observed situation
 //   (RuntimeKernel: how to get data — unchanged, reused as-is)
 //
-// "Meaningful new evidence" is intentionally narrow: the most recent evidence
-// content_hash for the situation's window is strictly different from the
-// content_hash that was in effect at the most recent completed investigation.
-// Re-investigations only fire when the underlying metric actually moved —
-// not just when a re-acquisition wrote a new `acquired_at` to disk. This is
-// the "no wasteful investigation" guarantee in the user's spec.
+// P0010.2.x followup — "Meaningful new evidence" is intentionally narrow:
+// the most recent evidence content_hash for the situation's window is
+// strictly different from the content_hash that was in effect at the most
+// recent completed investigation. Re-investigations only fire when the
+// underlying metric actually moved — not just when a re-acquisition wrote
+// a new `acquired_at` to disk. The Loop's `readLatestContentHash` is a
+// single global hash (most recent evidence file in the entire platform
+// store), so the only honest comparison today is "prior.evidenceContentHash
+// === ctx.latestContentHash" (skip) or "prior.evidenceContentHash !==
+// ctx.latestContentHash" (skip — global hash moving is not proof of
+// Situation-specific change without a per-Situation evidence-dependency
+// model). See decision step 5b for the `no_situation_specific_evidence_change`
+// reason. This is the "no wasteful investigation" guarantee in the user's
+// spec.
 //
 // P0010.2.2 — Recovery:
 //   The policy is the single decision point for the Loop's recovery pass.
@@ -55,7 +63,22 @@ export type PolicyDecision =
         | 'waiting_human'
         | 'already_investigated'
         | 'no_situation'
-        | 'blocked_runtime_failure';
+        | 'blocked_runtime_failure'
+        /**
+         * P0010.2.x followup — The Loop's `latestContentHash` is a single
+         * global hash of the most recent evidence file in the entire
+         * platform store. A change in that hash does NOT prove THIS
+         * Situation's underlying metric moved — a different capability's
+         * re-acquisition (e.g. the daily `trade.overview` cron at 00:00)
+         * writes a new evidence file with a new hash and that hash
+         * becomes the global "latest" even when nothing about the
+         * Situation's evidence set changed. Without a per-Situation
+         * evidence-dependency model we cannot prove Situation-specific
+         * change, so the default is skip (not investigate). See
+         * `readLatestContentHash` in runtime-loop.ts and the
+         * `no_situation_specific_evidence_change` decision below.
+         */
+        | 'no_situation_specific_evidence_change';
     };
 
 export interface PolicyContext {
@@ -108,7 +131,15 @@ export interface InvestigationPolicy {
  *   4. No prior investigation       → `new_situation` → investigate.
  *   5. Prior exists (any status) and has a contentHash sidecar:
  *      a. Prior's recorded contentHash === latestContentHash → `no_meaningful_change`.
- *      b. Prior's recorded contentHash !== latestContentHash → `meaningful_new_evidence`.
+ *      b. Prior's recorded contentHash !== latestContentHash →
+ *         `no_situation_specific_evidence_change` (P0010.2.x followup).
+ *         The global `latestContentHash` is the most recent evidence
+ *         file in the entire platform store; a change there is NOT
+ *         proof that THIS Situation's underlying metric moved (a
+ *         different capability's re-acquisition can move it). We do
+ *         not yet have a per-Situation evidence-dependency model, so
+ *         we cannot prove Situation-specific change → skip (do not
+ *         guess by re-firing on unrelated platform evidence churn).
  *   6. Prior exists with no contentHash sidecar (legacy P0010.1 / pre-P0010.2):
  *      a. Prior.status='failed' → `new_situation` (give the investigation one fresh try so the sidecar gets stamped on success/failure).
  *      b. Prior.status='completed' or 'investigating' → `no_meaningful_change` (we have no honest way to detect new evidence; defaulting to skip avoids the "infinite retry" anti-pattern on completed legacy situations).
@@ -160,9 +191,20 @@ export const createInvestigationPolicy = (db: Db): InvestigationPolicy => {
         // single source of truth for "is the underlying metric new?".
         const priorHash = readPriorContentHash(prior);
         if (priorHash !== null) {
-          decision = priorHash === ctx.latestContentHash
-            ? { kind: 'skip', reason: 'no_meaningful_change' }
-            : { kind: 'investigate', reason: 'meaningful_new_evidence' };
+          if (priorHash === ctx.latestContentHash) {
+            decision = { kind: 'skip', reason: 'no_meaningful_change' };
+          } else {
+            // P0010.2.x followup — Global `latestContentHash` moving
+            // does NOT prove this Situation's evidence set moved.
+            // Until a per-Situation evidence-dependency model is added,
+            // default to skip (do not guess by re-firing on unrelated
+            // platform evidence churn). The recovery-hint rewrite
+            // below still upgrades to investigate for `interrupted` /
+            // `failed_retryable` / `no_investigation` cases, which are
+            // operator-driven or runtime-stuck signals (not content
+            // signals) and are out of scope for this fix.
+            decision = { kind: 'skip', reason: 'no_situation_specific_evidence_change' };
+          }
         } else if (prior.status === 'failed') {
           // Legacy investigation (no sidecar) — failed. Give the
           // investigation one fresh try so the sidecar gets stamped on

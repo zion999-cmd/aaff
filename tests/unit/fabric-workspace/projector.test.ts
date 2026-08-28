@@ -21,10 +21,11 @@ const CAPABILITIES: CapabilityContractEntry[] = [
     capability: 'trade.overview',
     domain: 'trade',
     name: '交易概览',
-    description: '核心经营指标：GMV、订单、访客、转化率。',
+    description: '店铺级核心经营指标：GMV、订单、店铺访客、店铺成交转化率。',
     intent: ['今天卖了多少'],
     inputs: { date_range: true, entity_id: false, dimensions: ['time_daily'] },
-    outputs: ['gmv', 'orders', 'visitors'],
+    // P0010.2.9: shop-level is primary
+    outputs: ['gmv', 'orders', 'shop_visitors', 'shop_conversion_rate'],
     metrics: [{ canonical: 'gmv', label: '成交金额', unit: 'currency', confidence: 1, verified: true }],
     dimensions: ['time_daily'],
     provider: { platform: 'jd', acquisition: 'cdp' },

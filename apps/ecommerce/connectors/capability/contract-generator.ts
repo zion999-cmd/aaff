@@ -61,23 +61,24 @@ const DOMAIN_CONFIGS: readonly DomainConfig[] = [
     capability: 'trade.overview',
     domain: 'trade',
     name: '交易概览',
-    description: '核心经营指标：GMV、订单、访客、转化率。每日汇总 + 24小时趋势 + Top5 商品排行。',
+    description: '店铺级核心经营指标：GMV、订单、店铺访客、店铺成交转化率。每日汇总 + 24小时趋势 + Top5 商品排行。',
     intent: [
       '今天卖了多少',
       'GMV涨跌分析',
       '哪个商品卖得最好',
       '每小时销售趋势',
-      '转化率监控',
+      '店铺转化率监控',
       '经营概览',
     ],
     inputs: { date_range: true, entity_id: false, dimensions: ['time_hourly', 'time_daily', 'product_top5'] },
-    outputs: ['gmv', 'orders', 'visitors', 'customers', 'conversion_rate', 'gmv_compare_pct', 'orders_compare_pct', 'visitors_compare_pct', 'gmv_hourly'],
+    // P0010.2.9: shop-level is primary; product/industry level preserved.
+    outputs: ['gmv', 'orders', 'customers', 'shop_visitors', 'shop_conversion_rate', 'product_visitors', 'industry_conversion_rate', 'gmv_compare_pct', 'orders_compare_pct', 'shop_visitors_compare_pct', 'gmv_hourly'],
     dimensions: ['time_hourly', 'time_daily', 'product_top5', 'sku'],
     provider: { platform: 'jd', acquisition: 'cdp' },
     validation: {
       status: 'verified',
-      lastVerified: '2026-08-09',
-      verifiedMetrics: ['gmv', 'orders', 'visitors', 'customers', 'conversion_rate'],
+      lastVerified: '2026-08-28',
+      verifiedMetrics: ['gmv', 'orders', 'shop_visitors', 'shop_conversion_rate', 'product_visitors', 'industry_conversion_rate'],
     },
     constraints: { requiresPremium: false, requiresAdAccount: false, isPopup: false },
   },
@@ -118,7 +119,8 @@ const DOMAIN_CONFIGS: readonly DomainConfig[] = [
       '渠道归因分析',
     ],
     inputs: { date_range: true, entity_id: false, dimensions: ['channel', 'keyword', 'product'] },
-    outputs: ['visitors', 'uv', 'pv', 'bounce_rate', 'avg_duration', 'traffic_by_channel', 'order_amount_by_channel', 'search_keyword_visitors'],
+    // P0010.2.9: rename `visitors` → `product_visitors` to avoid polluting trade.overview
+    outputs: ['product_visitors', 'uv', 'pv', 'bounce_rate', 'avg_duration', 'traffic_by_channel', 'order_amount_by_channel', 'search_keyword_visitors'],
     dimensions: ['channel', 'keyword', 'product', 'time_daily'],
     provider: { platform: 'jd', acquisition: 'cdp' },
     validation: {
@@ -140,7 +142,8 @@ const DOMAIN_CONFIGS: readonly DomainConfig[] = [
       '哪个商品卖得好',
     ],
     inputs: { date_range: true, entity_id: false, dimensions: ['sku', 'spu', 'brand'] },
-    outputs: ['gmv', 'visitors', 'exposure', 'conversion', 'sku_count', 'inventory_turnover'],
+    // P0010.2.9: rename `visitors` → `product_visitors` to avoid polluting trade.overview
+    outputs: ['gmv', 'product_visitors', 'exposure', 'conversion', 'sku_count', 'inventory_turnover'],
     dimensions: ['sku', 'spu', 'brand', 'time_daily'],
     provider: { platform: 'jd', acquisition: 'cdp' },
     validation: {
@@ -354,12 +357,16 @@ const METRIC_METADATA: Readonly<Record<string, MetricDef[]>> = {
   'trade.overview': [
     { canonical: 'gmv', label: '成交金额', unit: 'currency', confidence: 1.0 },
     { canonical: 'orders', label: '成交订单数', unit: 'count', confidence: 1.0 },
-    { canonical: 'visitors', label: '商品访客数', unit: 'count', confidence: 1.0 },
     { canonical: 'customers', label: '成交客户数', unit: 'count', confidence: 1.0 },
-    { canonical: 'conversion_rate', label: '成交转化率', unit: 'percentage', confidence: 1.0 },
+    // P0010.2.9: shop-level is primary
+    { canonical: 'shop_visitors', label: '店铺访客数', unit: 'count', confidence: 1.0 },
+    { canonical: 'shop_conversion_rate', label: '店铺成交转化率', unit: 'percentage', confidence: 1.0 },
+    // Product / industry level (preserved for other capabilities)
+    { canonical: 'product_visitors', label: '商品访客数', unit: 'count', confidence: 1.0 },
+    { canonical: 'industry_conversion_rate', label: '行业成交转化率', unit: 'percentage', confidence: 1.0 },
     { canonical: 'gmv_compare_pct', label: 'GMV 环比', unit: 'percentage', confidence: 1.0 },
     { canonical: 'orders_compare_pct', label: '订单环比', unit: 'percentage', confidence: 1.0 },
-    { canonical: 'visitors_compare_pct', label: '访客环比', unit: 'percentage', confidence: 1.0 },
+    { canonical: 'shop_visitors_compare_pct', label: '店铺访客环比', unit: 'percentage', confidence: 1.0 },
     { canonical: 'gmv_hourly', label: '小时 GMV', unit: 'currency', confidence: 1.0 },
   ],
   'trade.detail': [
@@ -371,7 +378,8 @@ const METRIC_METADATA: Readonly<Record<string, MetricDef[]>> = {
     { canonical: 'category_gmv', label: '类目成交', unit: 'currency', confidence: 0.5 },
   ],
   'traffic.overview': [
-    { canonical: 'visitors', label: '访客数', unit: 'count', confidence: 0.7 },
+    // P0010.2.9: `visitors` renamed to `product_visitors` to avoid polluting trade.overview
+    { canonical: 'product_visitors', label: '商品访客数', unit: 'count', confidence: 0.7 },
     { canonical: 'uv', label: 'UV', unit: 'count', confidence: 0.7 },
     { canonical: 'pv', label: 'PV', unit: 'count', confidence: 0.7 },
     { canonical: 'bounce_rate', label: '跳失率', unit: 'percentage', confidence: 0.6 },
@@ -382,7 +390,7 @@ const METRIC_METADATA: Readonly<Record<string, MetricDef[]>> = {
   ],
   'product.overview': [
     { canonical: 'gmv', label: '商品 GMV', unit: 'currency', confidence: 0.7 },
-    { canonical: 'visitors', label: '商品访客', unit: 'count', confidence: 0.6 },
+    { canonical: 'product_visitors', label: '商品访客', unit: 'count', confidence: 0.6 },
     { canonical: 'exposure', label: '商品曝光', unit: 'count', confidence: 0.6 },
     { canonical: 'conversion', label: '商品转化率', unit: 'ratio', confidence: 0.6 },
     { canonical: 'sku_count', label: '动销 SKU 数', unit: 'count', confidence: 0.5 },

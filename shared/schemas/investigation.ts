@@ -41,6 +41,46 @@ export const StopReasonSchema = z.enum(['judgment', 'observe', 'missing_capabili
 export type StopReason = z.infer<typeof StopReasonSchema>;
 
 /**
+ * P0010.2.x — what KIND of recommendation this is.
+ *
+ * The Operator-facing surface has two fundamentally different
+ * recommendation types, and conflating them in one chip ("👤 等待人工"
+ * or "📋 待交付") produces exactly the noise the audit surfaced:
+ * 90+ "维持持续观察名单" rows that the Operator can neither act on
+ * nor clear, and that bury any real action item.
+ *
+ *   - `observe` — the Agent's recommendation is "do nothing / wait /
+ *     keep watching". Typical when `stopReason ∈ {observe,
+ *     missing_capability}` and the judgment is "insufficient evidence
+ *     to act". The WorkItem for an `observe` recommendation is a
+ *     STATUS pill (grey, "保持观察"), NOT a to-do. The Operator
+ *     should NOT be asked to acknowledge / close it; it represents
+ *     the system's own watchful state.
+ *
+ *   - `act` — the Agent's recommendation is something the Operator
+ *     should consider doing ("调整主推位", "下架此 SKU"). Typical when
+ *     `stopReason=judgment` and the judgment is a supported/rejected
+ *     hypothesis with a concrete next step. The WorkItem for an `act`
+ *     recommendation IS a to-do (yellow / red chip, "待交付"). The
+ *     Operator should look at it, accept/reject/correct via the
+ *     existing Intervention grammar.
+ *
+ * This enum is the operator-trust contract that drives the Workspace
+ * chip split. It is intentionally binary — there is no third "ask the
+ * user to provide information" state because that is the existing
+ * `stopReason=ask_human` and the Operator surface for it is the
+ * Investigation summary, not a WorkItem.
+ */
+export const RecommendationKindSchema = z.enum(['observe', 'act']);
+export type RecommendationKind = z.infer<typeof RecommendationKindSchema>;
+
+/** Canonical Chinese label for the Operator surface (Workspace chip). */
+export const RECOMMENDATION_KIND_LABEL: Readonly<Record<RecommendationKind, string>> = Object.freeze({
+  observe: '保持观察',
+  act: '待交付',
+});
+
+/**
  * P0010.1 Recommendation — the Agent's suggested handling, produced ONLY from
  * its Investigation/Judgment (never directly from Signal/Ranking/threshold).
  * Human feedback (accept/reject/correction) reuses the existing Intervention
@@ -53,6 +93,18 @@ const stringOrList = z.union([z.string(), z.array(z.string())]);
 const toList = (v: string | string[]): string[] => (typeof v === 'string' ? (v ? [v] : []) : v);
 
 export const RecommendationSchema = z.object({
+  /**
+   * P0010.2.x — what KIND of recommendation this is. Drives the
+   * Workspace chip split (observe → grey "保持观察" status pill,
+   * act → yellow/red "待交付" to-do). Defaults to 'act' for backward
+   * compatibility with pre-C WorkItems that did not set the field;
+   * the parser/normalizer prefers the explicit value when present.
+   * The boundary normalizer in `runtime/investigation/normalize.ts`
+   * also derives a default from `stopReason` when the field is
+   * missing (observe / missing_capability / ask_human → 'observe',
+   * judgment → 'act') so a non-C Agent still gets the right chip.
+   */
+  kind: RecommendationKindSchema.default('act'),
   recommendation: z.string().min(1),
   /** Linked judgment (prose) this recommendation is based on. */
   rationale: z.string().default(''),

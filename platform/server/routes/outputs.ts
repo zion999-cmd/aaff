@@ -256,6 +256,19 @@ export const outputsRouter = (db: Db): Router => {
         ? recommendation.recommendation : '';
       const rationale = recommendation && typeof recommendation.rationale === 'string'
         ? recommendation.rationale : '';
+      // P0010.2.x — recommendation kind (observe | act). The boundary
+      // normalizer in `runtime/investigation/normalize.ts` writes a
+      // canonical value or derives one from `stopReason`, so by the
+      // time the value reaches this read it should already be one of
+      // the two canonical strings. We still defend the read with a
+      // allow-list fallback (the historical 'act' default) so a
+      // pre-C learning_context with no `kind` field renders as a
+      // yellow-chip to-do (the historical behavior) instead of an
+      // empty chip.
+      const recKind: 'observe' | 'act' = recommendation
+        && (recommendation.kind === 'observe' || recommendation.kind === 'act')
+        ? recommendation.kind
+        : 'act';
       let tags: string[] = [];
       try {
         const parsed = r.tags ? JSON.parse(r.tags) : [];
@@ -329,6 +342,12 @@ export const outputsRouter = (db: Db): Router => {
           stopReason,
           recommendation: recText,
           recommendationRationale: rationale,
+          // P0010.2.x — recommendation kind. Drives the Workspace
+          // chip split (observe → grey "保持观察", act → yellow/red
+          // "待交付"). Defaults to 'act' for pre-C WorkItems that
+          // did not capture the field. See WORK_ITEM_KIND_LABEL in
+          // shared/schemas/output.ts for the canonical label.
+          recommendationKind: recKind,
           // Surface that this is the *current* state, not a generation-time
           // snapshot. The schema does not snapshot at output creation.
           snapshotAvailable: false,

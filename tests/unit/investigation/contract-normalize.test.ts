@@ -10,13 +10,34 @@ import { describe, expect, test } from 'vitest';
 import {
   normalizeHypothesisStatus,
   normalizeStopReason,
+  normalizeRecommendationKind,
   normalizeInvestigationContract,
   CANONICAL_HYPOTHESIS_STATUSES,
   CANONICAL_STOP_REASONS,
+  CANONICAL_RECOMMENDATION_KINDS,
   parseInvestigation,
   extractJsonObject,
   buildInvestigationPrompt,
 } from '#app/runtime/investigation/index.js';
+
+// Hoisted: shared by both prompt-vocabulary describe blocks (the
+// original hypothesis / stopReason block, and the P0010.2.x kind block).
+// Keep ONE source of truth so a future refactor that changes the shape
+// of a Situation (or its required fields) only has to update this one
+// stub.
+const STUB_SITUATION = {
+  situationId: 'sit-1',
+  type: 'anomaly_investigation' as const,
+  entity: { id: 'e1', type: 'shop', name: 'shop', platform: 'jd' as const },
+  temporal: { observedAt: '2026-08-22T00:00:00.000Z' },
+  description: 'desc',
+  domain: 'ecommerce' as const,
+  tags: ['test'],
+  lifecycle: 'open' as const,
+  interventionCount: 0,
+  createdAt: '2026-08-22T00:00:00.000Z',
+  updatedAt: '2026-08-22T00:00:00.000Z',
+};
 
 describe('normalizeHypothesisStatus (raw → canonical, fail-closed on unknown drift)', () => {
   test('canonical values pass through unchanged', () => {
@@ -297,19 +318,7 @@ describe('buildInvestigationPrompt — vocabulary constraint is enforced in the 
   // The parser only sees what the Agent wrote. The prompt is the first line
   // of defense. These tests pin the explicit vocabulary so a future refactor
   // doesn't accidentally drop the constraint or change the vocabulary.
-  const stub = {
-    situationId: 'sit-1',
-    type: 'anomaly_investigation' as const,
-    entity: { id: 'e1', type: 'shop', name: 'shop', platform: 'jd' as const },
-    temporal: { observedAt: '2026-08-22T00:00:00.000Z' },
-    description: 'desc',
-    domain: 'ecommerce' as const,
-    tags: ['test'],
-    lifecycle: 'open' as const,
-    interventionCount: 0,
-    createdAt: '2026-08-22T00:00:00.000Z',
-    updatedAt: '2026-08-22T00:00:00.000Z',
-  };
+  const stub = STUB_SITUATION;
 
   test('prompt lists the four canonical hypothesis statuses as EXACT strings', () => {
     const p = buildInvestigationPrompt(stub, null);
@@ -342,5 +351,199 @@ describe('CANONICAL_* (public surface pinned to the schema)', () => {
   });
   test('canonical stop reasons are exactly the four', () => {
     expect([...CANONICAL_STOP_REASONS].sort()).toEqual(['ask_human', 'judgment', 'missing_capability', 'observe']);
+  });
+  // P0010.2.x — recommendation kind is a binary surface.
+  test('canonical recommendation kinds are exactly observe | act', () => {
+    expect([...CANONICAL_RECOMMENDATION_KINDS].sort()).toEqual(['act', 'observe']);
+  });
+});
+
+// ---- P0010.2.x — Recommendation kind (observe | act) --------------------
+//
+// Same fail-closed policy as hypothesis status and stop reason. We accept
+// the canonical English forms plus a small drift allow-list of Chinese
+// and English near-synonyms. Anything not on the allow-list surfaces as
+// `driftUnmappable` and the parser fails closed.
+
+describe('normalizeRecommendationKind (raw → canonical, fail-closed on unknown drift)', () => {
+  test('canonical values pass through unchanged', () => {
+    expect(normalizeRecommendationKind('observe')).toEqual({ ok: true, status: 'observe', original: 'observe' });
+    expect(normalizeRecommendationKind('act')).toEqual({ ok: true, status: 'act', original: 'act' });
+  });
+
+  test('Chinese near-synonyms (observe-side) rewrite to canonical observe', () => {
+    const observed = ['观察', '保持观察', '持续观察', '等待', '不干预', '暂不干预', '不行动'];
+    for (const raw of observed) {
+      const r = normalizeRecommendationKind(raw);
+      expect(r.ok).toBe(true);
+      if (r.ok) expect(r.status).toBe('observe');
+    }
+  });
+
+  test('Chinese near-synonyms (act-side) rewrite to canonical act', () => {
+    const acted = ['行动', '干预', '调整', '采取行动', '待执行', '待交付'];
+    for (const raw of acted) {
+      const r = normalizeRecommendationKind(raw);
+      expect(r.ok).toBe(true);
+      if (r.ok) expect(r.status).toBe('act');
+    }
+  });
+
+  test('English near-synonyms rewrite to canonical', () => {
+    const observed = ['watch', 'wait', 'hold', 'do_nothing'];
+    for (const raw of observed) {
+      const r = normalizeRecommendationKind(raw);
+      expect(r.ok).toBe(true);
+      if (r.ok) expect(r.status).toBe('observe');
+    }
+    const acted = ['intervene', 'action', 'take_action'];
+    for (const raw of acted) {
+      const r = normalizeRecommendationKind(raw);
+      expect(r.ok).toBe(true);
+      if (r.ok) expect(r.status).toBe('act');
+    }
+  });
+
+  test('whitespace is trimmed on the surface', () => {
+    expect(normalizeRecommendationKind('  observe  ')).toEqual({ ok: true, status: 'observe', original: '  observe  ' });
+  });
+
+  test('unknown drift value → fail-closed (no kind)', () => {
+    const r = normalizeRecommendationKind('kind_of_maybe');
+    expect(r.ok).toBe(false);
+  });
+
+  test('case-folded canonical is NOT accepted (preserves the contract)', () => {
+    expect(normalizeRecommendationKind('OBSERVE').ok).toBe(false);
+    expect(normalizeRecommendationKind('Act').ok).toBe(false);
+  });
+
+  test('non-string input → fail-closed', () => {
+    expect(normalizeRecommendationKind(undefined).ok).toBe(false);
+    expect(normalizeRecommendationKind(null).ok).toBe(false);
+    expect(normalizeRecommendationKind(42).ok).toBe(false);
+  });
+});
+
+describe('normalizeInvestigationContract — recommendation.kind (P0010.2.x)', () => {
+  test('explicit canonical kind: pass through, no drift reported', () => {
+    const raw = {
+      situationId: 'sit-1',
+      stopReason: 'judgment',
+      recommendation: {
+        kind: 'act',
+        recommendation: '调整主推位',
+        rationale: '流量端异常',
+      },
+    };
+    const norm = normalizeInvestigationContract(raw);
+    expect(norm.drift).toEqual([]);
+    expect(norm.normalized).toEqual(raw);
+  });
+
+  test('drift kind: rewrite to canonical + report drift on recommendation.kind', () => {
+    const raw = {
+      situationId: 'sit-1',
+      stopReason: 'observe',
+      recommendation: {
+        kind: '保持观察', // Chinese drift
+        recommendation: '持续观察，不干预',
+        rationale: '数据缺失',
+      },
+    };
+    const norm = normalizeInvestigationContract(raw);
+    expect(norm.drift).toEqual([
+      { field: 'recommendation.kind', original: '保持观察', canonical: 'observe' },
+    ]);
+    expect((norm.normalized as any).recommendation.kind).toBe('observe');
+  });
+
+  test('missing kind: derive from stopReason (judgment → act, others → observe) + report derivation as drift', () => {
+    // judgment → derive to 'act'
+    const r1 = normalizeInvestigationContract({
+      situationId: 'sit-1',
+      stopReason: 'judgment',
+      recommendation: { recommendation: '调整主推位', rationale: '流量端异常' },
+    });
+    expect(r1.drift).toEqual([
+      { field: 'recommendation.kind', original: '<derived from stopReason>', canonical: 'act' },
+    ]);
+    expect((r1.normalized as any).recommendation.kind).toBe('act');
+
+    // observe → derive to 'observe'
+    const r2 = normalizeInvestigationContract({
+      situationId: 'sit-1',
+      stopReason: 'observe',
+      recommendation: { recommendation: '持续观察', rationale: '数据缺失' },
+    });
+    expect((r2.normalized as any).recommendation.kind).toBe('observe');
+
+    // missing_capability → derive to 'observe'
+    const r3 = normalizeInvestigationContract({
+      situationId: 'sit-1',
+      stopReason: 'missing_capability',
+      recommendation: { recommendation: '等待 MCP 恢复', rationale: 'platform has no capability' },
+    });
+    expect((r3.normalized as any).recommendation.kind).toBe('observe');
+
+    // ask_human → derive to 'observe'
+    const r4 = normalizeInvestigationContract({
+      situationId: 'sit-1',
+      stopReason: 'ask_human',
+      recommendation: { recommendation: '请人工确认', rationale: 'fact not machine-observable' },
+    });
+    expect((r4.normalized as any).recommendation.kind).toBe('observe');
+  });
+
+  test('missing kind + missing stopReason: leave field unset (Zod defaults to act on parse)', () => {
+    const raw = {
+      situationId: 'sit-1',
+      recommendation: { recommendation: '调整主推位', rationale: '流量端异常' },
+    };
+    const norm = normalizeInvestigationContract(raw);
+    expect(norm.drift).toEqual([]);
+    expect((norm.normalized as any).recommendation.kind).toBeUndefined();
+  });
+
+  test('unmappable kind: surfaces as driftUnmappable (parser fails closed)', () => {
+    const raw = {
+      situationId: 'sit-1',
+      stopReason: 'judgment',
+      recommendation: {
+        kind: 'kinda_important', // not on allow-list
+        recommendation: 'do something',
+        rationale: 'because',
+      },
+    };
+    const norm = normalizeInvestigationContract(raw);
+    expect(norm.driftUnmappable).toEqual([
+      { field: 'recommendation.kind', original: 'kinda_important' },
+    ]);
+    expect(norm.normalized).toBeNull();
+  });
+
+  test('investigation with no recommendation object: no kind walking happens', () => {
+    const raw = { situationId: 'sit-1', stopReason: 'judgment' };
+    const norm = normalizeInvestigationContract(raw);
+    expect(norm.drift).toEqual([]);
+    expect(norm.normalized).toEqual(raw);
+  });
+});
+
+describe('P0010.2.x — buildInvestigationPrompt teaches the Agent to fill recommendation.kind', () => {
+  // The runtime/UI contract is that the Agent fills `kind` explicitly.
+  // The derive-from-stopReason shim in `normalizeInvestigationContract`
+  // is the backwards-compat path, but the prompt must teach the
+  // canonical case so the Agent stops emitting near-synonyms.
+
+  test('prompt lists the two canonical kind values as EXACT strings', () => {
+    const p = buildInvestigationPrompt(STUB_SITUATION, null);
+    expect(p).toMatch(/"observe"/);
+    expect(p).toMatch(/"act"/);
+  });
+
+  test('prompt names `recommendation.kind` as a contract field', () => {
+    const p = buildInvestigationPrompt(STUB_SITUATION, null);
+    expect(p).toMatch(/recommendation\.kind/);
   });
 });

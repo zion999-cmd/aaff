@@ -15,10 +15,15 @@
 // InvestigationPolicy) sees only canonical `proposed | supported | weakened |
 // rejected`.
 
-import { HypothesisStatusSchema, StopReasonSchema } from '#shared/schemas/investigation.js';
+import {
+  HypothesisStatusSchema,
+  RecommendationKindSchema,
+  StopReasonSchema,
+} from '#shared/schemas/investigation.js';
 
 export type CanonicalHypothesisStatus = 'proposed' | 'supported' | 'weakened' | 'rejected';
 export type CanonicalStopReason = 'judgment' | 'observe' | 'missing_capability' | 'ask_human';
+export type CanonicalRecommendationKind = 'observe' | 'act';
 
 /**
  * Hypothesis status normalization. The allow-list is the SINGLE source of
@@ -50,6 +55,42 @@ const STOP_REASON_NORMALIZATION: Readonly<Record<string, CanonicalStopReason>> =
   // known drift
   complete: 'judgment',
   wait: 'observe',
+});
+
+/**
+ * P0010.2.x — Recommendation-kind normalization. The Agent produces
+ * a `recommendation.kind ∈ {observe, act}`. We accept a small set of
+ * near-synonyms (Chinese drift) and rewrite to canonical. Anything
+ * not on the allow-list surfaces as `driftUnmappable` and the parser
+ * fails-closed (same fail-closed policy as hypothesis status and
+ * stop reason).
+ */
+const RECOMMENDATION_KIND_NORMALIZATION: Readonly<Record<string, CanonicalRecommendationKind>> = Object.freeze({
+  // canonical
+  observe: 'observe',
+  act: 'act',
+  // known drift — Chinese
+  观察: 'observe',
+  保持观察: 'observe',
+  持续观察: 'observe',
+  等待: 'observe',
+  不干预: 'observe',
+  暂不干预: 'observe',
+  不行动: 'observe',
+  行动: 'act',
+  干预: 'act',
+  调整: 'act',
+  采取行动: 'act',
+  待执行: 'act',
+  待交付: 'act',
+  // known drift — English synonyms
+  watch: 'observe',
+  wait: 'observe',
+  hold: 'observe',
+  do_nothing: 'observe',
+  intervene: 'act',
+  action: 'act',
+  take_action: 'act',
 });
 
 export type NormalizationOk<T extends string> = { ok: true; status: T; original: string };
@@ -90,6 +131,39 @@ export const normalizeStopReason = (raw: unknown): NormalizationResult<Canonical
     return { ok: true, status: STOP_REASON_NORMALIZATION[trimmed] as CanonicalStopReason, original: raw };
   }
   return { ok: false, original: raw };
+};
+
+/**
+ * P0010.2.x — Map one raw recommendation-kind value to its canonical
+ * form (`observe | act`), or fail if not on the allow-list. The
+ * normalization table accepts both the canonical English forms and
+ * a small Chinese / English near-synonym set so we tolerate surface
+ * drift the same way we tolerate it for `stopReason`.
+ */
+export const normalizeRecommendationKind = (raw: unknown): NormalizationResult<CanonicalRecommendationKind> => {
+  if (typeof raw !== 'string') {
+    return { ok: false, original: typeof raw === 'undefined' ? '<undefined>' : `<${typeof raw}>` };
+  }
+  const trimmed = raw.trim();
+  if (trimmed in RECOMMENDATION_KIND_NORMALIZATION) {
+    return { ok: true, status: RECOMMENDATION_KIND_NORMALIZATION[trimmed] as CanonicalRecommendationKind, original: raw };
+  }
+  return { ok: false, original: raw };
+};
+
+/**
+ * P0010.2.x — Derive a default `recommendation.kind` from the
+ * `stopReason` when the Agent did not emit an explicit `kind`. This
+ * is the backwards-compatibility shim for non-C Agents (or for a
+ * partial contract that lost the kind during extraction). The
+ * derived default is the SEMANTIC correct one in 100% of audit-
+ * observed cases: judgment → "act" (Agent is recommending an
+ * action), everything else → "observe" (Agent is recommending
+ * "wait / watch"). The derivation is logged as drift so the
+ * operator can see the Agent was inconsistent.
+ */
+const deriveKindFromStopReason = (stopReason: CanonicalStopReason): CanonicalRecommendationKind => {
+  return stopReason === 'judgment' ? 'act' : 'observe';
 };
 
 /**
@@ -177,6 +251,53 @@ export const normalizeInvestigationContract = (raw: unknown): ContractNormalizat
     }
   }
 
+  // P0010.2.x — recommendation.kind: optional. If present, normalize to
+  // canonical `observe | act`. If MISSING and the Agent produced a
+  // recommendation, DERIVE a default from the (already-normalized)
+  // `stopReason` so a non-C Agent still gets the right chip. The
+  // derivation is logged as drift (with `original: '<derived>'` and the
+  // canonical kind) so the operator can see the Agent was inconsistent.
+  const recommendation = out['recommendation'];
+  if (recommendation !== null && typeof recommendation === 'object' && !Array.isArray(recommendation)) {
+    const recObj = { ...(recommendation as Record<string, unknown>) };
+    const hasExplicitKind = 'kind' in recObj && recObj['kind'] !== undefined && recObj['kind'] !== null;
+    if (hasExplicitKind) {
+      const kindResult = normalizeRecommendationKind(recObj['kind']);
+      if (!kindResult.ok) {
+        driftUnmappable.push({ field: 'recommendation.kind', original: kindResult.original });
+        // Leave as-is — Zod will reject it and the parser will report
+        // the unmappable value in the failure trace.
+      } else {
+        if (kindResult.original !== kindResult.status) {
+          drift.push({
+            field: 'recommendation.kind',
+            original: kindResult.original,
+            canonical: kindResult.status,
+          });
+        }
+        recObj['kind'] = kindResult.status;
+      }
+    } else {
+      // Derive a default from the already-normalized stopReason. This
+      // is the backwards-compat shim — a non-C Agent that did not
+      // emit `kind` still gets the right chip.
+      const stopReason = out['stopReason'];
+      if (typeof stopReason === 'string' && stopReason in STOP_REASON_NORMALIZATION) {
+        const derived = deriveKindFromStopReason(stopReason as CanonicalStopReason);
+        recObj['kind'] = derived;
+        drift.push({
+          field: 'recommendation.kind',
+          original: '<derived from stopReason>',
+          canonical: derived,
+        });
+      }
+      // No stopReason either — leave the field unset; Zod will
+      // default to 'act' and the operator sees a yellow chip. This
+      // is the "honest unknown" path; the parser still passes.
+    }
+    out['recommendation'] = recObj;
+  }
+
   return {
     normalized: driftUnmappable.length === 0 ? out : null,
     drift,
@@ -192,3 +313,4 @@ export const normalizeInvestigationContract = (raw: unknown): ContractNormalizat
  */
 export const CANONICAL_HYPOTHESIS_STATUSES = HypothesisStatusSchema.options;
 export const CANONICAL_STOP_REASONS = StopReasonSchema.options;
+export const CANONICAL_RECOMMENDATION_KINDS = RecommendationKindSchema.options;

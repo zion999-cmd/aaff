@@ -16,12 +16,20 @@ const makeParsedData = (): ParsedJdData => ({
   summary: {
     gmv: 150000,
     orders: 320,
-    visitors: 8500,
     customers: 1200,
-    conversion_rate: 0.038,
+    // P0010.2.9: shop-level (primary for trade.overview)
+    shop_visitors: 8500,
+    shop_conversion_rate: 0.038,
+    // Product / industry level (preserved)
+    product_visitors: 7200,
+    industry_conversion_rate: 0.025,
+    // WoW percentages
     gmv_compare_pct: 0.12,
     orders_compare_pct: 0.08,
-    visitors_compare_pct: -0.03,
+    shop_visitors_compare_pct: -0.03,
+    product_visitors_compare_pct: null,
+    shop_conversion_rate_compare_pct: null,
+    industry_conversion_rate_compare_pct: null,
   },
   hourly_gmv: [
     { hour: '2026-07-04 10:00:00', gmv: 8500 },

@@ -109,7 +109,14 @@ export type SkipReason =
   | 'waiting_human'
   | 'already_investigated'
   | 'no_situation'
-  | 'blocked_runtime_failure';
+  | 'blocked_runtime_failure'
+  /**
+   * P0010.2.x followup — Global `latestContentHash` changed but we
+   * cannot prove this Situation's underlying metric moved (no
+   * per-Situation evidence-dependency model yet). Skip rather than
+   * re-fire on unrelated platform evidence churn.
+   */
+  | 'no_situation_specific_evidence_change';
 
 /**
  * Create a tagged event logger. The Loop uses one of these for the
@@ -250,6 +257,7 @@ const skipReasonLabel = (r: SkipReason, situationId: string): string => {
     case 'already_investigated': return `Runtime 暂未安排（已完成） — ${situationId}`;
     case 'no_situation': return `Runtime 暂未安排（Situation 不存在） — ${situationId}`;
     case 'blocked_runtime_failure': return `Runtime 已暂停调查（连续失败达到阈值） — ${situationId}`;
+    case 'no_situation_specific_evidence_change': return `Runtime 暂未安排（其他 evidence 哈希变化，与本 Situation 无关） — ${situationId}`;
   }
 };
 

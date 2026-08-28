@@ -165,7 +165,7 @@ const cmdCollect = async (args: string[]): Promise<void> => {
       const hourlyCount = p?.hourly_gmv?.filter((h) => h.gmv > 0).length ?? 0;
       const topCount = p?.top_products?.length ?? 0;
       const gmvStr = p?.summary.gmv ? `¥${p.summary.gmv.toLocaleString()}` : '?';
-      console.log(`  ✓ ${dayResult.date}: gmv=${gmvStr} orders=${p?.summary.orders ?? '?'} visitors=${p?.summary.visitors ?? '?'} hourly=${hourlyCount}h top=${topCount} products`);
+      console.log(`  ✓ ${dayResult.date}: gmv=${gmvStr} orders=${p?.summary.orders ?? '?'} shop_visitors=${p?.summary.shop_visitors ?? '?'} hourly=${hourlyCount}h top=${topCount} products`);
     }
 
     console.log(`\nDone: ${liveResult.totalEvidence} evidence files, ${liveResult.totalSignals} signals stored`);
@@ -200,7 +200,7 @@ const cmdCollect = async (args: string[]): Promise<void> => {
     const hourlyCount = execResult.parsed?.hourly_gmv?.filter((h) => h.gmv > 0).length ?? 0;
     const topCount = execResult.parsed?.top_products?.length ?? 0;
 
-    console.log(`  ✓ ${date}: signals=${execResult.signals.length} evidence=${execResult.evidence.length}${parsedSummary ? ` gmv=¥${parsedSummary.gmv.toLocaleString()} orders=${parsedSummary.orders} visitors=${parsedSummary.visitors}` : ''} hourly=${hourlyCount}h top=${topCount} products`);
+    console.log(`  ✓ ${date}: signals=${execResult.signals.length} evidence=${execResult.evidence.length}${parsedSummary ? ` gmv=¥${parsedSummary.gmv.toLocaleString()} orders=${parsedSummary.orders} shop_visitors=${parsedSummary.shop_visitors}` : ''} hourly=${hourlyCount}h top=${topCount} products`);
   }
 
   console.log(`\nDone: ${totalEvidence} evidence files, ${totalSignals} signals stored`);
@@ -269,7 +269,8 @@ const cmdDiscover = async (args: string[]): Promise<void> => {
             signal_id: `jd-${r.page.id}-${date}`, source: 'jd', shop_id: shopId,
             signal_type: 'daily_summary', priority: 0.5,
             timestamp: new Date(date).toISOString(),
-            metrics: { gmv: parsed.summary.gmv, orders: parsed.summary.orders, uv: parsed.summary.visitors, cvr: parsed.summary.conversion_rate },
+            // P0010.2.9: uv/cvr map to shop-level (the live page values)
+            metrics: { gmv: parsed.summary.gmv, orders: parsed.summary.orders, uv: parsed.summary.shop_visitors, cvr: parsed.summary.shop_conversion_rate },
             confidence: 0.9,
           })]);
           totalSignals++;

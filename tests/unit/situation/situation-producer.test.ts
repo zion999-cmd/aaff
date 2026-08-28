@@ -21,12 +21,20 @@ const parsedFor = (date: string, summary: Partial<ParsedJdData['summary']>): Par
   summary: {
     gmv: summary.gmv ?? 0,
     orders: summary.orders ?? 0,
-    visitors: summary.visitors ?? 0,
     customers: summary.customers ?? 0,
-    conversion_rate: summary.conversion_rate ?? 0,
+    // P0010.2.9 — shop-level (the live page values)
+    shop_visitors: summary.shop_visitors ?? 0,
+    shop_conversion_rate: summary.shop_conversion_rate ?? 0,
+    // Product / industry level (preserved)
+    product_visitors: summary.product_visitors ?? 0,
+    industry_conversion_rate: summary.industry_conversion_rate ?? 0,
+    // WoW percentages
     gmv_compare_pct: null,
     orders_compare_pct: null,
-    visitors_compare_pct: null,
+    shop_visitors_compare_pct: null,
+    product_visitors_compare_pct: null,
+    shop_conversion_rate_compare_pct: null,
+    industry_conversion_rate_compare_pct: null,
   },
   hourly_gmv: [],
   top_products: [],
@@ -248,8 +256,8 @@ describe('runSituationProducer', () => {
     db.close();
   });
 
-  const seedDaily = (date: string, gmv: number, orders: number, visitors: number, conversionRate: number) => {
-    generateSignals(db, parsedFor(date, { gmv, orders, visitors, conversion_rate: conversionRate }), {
+  const seedDaily = (date: string, gmv: number, orders: number, shopVisitors: number, shopConversionRate: number) => {
+    generateSignals(db, parsedFor(date, { gmv, orders, shop_visitors: shopVisitors, shop_conversion_rate: shopConversionRate }), {
       platform: 'jd',
       shopId: 'jd_shop_001',
       date,

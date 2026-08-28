@@ -66,10 +66,16 @@ const completedInvestigation = (overrides: Partial<{
   rationale: string;
   judgment: string;
   updatedAt: string;
+  kind: 'observe' | 'act';
 }> = {}): InvestigationLike => ({
   judgment: overrides.judgment ?? 'GMV dropped 30% week-over-week — likely traffic-side.',
   updatedAt: overrides.updatedAt ?? '2026-08-25T01:00:00.000Z',
   recommendation: {
+    // P0010.2.x — every test fixture must declare `kind` (the new
+    // required field on RecommendationSchema). Default to 'act' so
+    // existing assertion shape is preserved; tests that care about
+    // 'observe' pass it explicitly via overrides.
+    kind: overrides.kind ?? 'act',
     recommendation: overrides.recommendation ?? '先排查昨日流量来源变化，再决定是否调价。',
     rationale: overrides.rationale ?? 'Linked judgment',
     expectedOutcome: '稳定 GMV',
@@ -184,5 +190,230 @@ describe('materializeWorkItem', () => {
     expect(result.created).toBe(false);
     if (result.created) return;
     expect(result.reason).toBe('no_investigation');
+  });
+
+  // ---- P0010.2.x — write-time dedup hardening ---------------------------
+  //
+  // The 90+ duplicate WorkItem pattern from the audit came from re-runs
+  // of the same investigation on the same Situation: each tick stamped a
+  // fresh `updatedAt`, and the LLM produced slightly different round
+  // counters / timestamps in the prose. Both surface variations broke
+  // the prior fingerprint. These tests pin the fix.
+
+  test('P0010.2.x: only-`updatedAt` change does NOT create a new WorkItem', () => {
+    // Same judgment, same recommendation, same rationale — but the
+    // `updatedAt` is different (the typical "re-tick 60s later" pattern).
+    // Before the fix: new outputId per tick → 90+ duplicates.
+    // After the fix: same outputId → single WorkItem.
+    const a = materializeWorkItem(
+      db,
+      SIT,
+      completedInvestigation({
+        updatedAt: '2026-08-25T01:00:00.000Z',
+      }),
+    );
+    const b = materializeWorkItem(
+      db,
+      SIT,
+      completedInvestigation({
+        updatedAt: '2026-08-25T01:01:00.000Z', // 1 minute later
+      }),
+    );
+    expect(a.created).toBe(true);
+    expect(b.created).toBe(false);
+    if (!a.created || b.created) return;
+    expect(b.reason).toBe('duplicate');
+    expect(b.outputId).toBe(a.outputId);
+    expect(loadOutputs(db)).toHaveLength(1);
+  });
+
+  test('P0010.2.x: round-counter variation does NOT create a new WorkItem', () => {
+    // The audit's exact pattern: "本情境已第 7 轮连续 missing_capability"
+    // vs "本情境已第 8 轮连续 missing_capability" with the same
+    // underlying advice. The stored WorkItem keeps the FIRST text (the
+    // earliest round count); the second is a dedup hit.
+    const a = materializeWorkItem(
+      db,
+      SIT,
+      completedInvestigation({
+        recommendation: '本情境已第 7 轮连续 missing_capability，Agent 建议维持持续观察名单，不升级、不干预',
+        rationale: '数据缺失无法判断',
+        judgment: 'observe: insufficient evidence',
+        updatedAt: '2026-08-25T01:00:00.000Z',
+      }),
+    );
+    const b = materializeWorkItem(
+      db,
+      SIT,
+      completedInvestigation({
+        recommendation: '本情境已第 8 轮连续 missing_capability，Agent 建议维持持续观察名单，不升级、不干预',
+        rationale: '数据缺失无法判断',
+        judgment: 'observe: insufficient evidence',
+        updatedAt: '2026-08-25T01:01:00.000Z', // also different
+      }),
+    );
+    expect(a.created).toBe(true);
+    expect(b.created).toBe(false);
+    if (!a.created || b.created) return;
+    expect(b.reason).toBe('duplicate');
+    expect(b.outputId).toBe(a.outputId);
+    const outputs = loadOutputs(db);
+    expect(outputs).toHaveLength(1);
+    // The stored content keeps the FULL first text (with "第 7 轮"),
+    // so the Operator still sees the round count if they look.
+    expect(outputs[0]!.content).toContain('第 7 轮');
+  });
+
+  test('P0010.2.x: embedded timestamp variation does NOT create a new WorkItem', () => {
+    // Same advice, different embedded timestamp — should dedup.
+    const a = materializeWorkItem(
+      db,
+      SIT,
+      completedInvestigation({
+        recommendation: '截至 18:56:48 仍无新数据，维持持续观察名单',
+        rationale: 'data gap',
+        judgment: 'observe',
+      }),
+    );
+    const b = materializeWorkItem(
+      db,
+      SIT,
+      completedInvestigation({
+        recommendation: '截至 19:30:12 仍无新数据，维持持续观察名单',
+        rationale: 'data gap',
+        judgment: 'observe',
+      }),
+    );
+    expect(a.created).toBe(true);
+    expect(b.created).toBe(false);
+    if (!a.created || b.created) return;
+    expect(b.outputId).toBe(a.outputId);
+    expect(loadOutputs(db)).toHaveLength(1);
+  });
+
+  test('P0010.2.x: GENUINE recommendation change DOES create a new WorkItem', () => {
+    // A different recommendation (different action) — must NOT dedup.
+    // This is the guard against over-aggressive normalization.
+    const a = materializeWorkItem(
+      db,
+      SIT,
+      completedInvestigation({
+        recommendation: '维持持续观察名单，不升级、不干预',
+        rationale: 'data missing',
+        judgment: 'observe: insufficient evidence',
+      }),
+    );
+    const b = materializeWorkItem(
+      db,
+      SIT,
+      completedInvestigation({
+        recommendation: '调整主推位 + 同步提高广告出价',
+        rationale: 'new data: traffic drop confirmed',
+        judgment: 'act on traffic side',
+      }),
+    );
+    expect(a.created).toBe(true);
+    expect(b.created).toBe(true);
+    if (!a.created || !b.created) return;
+    expect(a.outputId).not.toBe(b.outputId);
+    expect(loadOutputs(db)).toHaveLength(2);
+  });
+
+  test('P0010.2.x: same judgment + different recommendation rationale is still new', () => {
+    // Substance change in rationale — even with the same judgment —
+    // should produce a new WorkItem. The rationale is part of the
+    // fingerprint.
+    const a = materializeWorkItem(
+      db,
+      SIT,
+      completedInvestigation({
+        recommendation: '调整主推位',
+        rationale: '流量端异常',
+        judgment: 'judgment: traffic',
+      }),
+    );
+    const b = materializeWorkItem(
+      db,
+      SIT,
+      completedInvestigation({
+        recommendation: '调整主推位',
+        rationale: '转化端异常', // different rationale
+        judgment: 'judgment: traffic',
+      }),
+    );
+    expect(a.created).toBe(true);
+    expect(b.created).toBe(true);
+    if (!a.created || !b.created) return;
+    expect(a.outputId).not.toBe(b.outputId);
+  });
+
+  // ---- P0010.2.x — WorkItem captures recommendation.kind ----------------
+  //
+  // The kind field drives the Workspace chip split (observe = grey
+  // "保持观察" status pill, act = yellow "待交付" to-do). The
+  // materializer MUST capture the kind from the recommendation
+  // (post-normalization) so the UI can render the right chip.
+
+  test('P0010.2.x: materializer captures recommendation.kind on the WorkItem', () => {
+    const result = materializeWorkItem(
+      db,
+      SIT,
+      completedInvestigation({ kind: 'observe' }),
+    );
+    expect(result.created).toBe(true);
+    if (!result.created) return;
+    const outputs = loadOutputs(db);
+    expect(outputs).toHaveLength(1);
+    expect(outputs[0]!.kind).toBe('observe');
+  });
+
+  test('P0010.2.x: materializer captures kind=act on the WorkItem', () => {
+    const result = materializeWorkItem(
+      db,
+      SIT,
+      completedInvestigation({ kind: 'act' }),
+    );
+    expect(result.created).toBe(true);
+    if (!result.created) return;
+    const outputs = loadOutputs(db);
+    expect(outputs).toHaveLength(1);
+    expect(outputs[0]!.kind).toBe('act');
+  });
+
+  test('P0010.2.x: kind is NOT part of the dedup fingerprint (observe / act with same content dedup)', () => {
+    // The kind is a chip-rendering hint, NOT a content discriminator.
+    // Two WorkItems with the same judgment + recommendation + rationale
+    // must dedup even if the kind label differs. This keeps the kind
+    // a presentation concern, not a content concern.
+    const a = materializeWorkItem(
+      db,
+      SIT,
+      completedInvestigation({
+        kind: 'observe',
+        recommendation: '持续观察，不干预',
+        rationale: '数据缺失',
+        judgment: 'observe',
+      }),
+    );
+    const b = materializeWorkItem(
+      db,
+      SIT,
+      completedInvestigation({
+        kind: 'act', // DIFFERENT kind, but same content
+        recommendation: '持续观察，不干预',
+        rationale: '数据缺失',
+        judgment: 'observe',
+      }),
+    );
+    expect(a.created).toBe(true);
+    expect(b.created).toBe(false);
+    if (!a.created || b.created) return;
+    expect(b.reason).toBe('duplicate');
+    // The first WorkItem's kind is preserved (observe, not overwritten
+    // by the second's act). The operator sees the chip the materializer
+    // first captured.
+    const outputs = loadOutputs(db);
+    expect(outputs).toHaveLength(1);
+    expect(outputs[0]!.kind).toBe('observe');
   });
 });

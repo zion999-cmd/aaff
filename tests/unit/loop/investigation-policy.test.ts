@@ -137,9 +137,17 @@ describe('createInvestigationPolicy', () => {
     expect(decision).toEqual({ kind: 'skip', reason: 'no_meaningful_change' });
   });
 
-  test('returns meaningful_new_evidence when prior.evidenceContentHash !== latestContentHash', () => {
-    // The prior recorded hash-A; the latest evidence is hash-B. The metric
-    // moved → re-investigate.
+  test('returns no_situation_specific_evidence_change when prior.evidenceContentHash !== latestContentHash (P0010.2.x followup)', () => {
+    // P0010.2.x followup — The Loop's `latestContentHash` is a single
+    // global hash (most recent evidence file in the entire platform
+    // store). The hash moving from A → B is NOT proof that THIS
+    // Situation's underlying metric moved — a different capability's
+    // re-acquisition (e.g. the daily `trade.overview` cron at 00:00)
+    // writes a new evidence file with a new hash, and that hash
+    // becomes the global "latest" even when nothing about the
+    // Situation's evidence set changed. We do not yet have a
+    // per-Situation evidence-dependency model, so the default is skip
+    // (do not guess by re-firing on unrelated platform evidence churn).
     insertLearningContext(db, SIT, buildContextBody({
       investigation: {
         status: 'completed',
@@ -153,7 +161,44 @@ describe('createInvestigationPolicy', () => {
       situationId: SIT,
       latestContentHash: 'hash-B',
     });
-    expect(decision).toEqual({ kind: 'investigate', reason: 'meaningful_new_evidence' });
+    expect(decision).toEqual({ kind: 'skip', reason: 'no_situation_specific_evidence_change' });
+  });
+
+  test('global evidence hash churn alone does NOT re-trigger investigation (invariant)', () => {
+    // P0010.2.x followup — explicit regression test. The diagnostic
+    // from the read-only trace (2026-08-28): the Loop's
+    // `readLatestContentHash` returns the SHA-256 of the most recent
+    // evidence file in the entire platform store. A different
+    // capability re-acquiring ANY data point produces a new evidence
+    // file, which moves the global hash, which used to flip every
+    // open Situation into `meaningful_new_evidence` and re-fire every
+    // investigation. After this fix, the same Situation with the
+    // same prior content marker is skipped, regardless of how the
+    // global hash moved.
+    insertLearningContext(db, SIT, buildContextBody({
+      investigation: {
+        status: 'completed',
+        judgment: 'existing judgment',
+        stopReason: 'judgment',
+        updatedAt: '2026-08-25T12:00:00.000Z',
+        evidenceContentHash: 'hash-prior',
+      },
+    }));
+    // Simulate: the platform's most recent evidence file changed
+    // (e.g. trade.overview's daily 00:00 cron wrote a new file), so
+    // the Loop sees a new global latestContentHash. Without a
+    // per-Situation evidence-dependency proof, the Situation must NOT
+    // be re-investigated.
+    const decision = policy.shouldInvestigate({
+      situationId: SIT,
+      latestContentHash: 'hash-from-other-capability',
+    });
+    expect(decision).toEqual({ kind: 'skip', reason: 'no_situation_specific_evidence_change' });
+    // The skip reason is a stable, observable signal (not just a
+    // silent drop) — operators can see in the trace panel that the
+    // Situation was skipped because the global hash moved but we
+    // cannot prove Situation-specific change.
+    expect(decision.kind).toBe('skip');
   });
 
   test('returns no_meaningful_change when prior is completed legacy (no content marker)', () => {
@@ -198,9 +243,14 @@ describe('createInvestigationPolicy', () => {
     expect(decision).toEqual({ kind: 'skip', reason: 'no_meaningful_change' });
   });
 
-  test('returns meaningful_new_evidence when prior failed but new evidence arrived', () => {
-    // The prior attempt failed on hash-A. The latest evidence is hash-B.
-    // A new attempt with fresh content is worth trying.
+  test('returns no_situation_specific_evidence_change when prior failed and global hash changed (P0010.2.x followup)', () => {
+    // P0010.2.x followup — Prior failed on hash-A; the global
+    // latestContentHash is now hash-B. The hash move is not enough
+    // proof of Situation-specific change (see the invariant test
+    // above). The natural decision is skip; only the recovery scan
+    // (recoveryHint === 'failed_retryable') is allowed to upgrade
+    // this to investigate on the operator's explicit intent, and the
+    // recovery semantics are intentionally unchanged by this fix.
     insertLearningContext(db, SIT, buildContextBody({
       investigation: {
         status: 'failed',
@@ -213,7 +263,7 @@ describe('createInvestigationPolicy', () => {
       situationId: SIT,
       latestContentHash: 'hash-B',
     });
-    expect(decision).toEqual({ kind: 'investigate', reason: 'meaningful_new_evidence' });
+    expect(decision).toEqual({ kind: 'skip', reason: 'no_situation_specific_evidence_change' });
   });
 
   test('returns new_situation when prior is failed legacy (no content marker)', () => {

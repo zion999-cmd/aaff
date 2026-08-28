@@ -6,13 +6,16 @@ export type { ParseInvestigationResult } from './parse.js';
 export {
   normalizeHypothesisStatus,
   normalizeStopReason,
+  normalizeRecommendationKind,
   normalizeInvestigationContract,
   CANONICAL_HYPOTHESIS_STATUSES,
   CANONICAL_STOP_REASONS,
+  CANONICAL_RECOMMENDATION_KINDS,
 } from './normalize.js';
 export type {
   CanonicalHypothesisStatus,
   CanonicalStopReason,
+  CanonicalRecommendationKind,
   NormalizationResult,
   ContractNormalizationResult,
 } from './normalize.js';
