@@ -76,6 +76,8 @@ describe('Evidence Store', () => {
       source: 'jd',
       shop_id: 'jd_001',
       data_type: 'summary',
+      // P0010.2.10 — business_date is now a required schema field.
+      business_date: '2026-06-30',
       acquired_at: new Date().toISOString(),
       method: 'cdp',
       version: '1.0.0',
@@ -86,5 +88,66 @@ describe('Evidence Store', () => {
       mime_type: 'application/json',
     });
     expect(meta.source).toBe('jd');
+    expect(meta.business_date).toBe('2026-06-30');
+  });
+
+  // P0010.2.10 — legacy .meta.json files written before the business_date
+  // field existed must still be readable. listEvidence / loadEvidence inject
+  // business_date from the path so the schema's "required" constraint never
+  // rejects an existing on-disk file. Pin this behavior.
+  test('loadEvidence injects business_date from the path for legacy metadata', () => {
+    // Write a legacy .meta.json directly to disk WITHOUT business_date,
+    // simulating the pre-P0010.2.10 era. Everything else matches the
+    // real on-disk shape (see data/evidence/jd/2026/08/20_summary.meta.json).
+    const legacyDate = '2026-06-25';
+    const legacyType = 'summary-legacy';
+    const platformDir = `data/evidence/${TEST_PLATFORM}/2026/06`;
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const fs = require('node:fs') as typeof import('node:fs');
+    fs.mkdirSync(platformDir, { recursive: true });
+    fs.writeFileSync(
+      `${platformDir}/25_${legacyType}.json`,
+      JSON.stringify({ legacy: true }),
+      'utf-8',
+    );
+    fs.writeFileSync(
+      `${platformDir}/25_${legacyType}.meta.json`,
+      JSON.stringify({
+        source: TEST_PLATFORM,
+        shop_id: TEST_SHOP,
+        data_type: legacyType,
+        // ← NO business_date in this legacy payload
+        acquired_at: '2026-06-25T12:00:00.000Z',
+        acquisition_method: 'cdp',
+        processing_method: 'runtime',
+        method: 'cdp',
+        version: '1.0.0',
+        operator: 'system',
+        runtime: 'node',
+        connector: TEST_PLATFORM,
+        content_hash: 'legacy-hash',
+        mime_type: 'application/json',
+        tags: [],
+      }),
+      'utf-8',
+    );
+
+    const loaded = loadEvidence(TEST_PLATFORM, legacyDate, legacyType);
+    expect(loaded).not.toBeNull();
+    expect(loaded!.record.metadata.business_date).toBe(legacyDate);
+  });
+
+  // P0010.2.10 — same path-based fallback applies to listEvidence. Without
+  // it, every pre-P0010.2.10 evidence file would fail schema.parse and be
+  // silently dropped from listings.
+  test('listEvidence injects business_date from the path for legacy metadata', () => {
+    // The previous test already wrote 25_summary-legacy.* files.
+    const results = listEvidence({
+      source: TEST_PLATFORM,
+      dataType: 'summary-legacy',
+      limit: 10,
+    });
+    expect(results).toHaveLength(1);
+    expect(results[0]!.metadata.business_date).toBe('2026-06-25');
   });
 });

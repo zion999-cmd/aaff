@@ -2471,3 +2471,90 @@ on a poller tick, so its placeholder never flashes on a no-op poll.
 - If a future view adds a loading placeholder, it MUST follow the
   new pattern: user-initiated entry point writes it, poller-shared
   helper does not.
+
+
+## ADR-071 — Situation "较昨日" comparison source = Evidence (P0010.2.10)
+
+- **日期**: 2026-08-29
+- **状态**: Accepted（typecheck 0 新增 / npm test 1210 passed / 2 pre-existing failed env-blocked / 3 skipped / net +24 new tests, 0 new regression / real-data verification 2 cases）
+- **来源**: 用户 verbatim P0010.2.10 spec, 修复 Situation 的"较昨日"比较语义。先 Audit, 再做最小修复。
+
+**核心问题 (audit 锁定)**:
+
+trade.overview 4 个核心指标 (GMV, 订单, 店铺访客, 店铺 CVR) 生成的 Situations 全部展示错误的"较昨日"对比。8/28 vs 8/27 例子:
+
+| Metric | Situation 显示的 current → previous | 用户期望的 (今天 vs 昨天) |
+|---|---:|---:|
+| GMV | ¥2932.52 → ¥1652.16 (下降 43.7%) | ¥6801.02 → ¥5585.20 (上升 21.8%) |
+
+数字差异 (2932 vs 6801) 来自 P0010.2.9 之前 `summary` endpoint 的旧值,但**更严重的是比较语义本身错**:Signal 路径按 `observed_at` UTC 午夜 sort 后取 `[length-1]/[length-2]`,在 Evidence 上有多个 data_type (`summary` + `getSummary`)、多个 acquired_at (8/28 早 / 8/28 晚) 的情况下,producer 把"前一天下午的 summary"和"今天上午的 getSummary"互相比较 — 算术上算得出百分比但语义上不是"今天 vs 昨天"。
+
+**根因 (4 个独立但互相叠加)**:
+
+1. **Signal 路径无法区分 data_type**。`Signal.metrics` 只含数字,不含 data_type / endpoint / acquired_at — 同样 `gmv: 6801.02` 可能来自 `getSummary` (P0010.2.9 真相) 或 `summary` (P0010.2.9 之前的错数据),Signal 层看不出来。
+2. **Signal 路径无法区分 acquisition_method**。`acquisition_method: 'cdp' | 'mock' | 'import-agentcms'` 只在 Evidence metadata 有。Production 不应该用 mock 数据生成 Situation,但 Signal 路径没有这个 filter 钩子。
+3. **`observed_at` 是 UTC 午夜**。Signal.observed_at = `new Date(date).toISOString()` → `2026-08-28T00:00:00.000Z`。如果 evidence 在 8/28 23:55 采集的是 8/27 的数据,signal.observed_at 是 8/27,producer 不会知道这个 signal 实际代表 8/27 — 它只是按 UTC 时间排进序列。
+4. **`[length-1]/[length-2]` index 假设永远相邻**。8/26 + 8/28 两天 (8/27 缺) 时,`[length-2]` 取 8/26 但 8/26 不是 8/27 — 8/27 缺 = "昨天" 应该是 8/27 但 producer 硬性把 8/26 当昨天,显示"-X% 较昨日"。
+
+**关键决策 (5 个, 全部用户 verbatim)**:
+
+1. **Evidence 按 business_date 分组**, 绝对不能按 acquired_at 日期分组。**新 `business_date` 字段**(`YYYY-MM-DD`) 在 `EvidenceMetadataSchema` 作为 required field,语义明确: "the date the evidence REPRESENTS (NOT when it was acquired)"。`acquired_at` 只用于同一 business_date 内选择 latest (e.g. 23:55 采集的昨日数据归 8/27)。
+2. **`data_type === 'getSummary'` 是 4 个 trade.overview 指标唯一允许的 source**。禁止 fallback 到旧 `summary` endpoint 的 evidence (即使在同一 business_date / acquisition_method=cdp 也不能用,因为 summary endpoint 字段是错的)。这是 P0010.2.9 trade.overview 数据源修复的"前传" — 同样的 4 个指标不能在 Situation 比较时重新引入 P0010.2.9 之前的问题。
+3. **Production Situation 禁止 `acquisition_method === 'mock'` 作为比较事实**。当前 8/27 只有 mock getSummary 时,正确行为是: 暂不生成 8/28 的"较昨日" Situation (新 producer 直接 emit 0 situations, 不伪造).
+4. **必须验证日期真的相邻**。`nextCalendarDay(previous.date, latest.date)` 必须返回 true, 否则跳过 meaningful_change + cross_signal emit。8/26 + 8/28 (no 8/27) → 不得显示"较昨日"。
+5. **同一 business_date 有多个真实 getSummary Evidence 时, 再按 acquired_at 选择最新有效记录**。tie-break by file_path (deterministic).
+
+**实现** (5 处 minimal, 全部在 evidence layer + situation layer):
+
+- `apps/ecommerce/connectors/evidence/types.ts` — `EvidenceMetadataSchema` 新加 required `business_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/)`;`EvidenceListOptionsSchema` 新加 `businessDate: z.string().optional()` 过滤选项。**breaking change**: 任何直接 `EvidenceMetadataSchema.parse` 没带 `business_date` 的代码会 fail,测试 fixture 必须更新 (1 个 existing test in `evidence-store.test.ts` 同步修)。
+- `apps/ecommerce/connectors/evidence/store.ts` — `saveEvidence` 自动写 `business_date: dateStr` (path-encoded 真相);`loadEvidence` + `listEvidence` 对 legacy 缺 `business_date` 的 `.meta.json` 文件从 path inject (`${year}-${month}-${day}` 来自目录结构 + 文件名 prefix),保证 schema 的 required 约束永不拒 on-disk legacy evidence。
+- `apps/ecommerce/runtime/situation/producer.ts` — 重写 `loadStoreDailyFromEvidence` 替换原 `SignalFacade.list` 路径: (a) `listEvidence({ source, shopId, dataType: 'getSummary' })` 拿所有同口径 evidence; (b) `acquisition_method !== 'cdp'` 全部 drop; (c) 按 `business_date` 分组, 每组内按 `acquired_at` 降序取 latest (tie-break file_path); (d) 读 data file → `parseJdSummary` 抽 4 个指标 (gmv / orders / shop_visitors / shop_conversion_rate); (e) `uv ← shop_visitors` / `cvr ← shop_conversion_rate` (P0010.2.9 canonical mapping); (f) sort ASC by business_date.
+- `apps/ecommerce/runtime/situation/rules.ts` — 新 `nextCalendarDay` helper; `detectSituations` 在 latest/previous 取定后, **adjacent check 通过** 才 emit meaningful_change + cross_signal (ranking_attention 路径不动, 与日期无关).
+- `tests/unit/situation/situation-producer.test.ts` — 重写 (signal-based seed → evidence-based seed), 5 个 acceptance scenario 测试 + 1 个 adjacent-date 集成测试 + 1 个同一 business_date 多个 evidence 选 latest 测试 + 既有 11 个 unit test 全部 refactor to use `parseJdSummary` 直接传 canonical 4 metrics.
+
+**验收 (real-data verification, 2 cases)**:
+
+**Case 1 — current state (8/27 缺 cdp getSummary)**: 
+- `data/evidence/jd/2026/08/`: 只有 8/27 mock getSummary, 8/28 无 cdp getSummary
+- `runSituationProducer(jd_shop_001)` → `created=0 skipped=0` ✓ (符合用户 spec: 暂不生成 8/28 的"较昨日" Situation)
+
+**Case 2 — happy path (2 天都有 cdp getSummary, 8/27 上午 + 8/28 下午)**:
+- seed 8/27 (cdp, gmv=5585.20 / orders=95 / uv=780 / cvr=0.1218, acquired_at=8/28 09:00) + 8/28 (cdp, gmv=6801.02 / orders=125 / uv=928 / cvr=0.1336, acquired_at=8/28 17:00)
+- `runSituationProducer(jd_shop_001)` → 2 meaningful_change (gmv +21.8% / orders +31.6%, 都过 20% 阈值) — uv +19.0% / cvr +9.7% 没过阈值正确不发
+- **关键 invariants 都对**: 8/27 evidence acquired_at 8/28 09:00 (不是 8/27) 但 `business_date=2026-08-27` — grouping 正确, comparison 是 8/28 vs 8/27 (不是 vs 8/28 当天)
+
+**Acceptance 5 scenario (新增 unit test 覆盖)**:
+1. ✓ acquired_at=8/28 + business_date=8/27 → 归入 8/27, comparison 是 8/28 vs 8/27
+2. ✓ today getSummary + yesterday 旧 summary → 不比较 (data_type filter, no fallback)
+3. ✓ today getSummary-cdp + yesterday getSummary-mock → 不比较 (acquisition_method filter, no mock in production)
+4. ✓ 8/28 + 8/26 (no 8/27) → 不得显示"较昨日" (adjacent-date check)
+5. ✓ 8/28 + 8/27 两条真实同口径 → 才生成 4 项比较 (happy path)
+6. ✓ 同一 business_date 多个 getSummary evidence → 按 acquired_at 选 latest (tie-break by file_path)
+
+**测试**:
+
+- **新 +24 net** (situation-producer.test.ts 重写 + 5 acceptance + adjacent + same-date 多个 + 既有 11 unit test refactor;evidence-store.test.ts +1 schema 测试 + 2 legacy fallback 测试)
+- **既有 situation-producer test 完全重写**: 原 `seedDaily` 用 `generateSignals` (Signal path),新 `seedGetSummary` 用 `saveEvidence` (Evidence path); 改用 `test-situation` platform + `test-shop-001` shop id 隔离真实 jd/ 目录避免污染
+- **既有 evidence-store test 同步**: schema.parse 直接 call 加 `business_date` 字段; 2 个新 test pin legacy fallback 行为
+- **既有 signal-engine / executor / contract / capability test 全部不动** (Signal layer 还在, 只是 situation producer 不再消费它)
+- npm test 1210 passed / 2 pre-existing failed (chat contract CDP timeout + p0010.2.4-live-d1 needs live Hermes) / 3 skipped — **net 0 new regression**
+- typecheck 0 新增 (21 baseline 全 pre-existing, 与本刀无关)
+
+**用户硬约束 100% 遵守**:
+- ❌ 不改 P0010.2.9 acquisition (CDP function / per-cap factory / indicator-map)
+- ❌ 不改 JD parser / mapping (parseJdSummary 已支持 shop-level 字段)
+- ❌ 不改 Hermes / MCP / 任何 transport
+- ❌ 不改 Investigation / runtime loop / recovery / wake
+- ❌ 不改 Workspace UI / chat / decision panel / presentation
+- ❌ 不处理其他 Situation 类型 (ranking_attention 路径不动)
+- ❌ 不顺手重构 Signal Engine (Signal layer 仍 export, 只是 producer 不消费)
+- ❌ 不扩 Zod enum / 不改 SituationSchema / 不改 lifecycle
+- ❌ 不伪造 data (no mock fallback, no cross-data-type comparison)
+- ❌ 4 个指标 root cause 统一路径 (共享 `latest`/`previous` via `DETECTED_METRICS` loop), 不分散修
+
+**P0010.2.9 关系**: P0010.2.9 修的是"trade.overview capability 拉到的数字对" (data source fix); P0010.2.10 修的是"基于这些数字生成的 Situation 比较语义对" (comparison source fix)。两层都是 trade.overview 链路, 但 P0010.2.10 的 fix 在 Situation layer (producer), 不在 acquisition layer — 严格按用户 NOT Included 列表.
+
+**Out of scope 记录 (deferred)**:
+- Signal layer 仍存在但 producer 不消费 — 未来如果需要 "Signal-based composite metric" 路径可重新接入
+- 既有 Signal 路径 (`generateSignals` 仍被 `runtime-signal-engine.ts` 调用于 `daily_summary` 等其他 signal type) 完整保留 — `situation/producer.ts` 是唯一改动点
+- Evidence 路径的 business_date 字段对其他 consumer (Recovery / Investigation / Workspace trace) 也是 single source of truth, 后续审计可以接

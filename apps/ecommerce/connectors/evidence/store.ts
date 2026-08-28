@@ -52,6 +52,13 @@ export const saveEvidence = (
     source: platform,
     shop_id: shopId,
     data_type: dataType,
+    // P0010.2.10: business_date is the calendar date the evidence
+    // REPRESENTS (the JD 商智 business date), NOT the wall-clock time
+    // of acquisition. Caller passes it as dateStr — the path already
+    // encodes it, and the metadata now does too. This is the field
+    // used for "today vs yesterday" comparison, "较昨日" window
+    // calculation, and business-day grouping.
+    business_date: dateStr,
     acquired_at: new Date().toISOString(),
     acquisition_method: 'unknown' as const,
     processing_method: 'none' as const,
@@ -119,9 +126,16 @@ export const loadEvidence = (
 
   if (!existsSync(dataPath) || !existsSync(metaPath)) return null;
 
-  const metadata = EvidenceMetadataSchema.parse(
-    JSON.parse(readFileSync(metaPath, 'utf-8')),
-  );
+  // P0010.2.10: business_date is the canonical "what day does this evidence
+  // represent" field. For legacy .meta.json files written before the field
+  // existed, derive it from the path (the path encodes business date).
+  // This guarantees the field is always present, so callers can trust
+  // metadata.business_date without a fallback check.
+  const rawMeta = JSON.parse(readFileSync(metaPath, 'utf-8')) as Record<string, unknown>;
+  if (typeof rawMeta.business_date !== 'string' || rawMeta.business_date.length === 0) {
+    rawMeta.business_date = dateStr;
+  }
+  const metadata = EvidenceMetadataSchema.parse(rawMeta);
   const data = JSON.parse(readFileSync(dataPath, 'utf-8'));
 
   const fileSize = Buffer.byteLength(JSON.stringify(data), 'utf-8');
@@ -142,7 +156,7 @@ export const loadEvidence = (
  * Walks the file system under data/evidence/.
  */
 export const listEvidence = (options: Partial<EvidenceListOptions> = {}): EvidenceRecord[] => {
-  const { source, shopId, dataType, fromDate, toDate, limit = 100 } = options;
+  const { source, shopId, dataType, fromDate, toDate, businessDate, limit = 100 } = options;
   const results: EvidenceRecord[] = [];
 
   if (!existsSync(EVIDENCE_ROOT)) return results;
@@ -176,17 +190,23 @@ export const listEvidence = (options: Partial<EvidenceListOptions> = {}): Eviden
 
           const metaPath = resolve(monthDir, metaFile);
           try {
-            const metadata = EvidenceMetadataSchema.parse(
-              JSON.parse(readFileSync(metaPath, 'utf-8')),
-            );
+            // P0010.2.10: business_date is the canonical "what day does this
+            // evidence represent" field. For legacy .meta.json files written
+            // before the field existed, derive it from the path (the path
+            // encodes business date as `${year}-${month}-${day}_${type}`).
+            const rawMeta = JSON.parse(readFileSync(metaPath, 'utf-8')) as Record<string, unknown>;
+            const dateStr = `${year}-${month}-${metaFile.slice(0, 2)}`;
+            if (typeof rawMeta.business_date !== 'string' || rawMeta.business_date.length === 0) {
+              rawMeta.business_date = dateStr;
+            }
+            const metadata = EvidenceMetadataSchema.parse(rawMeta);
 
             // Apply filters
             if (shopId && metadata.shop_id !== shopId) continue;
             if (dataType && metadata.data_type !== dataType) continue;
-
-            const dateStr = `${year}-${month}-${metaFile.slice(0, 2)}`;
-            if (fromDate && dateStr < fromDate) continue;
-            if (toDate && dateStr > toDate) continue;
+            if (fromDate && metadata.business_date < fromDate) continue;
+            if (toDate && metadata.business_date > toDate) continue;
+            if (businessDate && metadata.business_date !== businessDate) continue;
 
             results.push(
               EvidenceRecordSchema.parse({

@@ -61,6 +61,28 @@ const DETECTED_METRICS: readonly string[] = ['gmv', 'orders', 'uv', 'cvr'];
 
 const DIRECTION_WORD: Record<ChangeDirection, string> = { up: '上升', down: '下降' };
 
+// ---- Adjacent-date check (P0010.2.10) ----
+//
+// P0010.2.10: the "today vs yesterday" comparison is only valid when
+// latest.date and previous.date are ADJACENT calendar days. If we only
+// have 8/26 + 8/28 (no 8/27 evidence), we MUST NOT hardcode a "较昨日"
+// label — the operator sees "yesterday" as 8/27, not 8/26. The previous
+// index-based logic ([length-2]) would silently mislabel a 2-day gap
+// as "yesterday" — that's exactly the bug this slice fixes.
+//
+// `nextCalendarDay` returns true if `b` is the day immediately after `a`
+// (handles month/year boundaries via Date arithmetic, not string parsing).
+
+const nextCalendarDay = (a: string, b: string): boolean => {
+  const da = new Date(`${a}T00:00:00Z`);
+  const db = new Date(`${b}T00:00:00Z`);
+  if (Number.isNaN(da.getTime()) || Number.isNaN(db.getTime())) return false;
+  const dayMs = 86_400_000;
+  // Compare UTC day numbers to avoid DST/TZ drift in `Date.getTime()`.
+  const diffDays = Math.round((db.getTime() - da.getTime()) / dayMs);
+  return diffDays === 1;
+};
+
 // ---- Change computation ----
 
 interface MetricChange {
@@ -229,29 +251,35 @@ export const detectSituations = (input: DetectSituationsInput): Situation[] => {
   const situations: Situation[] = [];
 
   // A + C need at least two daily observations (latest vs prior day).
+  // P0010.2.10: AND the two observations must be ADJACENT calendar days.
+  // If 8/27 is missing, the [length-2] entry is 8/26 — but the operator
+  // calls 8/27 "yesterday", so labeling a 2-day gap as "较昨日" is wrong.
   if (input.storeDaily.length >= 2) {
     const latest = input.storeDaily[input.storeDaily.length - 1]!;
     const previous = input.storeDaily[input.storeDaily.length - 2]!;
-    const window = latest.date;
+    const adjacent = nextCalendarDay(previous.date, latest.date);
+    if (adjacent) {
+      const window = latest.date;
 
-    const changes: MetricChange[] = [];
-    for (const metric of DETECTED_METRICS) {
-      const change = computeChange(latest.metrics[metric], previous.metrics[metric]);
-      if (change && Math.abs(change.ratio) >= threshold) {
-        changes.push({ metric, ...change, current: latest.metrics[metric]!, previous: previous.metrics[metric]! });
+      const changes: MetricChange[] = [];
+      for (const metric of DETECTED_METRICS) {
+        const change = computeChange(latest.metrics[metric], previous.metrics[metric]);
+        if (change && Math.abs(change.ratio) >= threshold) {
+          changes.push({ metric, ...change, current: latest.metrics[metric]!, previous: previous.metrics[metric]! });
+        }
       }
-    }
 
-    // A. Meaningful change — one Situation per changed metric.
-    for (const c of changes) {
-      situations.push(buildMeaningfulChange(input.shop, c, window, previous.date));
-    }
+      // A. Meaningful change — one Situation per changed metric.
+      for (const c of changes) {
+        situations.push(buildMeaningfulChange(input.shop, c, window, previous.date));
+      }
 
-    // C. Cross-signal attention — traffic & conversion move in opposite directions.
-    const uvChange = changes.find((c) => c.metric === 'uv');
-    const cvrChange = changes.find((c) => c.metric === 'cvr');
-    if (uvChange && cvrChange && uvChange.direction !== cvrChange.direction) {
-      situations.push(buildCrossSignal(input.shop, uvChange, cvrChange, window, previous.date));
+      // C. Cross-signal attention — traffic & conversion move in opposite directions.
+      const uvChange = changes.find((c) => c.metric === 'uv');
+      const cvrChange = changes.find((c) => c.metric === 'cvr');
+      if (uvChange && cvrChange && uvChange.direction !== cvrChange.direction) {
+        situations.push(buildCrossSignal(input.shop, uvChange, cvrChange, window, previous.date));
+      }
     }
   }
 

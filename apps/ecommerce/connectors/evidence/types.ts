@@ -13,6 +13,15 @@ export const EvidenceMetadataSchema = z.object({
   shop_id: z.string().min(1),
   /** Data type captured (summary, trend, productTop, screenshot, dom) */
   data_type: z.string().min(1),
+  /**
+   * P0010.2.10 — Business observation date (YYYY-MM-DD), the date the
+   * evidence represents (NOT when it was acquired). This is the date used
+   * for "today vs yesterday" comparison, "较昨日" window calculation, and
+   * business-day grouping. Distinct from `acquired_at` which is the
+   * wall-clock time of the acquisition and may be on a different calendar
+   * day (e.g. 23:55 acquisition of yesterday's daily_summary).
+   */
+  business_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
   /** ISO timestamp of original acquisition */
   acquired_at: z.string().min(1),
   /**
@@ -77,6 +86,8 @@ export const EvidenceListOptionsSchema = z.object({
   dataType: z.string().optional(),
   fromDate: z.string().optional(),
   toDate: z.string().optional(),
+  /** P0010.2.10 — Filter by business_date. */
+  businessDate: z.string().optional(),
   limit: z.number().positive().default(100),
 });
 export type EvidenceListOptions = z.infer<typeof EvidenceListOptionsSchema>;
