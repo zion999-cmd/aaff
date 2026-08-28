@@ -19,6 +19,7 @@ interface CdpPage {
   goto(url: string, opts?: { waitUntil?: string; timeout?: number }): Promise<void>;
   reload(opts?: { waitUntil?: string }): Promise<void>;
   on(event: 'response', handler: (response: CdpResponse) => void): void;
+  off(event: 'response', handler: (response: CdpResponse) => void): void;
   route(url: string, handler: (route: CdpRoute) => Promise<void>): Promise<void>;
   unroute(url: string): Promise<void>;
   /** P0005.3: Click an element by text content or selector */
@@ -505,9 +506,13 @@ export const acquireJdTradeOverviewViaCDP = async (
     return empty(true, [`CDP connect failed: ${err instanceof Error ? err.message : String(err)}`]);
   }
 
+  // Hoisted so the `finally` block can detach the response listener on
+  // every exit path (result / throw / early-return) — no cross-tick leak.
+  let targetPage: CdpPage | undefined;
+  let responseHandler: ((response: CdpResponse) => Promise<void>) | null = null;
+
   try {
     // 4. Find any open JD page (operator must be logged in)
-    let targetPage: CdpPage | undefined;
     for (const ctx of browser.contexts()) {
       for (const p of ctx.pages()) {
         const url = p.url();
@@ -525,25 +530,21 @@ export const acquireJdTradeOverviewViaCDP = async (
       ]);
     }
 
-    // 5. Navigate to trade summary page
-    await targetPage.goto(TRADE_OVERVIEW_URL, {
-      waitUntil: 'domcontentloaded',
-      timeout: 15_000,
-    });
-
-    // 6. Wait for SPA to render the 核心指标 / 交易概览 shell
-    try {
-      await targetPage.waitForSelector('text=核心指标', { timeout: 10_000 });
-    } catch {
-      // Selector not present in this build — continue. The response
-      // capture below is the source of truth.
-    }
-
-    // 7. Set up response capture for getSummary + getTrend only
+    // 5. Set up response capture BEFORE any navigation (P0010.2.11 C1.6).
+    // The goto below triggers a full page reload even when the tab is
+    // already on tradeSummary.html. Registering the listener after the
+    // navigation raced the page lifecycle: on the first tick of a fresh
+    // dev server the reload's follow-up fetches fired before the
+    // listener was attached, so `captured` stayed empty and the first
+    // acquisition failed ("Did not capture …"). Registering first means
+    // every response — including those fired during/before the reload —
+    // is observable. The filter below keeps only the two target APIs,
+    // so nothing unrelated is accumulated. The handler is removed in
+    // the `finally` block on every exit path (result, throw, empty).
     const captured: { api: string; data: unknown }[] = [];
     const targetApis = new Set(['getSummary', 'getTrend']);
 
-    const responseHandler = async (response: CdpResponse): Promise<void> => {
+    const handler = async (response: CdpResponse): Promise<void> => {
       const url = response.url();
       if (!url.includes('szgateway.jd.com/api/lowcode/tradeSummary/')) return;
       const apiName = url.split('/').pop()?.split('?')[0]?.replace('.ajax', '') || '';
@@ -558,7 +559,22 @@ export const acquireJdTradeOverviewViaCDP = async (
         // Skip non-JSON
       }
     };
-    targetPage.on('response', responseHandler);
+    responseHandler = handler;
+    targetPage.on('response', handler);
+
+    // 6. Navigate to trade summary page
+    await targetPage.goto(TRADE_OVERVIEW_URL, {
+      waitUntil: 'domcontentloaded',
+      timeout: 15_000,
+    });
+
+    // 7. Wait for SPA to render the 核心指标 / 交易概览 shell
+    try {
+      await targetPage.waitForSelector('text=核心指标', { timeout: 10_000 });
+    } catch {
+      // Selector not present in this build — continue. The response
+      // capture above is the source of truth.
+    }
 
     // 8. Click "查询" to force a fresh fetch. The page is in 实时 mode by
     // default, but the click guarantees the SPA fires getSummary/getTrend
@@ -604,6 +620,19 @@ export const acquireJdTradeOverviewViaCDP = async (
   } catch (err) {
     return empty(true, [err instanceof Error ? err.message : String(err)]);
   } finally {
+    // C1.6 — detach the response listener on EVERY exit path (success,
+    // failure result, thrown error) so no handler survives the tick. The
+    // browser connection is closed right after, which would drop it
+    // anyway, but the explicit detach makes the no-leak invariant
+    // structural instead of incidental.
+    if (targetPage && responseHandler) {
+      try {
+        targetPage.off('response', responseHandler);
+      } catch {
+        // Page may already be gone (navigation crash) — nothing to detach.
+      }
+    }
+    responseHandler = null;
     await browser.close().catch(() => {});
   }
 };
