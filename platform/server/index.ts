@@ -321,6 +321,25 @@ const main = async (): Promise<void> => {
     );
   }
   startServer({ db, schedule });
+  // P0010.2.11 C1.3 — restore JD session bootstrap ONLY, independent of
+  // the backfill path. We removed `ensureJdSession` together with the
+  // broken startup backfill in C1.1, but `ensureJdSession` is also the
+  // function that launches Chrome on :9222 and opens a JD tab. Without
+  // it, `acquireJdTradeOverviewViaCDP` only probes `isCdpAvailable` and
+  // returns a generic "Chrome CDP not available" error if no one started
+  // Chrome before the Loop's first tick. Idempotent: if Chrome + JD tab
+  // already exist (the production case), this is a 2-step probe (`isCdpAvailable`
+  // + page list) and prints `chrome=ready page=available`. If Chrome is
+  // missing, `ensureChromeReady` launches it; if the JD tab is missing,
+  // `ensureJdPageOpen` opens one. Never closes or reloads existing tabs.
+  // Does NOT touch backfill, evidence, or any state outside the browser.
+  const { ensureJdSession } = await import('#app/connectors/jd/acquisition/session-lifecycle.js');
+  const session = await ensureJdSession();
+  // eslint-disable-next-line no-console
+  console.log(
+    `[startup] jd session: chrome=${session.chrome} page=${session.jdPage}` +
+      (session.ready ? '' : ' (acquisition will fail honestly if not logged in)'),
+  );
   // Start the Loop after the HTTP server is listening. The Loop's first
   // tick runs after `tickMs` (60s) so it does not race the server start.
   // Force an immediate first tick so the operator sees a log line within
