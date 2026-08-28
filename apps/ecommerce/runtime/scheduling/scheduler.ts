@@ -15,7 +15,7 @@ import { createRuntimeKernel } from '#app/runtime/kernel/index.js';
 import type { RuntimeKernel } from '#app/runtime/kernel/index.js';
 import { createEmptyBlueprint } from '#app/runtime/kernel/runtime-executor.js';
 import { loadBlueprint } from '#app/connectors/binding/loader.js';
-import { createLocalFirstLiveAcquire } from '#app/connectors/jd/historical-acquire.js';
+import { createCapabilityAcquire } from '#app/connectors/jd/historical-acquire.js';
 import { nowIso } from '#shared/utils/time.js';
 
 /** One configured scheduled acquisition (in-memory config, minimal). */
@@ -40,7 +40,10 @@ const getKernel = (db: Db): RuntimeKernel => {
   } catch {
     blueprint = createEmptyBlueprint('jd');
   }
-  kernel = createRuntimeKernel(db, blueprint, createLocalFirstLiveAcquire());
+  // P0010.2.11 C1 — scheduler must use the same per-capability dispatch as
+  // `/api/fabric/execute`. Bare `createLocalFirstLiveAcquire` would route
+  // trade.overview through the OLD snapshot walker.
+  kernel = createRuntimeKernel(db, blueprint, createCapabilityAcquire());
   return kernel;
 };
 

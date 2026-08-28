@@ -15,12 +15,10 @@ import { loadBlueprint } from '#app/connectors/binding/loader.js';
 import type { EnterpriseSignal } from '#shared/schemas/signal.js';
 import {
   acquireJdMultiPage,
-  acquireJdTradeOverviewViaCDP,
   isCdpAvailable,
   isJdPageAvailable,
 } from '#app/connectors/jd/acquisition/cdp-client.js';
-import { createLocalFirstLiveAcquire } from '#app/connectors/jd/historical-acquire.js';
-import type { AcquireFunction } from '#app/connectors/binding/executor.js';
+import { createCapabilityAcquire } from '#app/connectors/jd/historical-acquire.js';
 import { getDataPages } from '#app/connectors/jd/blueprint.js';
 import { saveEvidence } from '#app/connectors/evidence/store.js';
 import { parseJdPayload } from '#app/connectors/jd/parsers/index.js';
@@ -92,13 +90,12 @@ const getKernel = (db: Db): RuntimeKernel => {
 // P0010.2.9: trade.overview uses the page-driven tradeSummary acquire
 // (getSummary.ajax + getTrend.ajax) so the values match the live 经营概览
 // page. Other capabilities keep the local-first path.
+//
+// P0010.2.11 C1: the per-cap dispatch is now in
+// `createCapabilityAcquire` (`apps/ecommerce/connectors/jd/historical-acquire.ts`)
+// so the scheduler and `/api/fabric/execute` share the same lower-level
+// dispatch (no HTTP roundtrip from the runtime loop).
 let _fabricKernel: RuntimeKernel | null = null;
-
-/** Endpoints that identify the trade.overview capability. */
-const TRADE_OVERVIEW_ENDPOINTS: ReadonlySet<string> = new Set([
-  'getSummary',
-  'getTrend',
-]);
 
 const getFabricKernel = (db: Db): RuntimeKernel => {
   if (_fabricKernel) return _fabricKernel;
@@ -109,46 +106,7 @@ const getFabricKernel = (db: Db): RuntimeKernel => {
     blueprint = createEmptyBlueprint('jd');
   }
 
-  const localFirstAcquire = createLocalFirstLiveAcquire();
-  const perCapAcquire: AcquireFunction = async (shopId, endpoints, options) => {
-    // trade.overview → navigate to the live 经营概览 page, capture the
-    // page's own getSummary/getTrend responses. Keep the CDP/signed-request
-    // path (no __sgm__ forgery). Return shape matches the existing
-    // Record<endpoint, payload> contract.
-    const isTradeOverview = endpoints.some(
-      (e) => TRADE_OVERVIEW_ENDPOINTS.has(e) || TRADE_OVERVIEW_ENDPOINTS.has(e.split('/').pop()?.split('?')[0]?.replace('.ajax', '') ?? ''),
-    );
-
-    if (isTradeOverview) {
-      const acqOpts: { cdpPort?: number; date?: string; maxWaitMs?: number } = {};
-      if (options?.cdpPort !== undefined) acqOpts.cdpPort = options.cdpPort;
-      if (options?.date) acqOpts.date = options.date;
-      const result = await acquireJdTradeOverviewViaCDP(acqOpts);
-      if (!result.success) {
-        throw new Error(
-          result.errors?.[0] ?? `trade.overview acquire failed for ${result.date}`,
-        );
-      }
-      const data: Record<string, unknown> = {};
-      for (const endpoint of endpoints) {
-        const base = endpoint
-          .split('/')
-          .pop()
-          ?.split('?')[0]
-          ?.replace('.ajax', '') ?? endpoint;
-        if (base === 'getSummary') {
-          data[endpoint] = result.summary;
-        } else if (base === 'getTrend') {
-          data[endpoint] = result.trend;
-        }
-      }
-      return data;
-    }
-
-    return localFirstAcquire(shopId, endpoints, options);
-  };
-
-  _fabricKernel = createRuntimeKernel(db, blueprint, perCapAcquire);
+  _fabricKernel = createRuntimeKernel(db, blueprint, createCapabilityAcquire());
   return _fabricKernel;
 };
 

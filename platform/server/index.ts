@@ -181,7 +181,20 @@ const backfillRecentData = async (db: Db, days = 7): Promise<void> => {
     let latestTopProducts: import('#app/connectors/jd/parsers/index.js').JdProductTopEntry[] = [];
     const missed: string[] = [];
     for (const date of dates) {
-      const result = await kernel.execute({ shopId: 'jd_shop_001', mock: false, date });
+      // P0010.2.11 C1 — backfill is productTop → rankings → situations.
+      // trade.overview and traffic.overview MUST NOT run here, because
+      // without the capability filter, the planner falls back to ALL
+      // capabilities, and trade.overview falls through to the OLD
+      // snapshot walker (writes `summary` / `trend` evidence — the wrong
+      // dataType, rejected by P0010.2.10). traffic.overview has no
+      // acquire function and writes only 1 wrong evidence file per day.
+      // Scope backfill to the only capability whose data it consumes.
+      const result = await kernel.execute({
+        shopId: 'jd_shop_001',
+        mock: false,
+        date,
+        capabilities: ['product.overview'],
+      });
       if (result.success) {
         completed++;
         if (result.parsed?.top_products && result.parsed.top_products.length > 0) {

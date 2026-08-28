@@ -171,7 +171,14 @@ const inferModuleFromEndpoint = (
     const endpointLower = endpoint.toLowerCase();
 
     // Direct module prefix match
-    if (cap.api_module === 'indexSummary' && /^(summary|index|getProduct|getFlow|getAlarm)/.test(endpoint)) {
+    // P0010.2.11 C1 Bug 1 — the previous regex `^(summary|index|getProduct|getFlow|getAlarm)`
+    // excluded the new lowcode endpoints `getSummary` / `getTrend` (the "get" prefix
+    // is anchored as a literal, not as "get*" — the "get" in "getSummary" is not a
+    // leading character because the regex already starts matching at `s`/`i`/`g`).
+    // Trade.overview was resolving to 0 endpoints through indexSummary, so
+    // selectedApis was empty and the runtime loop had no plan. Add the new
+    // canonical names alongside the existing alternation.
+    if (cap.api_module === 'indexSummary' && /^(summary|index|getProduct|getFlow|getAlarm|getSummary|getTrend)/.test(endpoint)) {
       return 'indexSummary';
     }
     if (cap.api_module === 'industryMarket' && /^(industry|market|trade)/.test(endpointLower)) {
