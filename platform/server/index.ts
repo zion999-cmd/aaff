@@ -151,7 +151,11 @@ export const startServer = (options: ServerOptions, port: number = Number(proces
 // runs the runtime pipeline with a local-first (live-on-miss) acquire, so the
 // "今日工作" / "经营观察" views have up-to-date signals/rankings with timestamps.
 // Runs in the background — never blocks the HTTP server.
-const backfillRecentData = async (db: Db, days = 7): Promise<void> => {
+//
+// P0010.2.11 C1.1: NOT invoked from the production startup path (see main()).
+// Exported so a future ticket can wire it back in once historical acquisition
+// works. The implementation is kept intact.
+export const backfillRecentData = async (db: Db, days = 7): Promise<void> => {
   try {
     const { createRuntimeKernel } = await import('#app/runtime/kernel/index.js');
     const { loadBlueprint } = await import('#app/connectors/binding/loader.js');
@@ -327,8 +331,15 @@ const main = async (): Promise<void> => {
     // eslint-disable-next-line no-console
     console.log('[loop] loop started (continuous business runtime)');
   }
-  // Supplement missing data in the background (non-blocking).
-  void backfillRecentData(db);
+  // P0010.2.11 C1.1 — the automatic startup backfill is removed from the
+  // production startup path. It was both (a) writing no historical evidence
+  // (the multi-day walker captured 0 responses on tradeSummary.html) and
+  // (b) reloading the same CDP page that canonical realtime acquisition
+  // needs, so it competed with the RuntimeLoop. The implementation
+  // (`backfillRecentData` above) is preserved for future re-introduction
+  // once a working historical acquisition path exists. Until then, startup
+  // is just: server start → RuntimeLoop → trade.overview →
+  // acquireJdTradeOverviewViaCDP → canonical getSummary/getTrend.
 };
 
 if (import.meta.url === `file://${process.argv[1]}`) {
