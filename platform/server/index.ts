@@ -262,9 +262,16 @@ const main = async (): Promise<void> => {
   // `at` field is now informational only — the Loop ticks on its own
   // clock, not on a daily HH:MM. Pass `runtimeLoop: false` to fall back
   // to the per-day-at-HH:MM scheduler.
+  // P0010.2.11 Step 1: traffic.overview is disabled at the scheduler boundary.
+  // There is no `acquireJdTrafficOverviewViaCDP` and the planner's local-first
+  // path for traffic falls through to the OLD snapshot walker, writing wrong
+  // evidence (only 1 of 11 planned endpoints actually writes a file, and that
+  // file is a product list, not traffic metrics). Re-enable when a page-driven
+  // traffic acquire exists AND the catalog/parser-plan endpoint mismatch is
+  // reconciled. See [[p0010-2-11a-traffic-overview-broken]].
   const schedule: ScheduledAcquisition[] = [
     { capability: 'trade.overview', at: '00:00', enabled: true },
-    { capability: 'traffic.overview', at: '00:00', enabled: true },
+    { capability: 'traffic.overview', at: '00:00', enabled: false },
   ];
   // P0010.1 Final Repair — Area A: idempotent product-catalog bootstrap.
   // Walks every getProductList*.json under data/evidence/jd and projects
