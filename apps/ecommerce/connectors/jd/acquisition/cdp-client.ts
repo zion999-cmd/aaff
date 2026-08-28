@@ -417,6 +417,197 @@ export const acquireJdViaCDP = async (
   return result;
 };
 
+// ---- Trade Overview (P0010.2.9) ----
+//
+// trade.overview is the live 经营概览 page. It calls the lowcode endpoints
+// `tradeSummary/summary/getSummary.ajax` + `getTrend.ajax` — NOT the snapshot
+// `indexSummary/summary.ajax` that the historical walker uses. Page-driven:
+//   1. Navigate to /szweb/view/tradeAnalysis/tradeSummary.html
+//   2. Let the SPA fire its own signed XHR (no body rewrite — the page knows
+//      `todayRealtime` mode is correct)
+//   3. Capture both responses in memory
+//
+// Keep CDP/browser signed-request path: do NOT try to forge __sgm__.
+
+export interface TradeOverviewAcquireOptions {
+  /** Chrome CDP port (default: 9222) */
+  cdpPort?: number;
+  /** Target date (ISO, default: today) */
+  date?: string;
+  /** Max wait time for both responses (default: 15_000 ms) */
+  maxWaitMs?: number;
+}
+
+export interface TradeOverviewAcquireResult {
+  success: boolean;
+  date: string;
+  summary: unknown[];
+  trend: unknown[];
+  errors?: string[];
+  cdpAvailable: boolean;
+}
+
+const TRADE_OVERVIEW_URL = 'https://jdsz.jd.com/szweb/view/tradeAnalysis/tradeSummary.html';
+
+/**
+ * Acquire trade.overview via the live 经营概览 page.
+ *
+ * The page fires `tradeSummary/summary/getSummary.ajax` + `getTrend.ajax` on
+ * its own (with the page's own CSRF headers + signed request context). We
+ * navigate to the page, let it fire, and capture the responses — no body
+ * rewrite, no `__sgm__` forgery. Returns a non-paged (single-day) payload
+ * keyed by `summary` and `trend` (the same keys the parsers expect).
+ *
+ * This is a sibling to {@link acquireJdViaCDP} (the multi-day snapshot walker)
+ * and {@link acquireJdMultiPage} (the multi-page discovery walker). It is the
+ * right tool for `trade.overview`, which is realtime shop-level, not historical.
+ */
+export const acquireJdTradeOverviewViaCDP = async (
+  options: TradeOverviewAcquireOptions = {},
+): Promise<TradeOverviewAcquireResult> => {
+  const { cdpPort = 9222, maxWaitMs = 15_000 } = options;
+  const date = options.date ?? new Date().toISOString().slice(0, 10);
+  const empty = (cdpAvailable: boolean, errors?: string[]): TradeOverviewAcquireResult => ({
+    success: false,
+    date,
+    summary: [],
+    trend: [],
+    cdpAvailable,
+    ...(errors ? { errors } : {}),
+  });
+
+  // 1. CDP availability
+  const available = await isCdpAvailable(cdpPort);
+  if (!available) {
+    return empty(false, [
+      `Chrome CDP not available on port ${cdpPort}. Start Chrome with --remote-debugging-port=${cdpPort}`,
+    ]);
+  }
+
+  // 2. Load playwright-core
+  let playwright: PlaywrightCore;
+  try {
+    playwright = (await import(String('playwright-core'))) as unknown as PlaywrightCore;
+  } catch {
+    return empty(true, ['playwright-core is not installed. Run: npm install playwright-core']);
+  }
+
+  // 3. Connect to Chrome
+  const wsUrl = await getWsUrl(cdpPort);
+  if (!wsUrl) {
+    return empty(true, ['Could not get CDP WebSocket URL']);
+  }
+
+  let browser: CdpBrowser;
+  try {
+    browser = await playwright.chromium.connectOverCDP(wsUrl);
+  } catch (err) {
+    return empty(true, [`CDP connect failed: ${err instanceof Error ? err.message : String(err)}`]);
+  }
+
+  try {
+    // 4. Find any open JD page (operator must be logged in)
+    let targetPage: CdpPage | undefined;
+    for (const ctx of browser.contexts()) {
+      for (const p of ctx.pages()) {
+        const url = p.url();
+        if (url.includes('jdsz.jd.com') || url.includes('sz.jd.com')) {
+          targetPage = p;
+          break;
+        }
+      }
+      if (targetPage) break;
+    }
+
+    if (!targetPage) {
+      return empty(true, [
+        'No 京东商智 page found in Chrome. Open https://jdsz.jd.com/ and log in first.',
+      ]);
+    }
+
+    // 5. Navigate to trade summary page
+    await targetPage.goto(TRADE_OVERVIEW_URL, {
+      waitUntil: 'domcontentloaded',
+      timeout: 15_000,
+    });
+
+    // 6. Wait for SPA to render the 核心指标 / 交易概览 shell
+    try {
+      await targetPage.waitForSelector('text=核心指标', { timeout: 10_000 });
+    } catch {
+      // Selector not present in this build — continue. The response
+      // capture below is the source of truth.
+    }
+
+    // 7. Set up response capture for getSummary + getTrend only
+    const captured: { api: string; data: unknown }[] = [];
+    const targetApis = new Set(['getSummary', 'getTrend']);
+
+    const responseHandler = async (response: CdpResponse): Promise<void> => {
+      const url = response.url();
+      if (!url.includes('szgateway.jd.com/api/lowcode/tradeSummary/')) return;
+      const apiName = url.split('/').pop()?.split('?')[0]?.replace('.ajax', '') || '';
+      if (!targetApis.has(apiName)) return;
+      try {
+        const body = await response.text();
+        const parsed = JSON.parse(body) as { header?: { code: number } };
+        if (parsed?.header?.code === 0) {
+          captured.push({ api: apiName, data: parsed });
+        }
+      } catch {
+        // Skip non-JSON
+      }
+    };
+    targetPage.on('response', responseHandler);
+
+    // 8. Click "查询" to force a fresh fetch. The page is in 实时 mode by
+    // default, but the click guarantees the SPA fires getSummary/getTrend
+    // even if a stale value is on screen. Multiple 查询 buttons may exist
+    // — pick the first one inside the page content area.
+    try {
+      await targetPage.click('button:has-text("查询")', { timeout: 5_000 });
+    } catch {
+      // Button not found / not clickable — rely on initial fetch.
+    }
+
+    // 9. Wait for both responses (or until maxWaitMs)
+    const start = Date.now();
+    while (Date.now() - start < maxWaitMs) {
+      const haveSummary = captured.some((c) => c.api === 'getSummary');
+      const haveTrend = captured.some((c) => c.api === 'getTrend');
+      if (haveSummary && haveTrend) break;
+      await new Promise((resolve) => setTimeout(resolve, 500));
+    }
+
+    // 10. Build result
+    const summary: unknown[] = [];
+    const trend: unknown[] = [];
+    for (const c of captured) {
+      if (c.api === 'getSummary') summary.push(c.data);
+      else if (c.api === 'getTrend') trend.push(c.data);
+    }
+
+    const result: TradeOverviewAcquireResult = {
+      success: summary.length > 0,
+      date,
+      summary,
+      trend,
+      cdpAvailable: true,
+    };
+    const missing: string[] = [];
+    if (summary.length === 0) missing.push('getSummary');
+    if (trend.length === 0) missing.push('getTrend');
+    if (missing.length > 0) {
+      result.errors = [`Did not capture: ${missing.join(', ')} within ${maxWaitMs}ms`];
+    }
+    return result;
+  } catch (err) {
+    return empty(true, [err instanceof Error ? err.message : String(err)]);
+  } finally {
+    await browser.close().catch(() => {});
+  }
+};
+
 // ---- Multi-Page Discovery (P0005.3) ----
 
 export interface MultiPageOptions {

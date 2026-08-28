@@ -1,7 +1,7 @@
 {
   "platform": "jd",
-  "generated_at": "2026-07-03T17:12:07.987Z",
-  "discovery_api_count": 70,
+  "generated_at": "2026-08-28T11:17:57.498Z",
+  "discovery_api_count": 72,
   "capabilities": [
     {
       "capability": "Transaction",
@@ -14,7 +14,7 @@
         "客单价",
         "行业基准对比"
       ],
-      "api_count": 18,
+      "api_count": 20,
       "data_quality": "high"
     },
     {
@@ -81,7 +81,7 @@
     }
   ],
   "parser_plan": {
-    "generated_at": "2026-07-03T17:12:07.949Z",
+    "generated_at": "2026-08-28T11:17:57.482Z",
     "source": "discovery/jd-capability",
     "rules": [
       {
@@ -1559,11 +1559,83 @@
         "is_paginated": false,
         "is_time_series": false,
         "data_quality": "medium"
+      },
+      {
+        "endpoint": "getSummary",
+        "strategy": "aggregate",
+        "fields_to_parse": [
+          "jdr_sch_trade_deal_ord_ord_amt_sz_trade_deal_snapshot",
+          "jdr_sch_trade_deal_ord_ord_qtty_sz_trade_deal_snapshot",
+          "jdr_sch_user_deal_ord_user_cnt_sz_user_deal_snapshot",
+          "jdr_sch_trade_deal_ord_sku_qtty_sz_trade_deal_snapshot",
+          "jdr_sch_traffic_enter_shop__browse_page_cnt_shop_last_src",
+          "jdr_sch_traffic_enter_shop__browse_page_qtty_shop_last_src",
+          "fo_jdr_sch_shop_deal_rate",
+          "fo_jdr_sch_traffic_enter_shop__browse_page_avg_duration_shop_last_src",
+          "fo_jdr_sch_add_cart_user_uv_rate@increase",
+          "fo_jdr_sch_trade_deal_ord_amt_user_sz_trade_deal_snapshot",
+          "jdr_sch_sku_add_cart_sku_sku_piece_shopping_cart",
+          "jdr_sch_sku_add_cart_sku_user_qtty_product_user_cart_add_minus_sz_bsg_shoppingcart@increase",
+          "jdr_sch_trade_deal_ord_ord_amt_sz_trade_deal_snapshot##compare",
+          "jdr_sch_trade_deal_ord_ord_amt_sz_trade_deal_snapshot##compareValue",
+          "jdr_sch_trade_deal_ord_ord_qtty_sz_trade_deal_snapshot##compare",
+          "jdr_sch_trade_deal_ord_ord_qtty_sz_trade_deal_snapshot##compareValue",
+          "jdr_sch_user_deal_ord_user_cnt_sz_user_deal_snapshot##compare",
+          "jdr_sch_user_deal_ord_user_cnt_sz_user_deal_snapshot##compareValue",
+          "jdr_sch_traffic_enter_shop__browse_page_cnt_shop_last_src##compare",
+          "jdr_sch_traffic_enter_shop__browse_page_cnt_shop_last_src##compareValue",
+          "fo_jdr_sch_shop_deal_rate##compare",
+          "fo_jdr_sch_shop_deal_rate##compareValue",
+          "status"
+        ],
+        "field_mapping": {
+          "jdr_sch_trade_deal_ord_ord_amt_sz_trade_deal_snapshot": "jdr_sch_trade_deal_ord_ord_amt_sz_trade_deal_snapshot",
+          "jdr_sch_trade_deal_ord_ord_qtty_sz_trade_deal_snapshot": "jdr_sch_trade_deal_ord_ord_qtty_sz_trade_deal_snapshot",
+          "jdr_sch_user_deal_ord_user_cnt_sz_user_deal_snapshot": "jdr_sch_user_deal_ord_user_cnt_sz_user_deal_snapshot",
+          "jdr_sch_trade_deal_ord_sku_qtty_sz_trade_deal_snapshot": "jdr_sch_trade_deal_ord_sku_qtty_sz_trade_deal_snapshot",
+          "jdr_sch_traffic_enter_shop__browse_page_cnt_shop_last_src": "jdr_sch_traffic_enter_shop__browse_page_cnt_shop_last_src",
+          "jdr_sch_traffic_enter_shop__browse_page_qtty_shop_last_src": "jdr_sch_traffic_enter_shop__browse_page_qtty_shop_last_src",
+          "fo_jdr_sch_shop_deal_rate": "fo_jdr_sch_shop_deal_rate",
+          "fo_jdr_sch_traffic_enter_shop__browse_page_avg_duration_shop_last_src": "fo_jdr_sch_traffic_enter_shop__browse_page_avg_duration_shop_last_src",
+          "fo_jdr_sch_add_cart_user_uv_rate@increase": "fo_jdr_sch_add_cart_user_uv_rate@increase",
+          "fo_jdr_sch_trade_deal_ord_amt_user_sz_trade_deal_snapshot": "fo_jdr_sch_trade_deal_ord_amt_user_sz_trade_deal_snapshot",
+          "jdr_sch_sku_add_cart_sku_sku_piece_shopping_cart": "jdr_sch_sku_add_cart_sku_sku_piece_shopping_cart",
+          "jdr_sch_sku_add_cart_sku_user_qtty_product_user_cart_add_minus_sz_bsg_shoppingcart@increase": "jdr_sch_sku_add_cart_sku_user_qtty_product_user_cart_add_minus_sz_bsg_shoppingcart@increase",
+          "jdr_sch_trade_deal_ord_ord_amt_sz_trade_deal_snapshot##compare": "jdr_sch_trade_deal_ord_ord_amt_sz_trade_deal_snapshot##compare",
+          "jdr_sch_trade_deal_ord_ord_amt_sz_trade_deal_snapshot##compareValue": "jdr_sch_trade_deal_ord_ord_amt_sz_trade_deal_snapshot##compareValue",
+          "jdr_sch_trade_deal_ord_ord_qtty_sz_trade_deal_snapshot##compare": "jdr_sch_trade_deal_ord_ord_qtty_sz_trade_deal_snapshot##compare",
+          "jdr_sch_trade_deal_ord_ord_qtty_sz_trade_deal_snapshot##compareValue": "jdr_sch_trade_deal_ord_ord_qtty_sz_trade_deal_snapshot##compareValue",
+          "jdr_sch_user_deal_ord_user_cnt_sz_user_deal_snapshot##compare": "jdr_sch_user_deal_ord_user_cnt_sz_user_deal_snapshot##compare",
+          "jdr_sch_user_deal_ord_user_cnt_sz_user_deal_snapshot##compareValue": "jdr_sch_user_deal_ord_user_cnt_sz_user_deal_snapshot##compareValue",
+          "jdr_sch_traffic_enter_shop__browse_page_cnt_shop_last_src##compare": "jdr_sch_traffic_enter_shop__browse_page_cnt_shop_last_src##compare",
+          "jdr_sch_traffic_enter_shop__browse_page_cnt_shop_last_src##compareValue": "jdr_sch_traffic_enter_shop__browse_page_cnt_shop_last_src##compareValue",
+          "fo_jdr_sch_shop_deal_rate##compare": "fo_jdr_sch_shop_deal_rate##compare",
+          "fo_jdr_sch_shop_deal_rate##compareValue": "fo_jdr_sch_shop_deal_rate##compareValue",
+          "status": "status"
+        },
+        "is_paginated": false,
+        "is_time_series": false,
+        "data_quality": "high"
+      },
+      {
+        "endpoint": "getTrend",
+        "strategy": "time_series",
+        "fields_to_parse": [
+          "jdr_sch_trade_deal_ord_ord_amt_sz_trade_deal_snapshot",
+          "status"
+        ],
+        "field_mapping": {
+          "jdr_sch_trade_deal_ord_ord_amt_sz_trade_deal_snapshot": "jdr_sch_trade_deal_ord_ord_amt_sz_trade_deal_snapshot",
+          "status": "status"
+        },
+        "is_paginated": false,
+        "is_time_series": true,
+        "data_quality": "medium"
       }
     ]
   },
   "normalizer_plan": {
-    "generated_at": "2026-07-03T17:12:07.963Z",
+    "generated_at": "2026-08-28T11:17:57.486Z",
     "source": "discovery/jd-capability indicator_dictionary + api_inventory",
     "rules": [
       {
@@ -7774,12 +7846,117 @@
         "unit": "count",
         "transform": "identity",
         "confidence": 0.7
+      },
+      {
+        "source_field": "jdr_sch_traffic_enter_shop__browse_page_cnt_shop_last_src",
+        "canonical": "shop_browse_page_cnt",
+        "unit": "count",
+        "transform": "identity",
+        "confidence": 0.7
+      },
+      {
+        "source_field": "jdr_sch_traffic_enter_shop__browse_page_qtty_shop_last_src",
+        "canonical": "shop_browse_page_qtty",
+        "unit": "count",
+        "transform": "identity",
+        "confidence": 0.7
+      },
+      {
+        "source_field": "fo_jdr_sch_shop_deal_rate",
+        "canonical": "rate",
+        "unit": "count",
+        "transform": "identity",
+        "confidence": 0.7
+      },
+      {
+        "source_field": "fo_jdr_sch_traffic_enter_shop__browse_page_avg_duration_shop_last_src",
+        "canonical": "shop_browse_page_avg_duration",
+        "unit": "count",
+        "transform": "identity",
+        "confidence": 0.7
+      },
+      {
+        "source_field": "fo_jdr_sch_add_cart_user_uv_rate@increase",
+        "canonical": "user",
+        "unit": "count",
+        "transform": "identity",
+        "confidence": 0.7
+      },
+      {
+        "source_field": "jdr_sch_sku_add_cart_sku_sku_piece_shopping_cart",
+        "canonical": "cart_sku_sku",
+        "unit": "count",
+        "transform": "identity",
+        "confidence": 0.7
+      },
+      {
+        "source_field": "jdr_sch_sku_add_cart_sku_user_qtty_product_user_cart_add_minus_sz_bsg_shoppingcart@increase",
+        "canonical": "cart_sku_user_qtty_product_user_cart_add_minus",
+        "unit": "count",
+        "transform": "identity",
+        "confidence": 0.7
+      },
+      {
+        "source_field": "jdr_sch_traffic_enter_shop__browse_page_cnt_shop_last_src##compare",
+        "canonical": "shop_browse_page_cnt",
+        "unit": "count",
+        "transform": "identity",
+        "confidence": 0.7
+      },
+      {
+        "source_field": "jdr_sch_traffic_enter_shop__browse_page_cnt_shop_last_src##compareValue",
+        "canonical": "shop_browse_page_cnt",
+        "unit": "count",
+        "transform": "identity",
+        "confidence": 0.7
+      },
+      {
+        "source_field": "fo_jdr_sch_shop_deal_rate##compare",
+        "canonical": "rate",
+        "unit": "count",
+        "transform": "identity",
+        "confidence": 0.7
+      },
+      {
+        "source_field": "fo_jdr_sch_shop_deal_rate##compareValue",
+        "canonical": "rate",
+        "unit": "count",
+        "transform": "identity",
+        "confidence": 0.7
+      },
+      {
+        "source_field": "trend.series",
+        "canonical": "trend.series",
+        "unit": "count",
+        "transform": "identity",
+        "confidence": 0.7
+      },
+      {
+        "source_field": "trend.categories",
+        "canonical": "trend.categories",
+        "unit": "count",
+        "transform": "identity",
+        "confidence": 0.7
+      },
+      {
+        "source_field": "series.code",
+        "canonical": "series.code",
+        "unit": "count",
+        "transform": "identity",
+        "confidence": 0.7
+      },
+      {
+        "source_field": "series.data",
+        "canonical": "series.data",
+        "unit": "count",
+        "transform": "identity",
+        "confidence": 0.7
       }
     ]
   },
   "manifest": {
     "platform": "jd",
-    "generated_at": "2026-07-03T17:12:07.987Z",
+    "generated_at": "2026-08-28T11:17:57.498Z",
     "signal_types": [
       "daily_summary",
       "campaign_performance",
@@ -7809,8 +7986,8 @@
       "analyze_trends",
       "detect_anomalies"
     ],
-    "total_apis_discovered": 70,
-    "apis_in_blueprint": 70
+    "total_apis_discovered": 72,
+    "apis_in_blueprint": 72
   },
   "evidence_strategy": {
     "capture_rules": [
@@ -8299,6 +8476,20 @@
       },
       {
         "endpoint": "targetState",
+        "capture_screenshot": false,
+        "capture_dom": false,
+        "capture_raw_response": true,
+        "capture_metadata": true
+      },
+      {
+        "endpoint": "getSummary",
+        "capture_screenshot": true,
+        "capture_dom": true,
+        "capture_raw_response": true,
+        "capture_metadata": true
+      },
+      {
+        "endpoint": "getTrend",
         "capture_screenshot": false,
         "capture_dom": false,
         "capture_raw_response": true,

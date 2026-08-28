@@ -5120,5 +5120,151 @@
       }
     },
     "field_count": 4
+  },
+  "getSummary": {
+    "files": [
+      "P0010.2.9_tradeSummary_getSummary.json"
+    ],
+    "fields": {
+      "jdr_sch_trade_deal_ord_ord_amt_sz_trade_deal_snapshot": {
+        "type": "float",
+        "example": "6801.02"
+      },
+      "jdr_sch_trade_deal_ord_ord_qtty_sz_trade_deal_snapshot": {
+        "type": "int",
+        "example": "125"
+      },
+      "jdr_sch_user_deal_ord_user_cnt_sz_user_deal_snapshot": {
+        "type": "int",
+        "example": "124"
+      },
+      "jdr_sch_trade_deal_ord_sku_qtty_sz_trade_deal_snapshot": {
+        "type": "int",
+        "example": "157"
+      },
+      "jdr_sch_traffic_enter_shop__browse_page_cnt_shop_last_src": {
+        "type": "int",
+        "example": "928"
+      },
+      "jdr_sch_traffic_enter_shop__browse_page_qtty_shop_last_src": {
+        "type": "int",
+        "example": "4061"
+      },
+      "fo_jdr_sch_shop_deal_rate": {
+        "type": "float",
+        "example": "0.1336"
+      },
+      "fo_jdr_sch_traffic_enter_shop__browse_page_avg_duration_shop_last_src": {
+        "type": "float",
+        "example": "71.38"
+      },
+      "fo_jdr_sch_add_cart_user_uv_rate@increase": {
+        "type": "float",
+        "example": "0.078"
+      },
+      "fo_jdr_sch_trade_deal_ord_amt_user_sz_trade_deal_snapshot": {
+        "type": "float",
+        "example": "54.85"
+      },
+      "jdr_sch_sku_add_cart_sku_sku_piece_shopping_cart": {
+        "type": "int",
+        "example": "69"
+      },
+      "jdr_sch_sku_add_cart_sku_user_qtty_product_user_cart_add_minus_sz_bsg_shoppingcart@increase": {
+        "type": "int",
+        "example": "70"
+      },
+      "jdr_sch_trade_deal_ord_ord_amt_sz_trade_deal_snapshot##compare": {
+        "type": "float",
+        "example": "0.027"
+      },
+      "jdr_sch_trade_deal_ord_ord_amt_sz_trade_deal_snapshot##compareValue": {
+        "type": "float",
+        "example": "6620.22"
+      },
+      "jdr_sch_trade_deal_ord_ord_qtty_sz_trade_deal_snapshot##compare": {
+        "type": "float",
+        "example": "-0.10"
+      },
+      "jdr_sch_trade_deal_ord_ord_qtty_sz_trade_deal_snapshot##compareValue": {
+        "type": "int",
+        "example": "139"
+      },
+      "jdr_sch_user_deal_ord_user_cnt_sz_user_deal_snapshot##compare": {
+        "type": "float",
+        "example": "-0.10"
+      },
+      "jdr_sch_user_deal_ord_user_cnt_sz_user_deal_snapshot##compareValue": {
+        "type": "int",
+        "example": "138"
+      },
+      "jdr_sch_traffic_enter_shop__browse_page_cnt_shop_last_src##compare": {
+        "type": "float",
+        "example": "-0.16"
+      },
+      "jdr_sch_traffic_enter_shop__browse_page_cnt_shop_last_src##compareValue": {
+        "type": "int",
+        "example": "1107"
+      },
+      "fo_jdr_sch_shop_deal_rate##compare": {
+        "type": "float",
+        "example": "0.072"
+      },
+      "fo_jdr_sch_shop_deal_rate##compareValue": {
+        "type": "float",
+        "example": "0.125"
+      },
+      "status": {
+        "type": "int",
+        "example": "0"
+      },
+      "message": {
+        "type": "str",
+        "example": "success"
+      },
+      "content": {
+        "type": "object"
+      }
+    },
+    "field_count": 25
+  },
+  "getTrend": {
+    "files": [
+      "P0010.2.9_tradeSummary_getTrend.json"
+    ],
+    "fields": {
+      "trend.series": {
+        "type": "array",
+        "example": "[{code, data:[]}]"
+      },
+      "trend.categories": {
+        "type": "array",
+        "example": "[\"2026-08-21\",...]"
+      },
+      "series.code": {
+        "type": "str",
+        "example": "jdr_sch_trade_deal_ord_ord_amt_sz_trade_deal_snapshot"
+      },
+      "series.data": {
+        "type": "array",
+        "example": "[6801.02,...]"
+      },
+      "jdr_sch_trade_deal_ord_ord_amt_sz_trade_deal_snapshot": {
+        "type": "float",
+        "example": "6801.02"
+      },
+      "status": {
+        "type": "int",
+        "example": "0"
+      },
+      "message": {
+        "type": "str",
+        "example": "success"
+      },
+      "content": {
+        "type": "object"
+      }
+    },
+    "field_count": 8
   }
 }

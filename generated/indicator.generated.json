@@ -1,6 +1,6 @@
 {
-  "generated_at": "2026-07-03T17:12:07.987Z",
-  "total_keys": 887,
+  "generated_at": "2026-08-28T11:17:57.498Z",
+  "total_keys": 902,
   "keys": {
     "fo_jdr_sch_fo_jdr_sch_traffic_intr_ord_cvr_deal_sz": {
       "canonical": "sch_traffic_intr_ord_cvr_deal",
@@ -4434,6 +4434,81 @@
     },
     "data.yearData": {
       "canonical": "data.yearData",
+      "unit": "count",
+      "confidence": 0.7
+    },
+    "jdr_sch_traffic_enter_shop__browse_page_cnt_shop_last_src": {
+      "canonical": "shop_browse_page_cnt",
+      "unit": "count",
+      "confidence": 0.7
+    },
+    "jdr_sch_traffic_enter_shop__browse_page_qtty_shop_last_src": {
+      "canonical": "shop_browse_page_qtty",
+      "unit": "count",
+      "confidence": 0.7
+    },
+    "fo_jdr_sch_shop_deal_rate": {
+      "canonical": "rate",
+      "unit": "count",
+      "confidence": 0.7
+    },
+    "fo_jdr_sch_traffic_enter_shop__browse_page_avg_duration_shop_last_src": {
+      "canonical": "shop_browse_page_avg_duration",
+      "unit": "count",
+      "confidence": 0.7
+    },
+    "fo_jdr_sch_add_cart_user_uv_rate@increase": {
+      "canonical": "user",
+      "unit": "count",
+      "confidence": 0.7
+    },
+    "jdr_sch_sku_add_cart_sku_sku_piece_shopping_cart": {
+      "canonical": "cart_sku_sku",
+      "unit": "count",
+      "confidence": 0.7
+    },
+    "jdr_sch_sku_add_cart_sku_user_qtty_product_user_cart_add_minus_sz_bsg_shoppingcart@increase": {
+      "canonical": "cart_sku_user_qtty_product_user_cart_add_minus",
+      "unit": "count",
+      "confidence": 0.7
+    },
+    "jdr_sch_traffic_enter_shop__browse_page_cnt_shop_last_src##compare": {
+      "canonical": "shop_browse_page_cnt",
+      "unit": "count",
+      "confidence": 0.7
+    },
+    "jdr_sch_traffic_enter_shop__browse_page_cnt_shop_last_src##compareValue": {
+      "canonical": "shop_browse_page_cnt",
+      "unit": "count",
+      "confidence": 0.7
+    },
+    "fo_jdr_sch_shop_deal_rate##compare": {
+      "canonical": "rate",
+      "unit": "count",
+      "confidence": 0.7
+    },
+    "fo_jdr_sch_shop_deal_rate##compareValue": {
+      "canonical": "rate",
+      "unit": "count",
+      "confidence": 0.7
+    },
+    "trend.series": {
+      "canonical": "trend.series",
+      "unit": "count",
+      "confidence": 0.7
+    },
+    "trend.categories": {
+      "canonical": "trend.categories",
+      "unit": "count",
+      "confidence": 0.7
+    },
+    "series.code": {
+      "canonical": "series.code",
+      "unit": "count",
+      "confidence": 0.7
+    },
+    "series.data": {
+      "canonical": "series.data",
       "unit": "count",
       "confidence": 0.7
     }

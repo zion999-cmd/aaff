@@ -15,24 +15,38 @@ import { loadIndicatorDict } from '#app/connectors/binding/index.js';
  * These overrides provide authoritative canonical names for core metrics.
  */
 export const INDICATOR_OVERRIDES: Readonly<Record<string, string>> = {
+  // P0010.2.9 — Shop-level (店铺) — primary for trade.overview.
+  // These are the fields the live 经营概览 page actually displays.
+  // Source: tradeSummary/summary/getSummary.ajax (szgateway.jd.com)
+  jdr_sch_traffic_enter_shop__browse_page_cnt_shop_last_src: 'shop_visitors',
+  fo_jdr_sch_shop_deal_rate: 'shop_conversion_rate',
+  'jdr_sch_traffic_enter_shop__browse_page_cnt_shop_last_src##compare': 'shop_visitors_compare_pct',
+  'jdr_sch_traffic_enter_shop__browse_page_cnt_shop_last_src##compareValue': 'shop_visitors_compare_value',
+  'fo_jdr_sch_shop_deal_rate##compare': 'shop_conversion_rate_compare_pct',
+  'fo_jdr_sch_shop_deal_rate##compareValue': 'shop_conversion_rate_compare_value',
+
+  // P0010.2.9 — Product / industry level — preserved for traffic.overview /
+  // product.overview. These were previously mislabeled as `visitors` and
+  // `conversion_rate` (商品 UV 与 行业 CVR) and polluted trade.overview.
+  jdr_sch_traffic_brow_sku__page_cnt_traffic_plat_item_di_sz_bsg: 'product_visitors',
+  fo_jdr_sch_industry_deal_rate: 'industry_conversion_rate',
+  'jdr_sch_traffic_brow_sku__page_cnt_traffic_plat_item_di_sz_bsg##compare': 'product_visitors_compare_pct',
+  'jdr_sch_traffic_brow_sku__page_cnt_traffic_plat_item_di_sz_bsg##compareValue': 'product_visitors_compare_value',
+  'fo_jdr_sch_industry_deal_rate##compare': 'industry_conversion_rate_compare_pct',
+  'fo_jdr_sch_industry_deal_rate##compareValue': 'industry_conversion_rate_compare_value',
+
   // Summary indicators
   jdr_sch_trade_deal_ord_ord_amt_sz_trade_deal_snapshot: 'gmv',
   jdr_sch_trade_deal_ord_ord_qtty_sz_trade_deal_snapshot: 'orders',
-  jdr_sch_traffic_brow_sku__page_cnt_traffic_plat_item_di_sz_bsg: 'visitors',
   jdr_sch_user_deal_ord_user_cnt_sz_user_deal_snapshot: 'customers',
-  fo_jdr_sch_industry_deal_rate: 'conversion_rate',
 
   // WoW comparison indicators (##compare = percentage change, ##compareValue = absolute value)
   'jdr_sch_trade_deal_ord_ord_amt_sz_trade_deal_snapshot##compare': 'gmv_compare_pct',
   'jdr_sch_trade_deal_ord_ord_amt_sz_trade_deal_snapshot##compareValue': 'gmv_compare_value',
   'jdr_sch_trade_deal_ord_ord_qtty_sz_trade_deal_snapshot##compare': 'orders_compare_pct',
   'jdr_sch_trade_deal_ord_ord_qtty_sz_trade_deal_snapshot##compareValue': 'orders_compare_value',
-  'jdr_sch_traffic_brow_sku__page_cnt_traffic_plat_item_di_sz_bsg##compare': 'visitors_compare_pct',
-  'jdr_sch_traffic_brow_sku__page_cnt_traffic_plat_item_di_sz_bsg##compareValue': 'visitors_compare_value',
   'jdr_sch_user_deal_ord_user_cnt_sz_user_deal_snapshot##compare': 'customers_compare_pct',
   'jdr_sch_user_deal_ord_user_cnt_sz_user_deal_snapshot##compareValue': 'customers_compare_value',
-  'fo_jdr_sch_industry_deal_rate##compare': 'conversion_rate_compare_pct',
-  'fo_jdr_sch_industry_deal_rate##compareValue': 'conversion_rate_compare_value',
 };
 
 /**

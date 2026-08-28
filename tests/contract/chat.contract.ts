@@ -121,6 +121,10 @@ describe('Chat endpoint (contract)', () => {
     }
   });
 
+  // P0010.2.9: collect_data invokes the live CDP path
+  // (acquireJdTradeOverviewViaCDP navigates to the page and captures
+  // getSummary.ajax + getTrend.ajax responses). 30s covers page load +
+  // SPA bootstrap + signed-request round-trip.
   test('POST /api/chat with collect intent executes collect_data skill', async () => {
     const res = await fetch(`${base}/api/chat`, {
       method: 'POST',
@@ -135,5 +139,5 @@ describe('Chat endpoint (contract)', () => {
     const execution = data['execution'] as Record<string, unknown>;
     expect(execution['skillName']).toBe('collect_data');
     expect(execution['success']).toBe(true);
-  });
+  }, 30_000);
 });

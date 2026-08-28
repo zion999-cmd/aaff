@@ -2031,3 +2031,443 @@ allowed to override explicit configuration.
 - **Risk**: If `HERMES_WS_URL` is mis-set in env, the wrapper will
   print that value and use it everywhere. There is no override. The
   operator must edit env to fix.
+
+---
+
+# ADR-067 — Output write-time content fingerprint (P0010.2.x)
+
+> **Status**: ACCEPTED (2026-08-28) — implements B in P0010.2.x
+> "a,b,c 按顺序, 全做" sequence.
+
+## Context
+
+P0010.2.7 live acceptance (2026-08-27) showed Workspace
+「工作输出」page with **90+ identical WorkItems** for 祁门红茶.
+Every one said "维持持续观察名单" / "不干预", each one slightly
+different only in:
+
+1. The round counter in the Chinese prose ("本情境已第 7 轮连续
+   missing_capability" vs "本情境已第 8 轮连续 missing_capability")
+2. The embedded timestamp ("截至 18:56:48" vs "截至 19:30:12")
+
+User verbatim: "agent在不停的调查" (agent is investigating
+non-stop). The system was *correctly* running the investigation
+loop, but the **materialize step** was producing a new
+`outputId` every tick, so the WorkItem collection grew without
+bound.
+
+## Decision
+
+Two-axis content fingerprint:
+
+1. **Drop `updatedAt` from fingerprint**: `updatedAt` is
+   *metadata* (when the run happened), not *content* (what
+   the recommendation is). The fingerprint is a content-
+   identity check; including metadata defeats the dedup
+   invariant.
+2. **Normalize surface drift before fingerprinting**: new
+   `shared/utils/text.ts#normalizeForFingerprint` (regex
+   table, `Object.freeze`d, 11 patterns). All 11 patterns
+   tested in `tests/unit/utils/text.test.ts` (17 tests).
+   - Round counters (`第 7 轮` / `第N轮` / `已7轮` / `连续7轮` /
+     `第3次`) collapse to a single canonical form.
+   - HH:MM[:SS] timestamps collapse to `TIME`.
+   - YYYY-MM-DD / M-D dates collapse to `DATE`.
+   - `N-M DURATION` / `N DURATION` for day/hour/minute/etc.
+   - Whitespace collapsed.
+
+The fingerprint is now `sha256(situationId + recommendation
+content + rationale content + judgment)`. Same content =
+same fingerprint = same outputId = no new WorkItem.
+
+## Consequences
+
+- **Positive**: 90+ duplicate WorkItems from re-tick collapse
+  to 1. The audit's "agent在不停的调查" symptom is fixed at
+  the materialize boundary, not by adding retry suppression
+  or skipping the investigation.
+- **Positive**: New tests pin BOTH the dedup (5 tests in
+  `recommendation-to-output.test.ts`) AND the normalize (17
+  tests in `text.test.ts`). Future LLM surface drift that
+  isn't on the allow-list will surface as new duplicates
+  — visible to the operator as a count-mismatch, easy to
+  diagnose and extend.
+- **Positive**: `updatedAt` is preserved on the WorkItem (for
+  freshness checks in the UI), but it's no longer used as
+  the dedup key. No information is lost.
+- **Positive**: `RecommendationKind` was added as a separate,
+  additive field (ADR-068). The kind is **NOT** part of the
+  fingerprint — a presentation concern, not a content
+  concern. This keeps observe / act as a chip-rendering
+  hint, not a dedup discriminator.
+- **Neutral**: `normalizeForFingerprint` is intentionally
+  conservative. New LLM surface drift (e.g. "第七次复查" in
+  Chinese, "twelve rounds" in English) will NOT be normalized
+  and will re-introduce duplicates. Monitoring + extending
+  the table is the operator's job (see Risk 1).
+- **Risk 1**: An LLM change that introduces new surface
+  patterns will silently regress to duplicate WorkItems.
+  Mitigation: monitor `body.outputs[].length` per situation
+  in the runtime loop log; if it keeps growing, that's the
+  signal to extend the regex table.
+- **Risk 2**: The 90+ pre-existing duplicate WorkItems in
+  the dev DB are **still there**. Dedup is forward-only.
+  Cleanup requires either (a) the P0010.2.x reset-runtime-
+  baseline tool (ADR-065) or (b) targeted SQL delete. Not
+  done this session — out of scope per user hard constraints
+  on B+C (which is "make the system stop producing
+  duplicates", not "clean up existing duplicates").
+- **Risk 3**: A future refactor that wants to fingerprint
+  on `updatedAt` (e.g. for a "show me what the Agent
+  thought at time T" feature) will need to either keep
+  the old fingerprint path or extract a separate
+  `temporalFingerprint` field. Not done this session.
+
+## Alternatives considered
+
+- **Alternative A: Skip the investigation if the situation
+  hasn't changed**: REJECTED. The investigation IS the work —
+  we want it to run. We just don't want to spam the Output
+  collection.
+- **Alternative B: Cap the number of WorkItems per
+  situation (e.g. "only keep the latest 5")**: REJECTED.
+  That's a lossy operation that hides history. Dedup is
+  lossless — the FIRST WorkItem is preserved with the
+  earliest round counter (e.g. "第 7 轮" stays in the
+  stored content), so the operator can still see when the
+  pattern started.
+- **Alternative C: Use `judgment` text + a substring
+  match on `recommendation.recommendation`**: REJECTED.
+  String matching is fragile. SHA-256 of a normalized
+  form is the cleanest way to express "same content".
+- **Alternative D: Add a "cooldown" of 5 minutes between
+  WorkItems for the same situation**: REJECTED. This is
+  the same anti-pattern as "retry suppression" — it
+  hides the actual run rate. The right answer is dedup
+  on content identity, not on time.
+
+---
+
+# ADR-068 — Recommendation kind: observe | act binary surface (P0010.2.x)
+
+> **Status**: ACCEPTED (2026-08-28) — implements C in P0010.2.x
+> "a,b,c 按顺序, 全做" sequence.
+
+## Context
+
+P0010.2.7 live acceptance showed the Workspace Output chip
+"等待人工" routing 3 semantically distinct markers into a
+single bucket:
+
+1. `ask_human` stopReason — Agent genuinely cannot decide,
+   needs human input to proceed.
+2. `missing_capability` stopReason — no Fabric capability
+   exists to acquire the needed evidence.
+3. A `suggestion-to-confirm` recommendation — Agent has
+   produced a recommendation, but the operator hasn't
+   acknowledged it yet (the chip "等待人工" was rendering
+   on every recommendation waiting for the operator).
+
+Per `presentation-state-semantics-two-dimensions.md` memory
+note (2026-08-27 user critique), these are different in
+semantic:
+
+- (1) and (2) are "watchful states" (just observe, don't
+  act; the operator's role is to provide the missing
+  input / capability).
+- (3) is "to-do" (action waiting on the operator; a
+  recommendation that needs acknowledgement).
+
+Conflating them made the chip un-actionable. The user could
+not tell at a glance whether a chip "等待人工" meant
+"do nothing" or "do something when you can".
+
+## Decision
+
+A binary `kind: 'observe' | 'act'` surface on
+`Recommendation`:
+
+1. **New enum, additive, not a replacement**:
+   `RecommendationKindSchema = z.enum(['observe', 'act'])`.
+   Added to `RecommendationSchema` with `.default('act')` —
+   the conservative default (treat as to-do if the Agent
+   didn't say).
+2. **Same fail-closed policy as stopReason /
+   hypothesisStatus**: `normalizeRecommendationKind` accepts
+   canonical `observe | act` plus a 14-word Chinese + English
+   near-synonym allow-list (e.g. 观察 / 保持观察 / 持续观察 /
+   wait / watch / do_nothing → observe; 行动 / 干预 / 调整 /
+   intervene / action → act). Anything not on the allow-list
+   surfaces as `driftUnmappable` and the parser fails
+   closed. The walker in `normalizeInvestigationContract`
+   walks `recommendation.kind` and emits drift reports.
+3. **Back-compat shim**: `deriveKindFromStopReason(stopReason)`
+   derives the kind from the stopReason when the Agent
+   omitted `kind`: `judgment → act`, everything else →
+   `observe`. The derivation is logged as drift so the
+   operator sees the Agent was inconsistent.
+4. **Prompt update**: new section "Recommendation kind
+   (P0010.2.x)" teaches the LLM the canonical values, so
+   in the long run the Agent stops emitting near-synonyms.
+5. **WorkItem integration**: WorkItemSchema.kind optional
+   (for pre-C WorkItems in the dev DB). Materializer
+   captures `recommendation.kind` → WorkItem.kind on
+   FIRST materialization; subsequent dedup hits preserve
+   the first kind (don't overwrite). UI renders chip on
+   collection item + detail header via
+   `getOutputKindLabel / getOutputKindCssClass` reading
+   the `window.WORK_ITEM_KIND_LABEL / CSS_CLASS` mirror.
+
+## Consequences
+
+- **Positive**: The Workspace chip now distinguishes
+  watchful states from to-do states. observe = grey
+  "保持观察"; act = yellow "待交付". The operator can
+  tell at a glance whether a recommendation is something
+  to do now, or something to just track.
+- **Positive**: The kind is **NOT** part of the dedup
+  fingerprint (ADR-067 keeps presentation concerns out
+  of content concerns). Two WorkItems with the same
+  content but different `kind` labels dedup to one
+  WorkItem — the first materialization's kind is
+  preserved.
+- **Positive**: Pre-C WorkItems in the dev DB continue
+  to parse (WorkItemSchema.kind is optional). The UI
+  helper falls back to `'act'` (yellow chip) — the
+  "honest default" is the more conservative one
+  (treat as to-do, not no-action).
+- **Positive**: Same fail-closed policy as
+  `stopReason` and `hypothesisStatus` means a single
+  mental model for "the parser surfaces drift, the
+  operator sees it" — no new policy.
+- **Neutral**: The Presentation 2-dim state semantics
+  (per `presentation-state-semantics-two-dimensions.md`)
+  is **partially addressed**: observe vs act is the
+  Runtime State dim. The Next Step dim (act-now /
+  accept-pending / decision-needed) is still conflated
+  in the same chip. Candidate for a future ADR
+  (P0010.2.9 or P0010.3).
+- **Risk 1**: A future LLM might emit a near-synonym not
+  on the allow-list (e.g. "建议人工核验" — "suggest human
+  review"). This will surface as a parser failure (fail-
+  closed), NOT as a silent default to 'act'. The operator
+  will see "contract invalid" and can either fix the
+  allow-list or fix the prompt.
+- **Risk 2**: The 90+ pre-existing duplicate WorkItems
+  in the dev DB don't have a `kind`. They'll render with
+  the fallback 'act' chip (yellow), which is misleading
+  — the original content was "维持持续观察名单" (observe).
+  The right fix is a one-time SQL backfill of
+  `kind = 'observe'` for those rows, but this is out of
+  scope per user hard constraints on B+C.
+- **Risk 3**: Default `'act'` is conservative but may
+  surprise operators who expect the "honest unknown" to
+  show as grey (no action). If operator feedback prefers
+  the inverted default, we can flip it — but the cost
+  is operators missing real "to-do" recommendations.
+
+## Alternatives considered
+
+- **Alternative A: Extend the existing `stopReason` to
+  encode action-vs-observe**: REJECTED. stopReason is
+  the *stop condition* (judgment, observe, ask_human,
+  missing_capability) — orthogonal to "does this
+  produce a to-do for the operator". Mixing them in one
+  enum would force the LLM to choose between
+  contradictory semantics ("act but observed" is a
+  contradiction).
+- **Alternative B: Add a third state "ask"** (e.g. `kind:
+  'observe' | 'act' | 'ask'`): REJECTED. ask_human is
+  already in stopReason. The chip is for "what does the
+  operator do", not "what's the stop condition". Two
+  binary axes is cleaner than one tri-state.
+- **Alternative C: Don't add a new field; use the
+  existing `humanNeeded[]` boolean**: REJECTED. humanNeeded
+  is a list of specific human tasks (e.g. "核验优惠券到期
+  日", "检查京准通余额"). It's per-task, not per-WorkItem.
+  The kind is per-WorkItem, not per-task. Different
+  concerns.
+
+---
+
+## ADR-070 — trade.overview: 切到 lowcode tradeSummary + 指标语义独立命名 (P0010.2.9)
+
+- **日期**: 2026-08-28
+- **状态**: Accepted（typecheck 0 新增, npm test 1200 passed / 1 pre-existing failed / 3 skipped / 1 env-blocked; real-page reconciliation 0.00% delta on 4 canonical metrics; **net +2 tests, 0 new regression**）
+- **来源**: 用户 verbatim 要求 trade.overview 的 4 个核心指标 (GMV, 订单, 店铺访客, 店铺成交转化率) 必须与京东商智 经营概览 页面同源,并明示真实页面 reconciliation 是验收 gate (非仅测试)。
+
+**核心原则**（用户原话,verbatim 保留）:
+> trade.overview 改为获取 tradeSummary/summary/getSummary.ajax 与 getTrend.ajax; canonical 指标明确为:GMV → 成交金额, orders → 成交订单量, visitors/shop_visitors → jdr_sch_traffic_enter_shop__browse_page_cnt_shop_last_src, conversion_rate/shop_conversion_rate → fo_jdr_sch_shop_deal_rate. 原来的商品 UV、行业 CVR 不能再冒充 visitors / conversion_rate,分别改成明确的 product_visitors、industry_conversion_rate,避免污染其他 capability;保持 CDP/browser signed-request 路径,不尝试自己伪造 __sgm__;本轮不要改 observedAt/acquiredAt,不要拆 trade.realtime,不要处理 getProductAnalysisData,不要重构 planner. 验收也别只看测试。必须用你刚才那个真实页面做对账:京东页面 ≈ Fabric trade.overview (GMV, 订单, 店铺访客, 店铺 CVR). 允许采集时间造成很小的自然变化,但不能再出现:1652 vs 6585, 7 vs 120, 75 vs 861, 9.33% vs 13.94%.
+
+**两个独立 bug 必须同时修** (因为 A 隐藏了 B 的真因):
+
+1. **数据源 bug**: `trade.overview` 走 lowcode/index 的 JDR snapshot endpoint `getRealSummaryData.ajax` (这是产品/行业级的最终化视图),不含店铺级访客/CVR 字段。京东商智 经营概览 页面用的是 `tradeSummary/summary/getSummary.ajax` (lowcode 不同 path,店铺级+实时)。
+2. **指标语义 cover-up bug**: snapshot 里有 `jdr_sch_traffic_brow_sku__page_cnt_*` (商品 UV) 和 `fo_jdr_sch_industry_deal_rate` (行业成交转化率),被映射成 `visitors` 和 `conversion_rate` (通用名),让数据源 bug silent 化 — 量级不对但看起来合理 (1652 vs 6585 / 75 vs 861 / 9.33% vs 13.94% 全是 -75% 到 -33% 错位)。
+
+**关键决策**:
+
+1. **页面真实路径, 不伪造 `__sgm__`**: `acquireJdTradeOverviewViaCDP` 在用户 Chrome (`localhost:9222`) navigate to tradeSummary.html + 用 `page.on('response')` 抓 `getSummary.ajax` + `getTrend.ajax`。`__sgm__` 是 JD 内部的安全 wrapper,让 page's own signed request 自然 fly through,**不**改 body、**不**重发 fetch。架构上与 P0005 `acquireJdViaCDP` 同源 (read-only interception)。
+2. **per-capability acquire factory** (`getFabricKernel` 内 `perCapAcquire`): 检测到 endpoints 含 `getSummary` 或 `getTrend` 时 dispatch 到新 acquire function;其他 capability 走原 `createLocalFirstLiveAcquire` 路径。**严格不重写 planner** (用户硬约束)。
+3. **指标语义独立命名, 解除 cover-up**: `shop_visitors` (店铺级访客) 和 `product_visitors` (商品级 UV) 严格分开;`shop_conversion_rate` (店铺成交转化率) 和 `industry_conversion_rate` (行业成交转化率) 严格分开。原 `visitors` / `conversion_rate` 通用名从 `JdSummary` type **完全删除** (避免未来再被 silent 污染)。
+4. **breaking change 接受**: `traffic.overview` 和 `product.overview` 原本就用 `visitors` 字段(商品级),同步 rename 到 `product_visitors` (用户明示允许)。**其它 capability 的 `visitors` / `conversion_rate` 引用必须显式选新名,不能继续用旧通用名**。
+5. **discovery data 同步**: `getSummary` (25 fields) + `getTrend` (8 fields) 加入 `discovery/jd-capability/api_inventory.json` + `apps/ecommerce/connectors/discovery/api-inventory.ts` 的 `indexSummary` module test list。Blueprint regen 后 72 APIs / 902 normalizer rules。
+6. **parseAcquiredData 显式映射**: 新加 `if (base === 'getSummary' || base === 'getTrend')` 显式分支,避免 fall through 到 "Unknown endpoint" 导致 evidence 抓到但 signal 0 个的 silent failure。
+
+**验收 (real-page reconciliation)**:
+
+| Metric | 京东商智 经营概览 昨天 2026-08-27 | Fabric trade.overview | Δ |
+|---|---:|---:|---:|
+| GMV | ¥6,801.02 | 6801.02 | 0.00% |
+| Orders | 125 | 125 | 0.00% |
+| Shop visitors | 928 | 928 | 0.00% |
+| Shop CVR | 13.36% | 0.1336 | 0.00% |
+
+**用户硬约束 100% 遵守**: ❌ 不改 observedAt / acquiredAt 语义; ❌ 不拆 trade.realtime; ❌ 不处理 getProductAnalysisData; ❌ 不重构 planner (只加 indexSummary module test list 的 endpoint entry,不动 `inferModuleFromEndpoint` 主体); ❌ 不伪造 __sgm__; ❌ 不重设计 Hermes / 不动 .env / 不重启 serve; ❌ 不动 Workspace UI / 不动 chat / 不动 loop. 接受 traffic.overview / product.overview 的 `visitors` → `product_visitors` 同步 rename (用户明示允许).
+
+**调试 detour (记录)**: 3 个集成 bug 在 acceptance 期间浮出: (A) planner 漏选新端点 — `getSummary` regex 不在 `inferModuleFromEndpoint` 的 `^(summary|index|getProduct|getFlow|getAlarm)` 集合,需在 `indexSummary` module test list 显式列名; (B) `parseAcquiredData` `getSummary.ajax` 的 base 是 `getSummary` 既不是 `summary` 也不含 `product`/`top`/`trend`/`hourly`,fall through 到 "Unknown endpoint" — 显式加分支; (C) test mock 键名必须与 plan `apis_to_call[i].endpoint` 一致 (无 .ajax 后缀),`executePlan` 按 endpoint 索引 rawData。三个 detour 全是源级契约 pin 失败,不是逻辑错误。
+
+---
+
+## ADR-069 — Loading placeholder write responsibility (P0010.2.7-followup-2)
+
+**Status**: Accepted (2026-08-28)
+**Context**: v0.13.5 Workspace, P0010.2.7-followup-2 bug fix
+**Decider**: operator
+**Driver**: user live acceptance report
+
+### Problem
+
+After P0010.2.7 (ADR-066) introduced 4s polling with content-fingerprint
+dedup, the operator reported:
+
+> 我在看输出列表时, 这个列表突然就"加载中", 过了一会又显示列表,
+> 然后又变成"加载中"
+
+The same pattern is visible on the runtime execution history panel
+("Loading execution history...").
+
+### Root cause
+
+Both `fetchAndRenderOutputs()` and `fetchAndRenderRuntime()` write a
+transient loading placeholder (`加载中…` / `Loading execution
+history...`) inline at the top of the function, BEFORE the fingerprint
+dedup check:
+
+```js
+async function fetchAndRenderOutputs() {
+  const ct = document.getElementById('outputsContent');
+  if (!ct) return;
+  try {
+    // ... fetch ...
+    var fp = outputsFingerprint(items);
+    if (fp === state.outputsFingerprint) { return; }  // bail early
+    state.outputsFingerprint = fp;
+    if (!items.length) {
+      ct.innerHTML = '<p class="muted placeholder">暂无...</p>';
+    } else {
+      ct.innerHTML = '<p class="muted placeholder">加载中…</p>';  // BUG
+    }
+    renderOutputsCollection(items);
+  } catch (e) { ... }
+}
+```
+
+The 4s poller calls `fetchAndRenderOutputs()` on every tick. On each
+tick, the DOM is overwritten with `加载中…`, then either:
+
+- **fingerprint match (most ticks)**: bail at the dedup check. The
+  operator sees `加载中…` stuck for 4s. Visible flicker.
+- **fingerprint miss (new data)**: re-render the list. The operator
+  sees `加载中…` for ~1 frame then the new list. Visible flash.
+
+The placeholder was being written by the poller-shared helper, but
+the placeholder is **user-initiated feedback** — the operator clicked
+or switched view, and the placeholder should only show for that
+interaction, not on every poll.
+
+### Decision
+
+**Placeholders are transient user feedback; they belong in the
+user-initiated entry point, not in the poller-shared helper.**
+
+- `loadOutputs()` writes `加载中…` BEFORE `await fetchAndRenderOutputs()`.
+- `fetchAndRenderOutputs()` does NOT write a loading placeholder. It
+  just renders the final list, or writes the persistent empty-state
+  copy ("暂无交付物") AFTER the dedup check.
+- Same pattern for `loadRuntime()` / `fetchAndRenderRuntime()`.
+
+The persistent empty-state copy ("暂无交付物" / "No execution
+records") stays in the poller-shared helper because it is a stable
+terminal state, not a transient loading state. The empty-state
+fingerprint is stable across polls, so the DOM does not churn when
+nothing changes.
+
+### Why this works
+
+The contract becomes:
+
+| Path | Function | What it writes |
+|------|----------|----------------|
+| User clicks tab / opens view | `loadOutputs` | "加载中…" (transient feedback) |
+| 4s poller tick | `fetchAndRenderOutputs` | nothing OR "暂无交付物" (after dedup) |
+
+The 4s poller never calls `loadOutputs`, so it never triggers the
+placeholder write. The user-initiated entry point never gets called
+on a poller tick, so its placeholder never flashes on a no-op poll.
+
+### Alternatives considered and rejected
+
+- **Alternative A: Throttle the placeholder write by timestamp**
+  (e.g. only show `加载中` if last write was >1s ago). REJECTED. The
+  poller fires every 4s — the throttle would still flash on every
+  other poll. Doesn't fix the bug, just hides it.
+- **Alternative B: Skip the dedup bail and just call
+  `renderOutputsCollection` unconditionally on every poll.** REJECTED.
+  The whole point of P0010.2.7's fingerprint dedup is to avoid
+  re-rendering when nothing changed. Removing it would churn the
+  DOM (and lose the operator's scroll position) on every tick.
+- **Alternative C: Move the placeholder to `requestAnimationFrame`
+  and cancel if the response arrives fast.** REJECTED. Adds
+  complexity for no real benefit. The issue is that the placeholder
+  is being written by the wrong function, not that it shows too long.
+- **Alternative D: Use CSS to show "加载中" only on first paint
+  (no `fetch` in flight).** REJECTED. Requires tracking fetch state
+  in a separate flag, which is the same complexity as the current
+  fix but with one more moving part.
+
+### What's locked in
+
+- The 4s polling pattern (ADR-066) is unchanged.
+- The fingerprint dedup logic is unchanged.
+- The empty-state copy ("暂无交付物" / "No execution records") stays
+  in the poller-shared helper, after the dedup check.
+- The user-initiated entry point pattern (`load*` writes placeholder,
+  `fetchAndRender*` does not) is now the canonical pattern for all
+  future polled views.
+
+### What was tested
+
+5 source-level regression tests in
+`tests/contract/workspace-loading-flicker.test.ts` pin the invariant:
+
+1. `loadOutputs` writes "加载中" + write happens BEFORE
+   `await fetchAndRenderOutputs()`.
+2. `fetchAndRenderOutputs` (code with comments stripped) does NOT
+   contain "加载中".
+3. `fetchAndRenderOutputs` empty-state "暂无交付物" is written
+   AFTER `state.outputsFingerprint` dedup check.
+4. `loadRuntime` writes "Loading execution history" + write
+   happens BEFORE `await fetchAndRenderRuntime()`.
+5. `fetchAndRenderRuntime` (code with comments stripped) does NOT
+   contain "Loading execution history".
+6. (Structural sanity) `loadOutputs`/`loadRuntime` still call
+   their fetch helpers, so initial load is not broken.
+
+### Future work
+
+- `loadSituations` / `fetchAndRenderSituations` (line 1498) already
+  write the placeholder AFTER the dedup check, which is the correct
+  pattern. Verify it didn't drift on the next refactor.
+- If a future view adds a loading placeholder, it MUST follow the
+  new pattern: user-initiated entry point writes it, poller-shared
+  helper does not.

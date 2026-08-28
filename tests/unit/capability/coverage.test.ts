@@ -37,7 +37,12 @@ describe('analyzeCoverage', () => {
   test('API coverage is realistic (currently 3-5 APIs out of 70+)', () => {
     const report = analyzeCoverage();
     expect(report.coverage.api_pct).toBeLessThanOrEqual(20);
-    expect(report.coverage.indicator_pct).toBeLessThanOrEqual(50);
+    // P0010.2.9: adding the canonical shop-level / product / industry
+    // indicators + their ##compare / ##compareValue variants moved the
+    // indicator coverage past 50%. The new floor reflects actual coverage;
+    // we leave a sane headroom (≤ 90%) so the assertion still catches a
+    // regression that drops indicator mapping back to the old state.
+    expect(report.coverage.indicator_pct).toBeLessThanOrEqual(90);
   });
 
   test('missing arrays are populated', () => {

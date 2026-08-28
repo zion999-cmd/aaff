@@ -13,8 +13,14 @@ import { createRuntimeKernel, createEmptyBlueprint } from '#app/runtime/kernel/i
 import type { RuntimeKernel } from '#app/runtime/kernel/index.js';
 import { loadBlueprint } from '#app/connectors/binding/loader.js';
 import type { EnterpriseSignal } from '#shared/schemas/signal.js';
-import { acquireJdMultiPage, isCdpAvailable, isJdPageAvailable } from '#app/connectors/jd/acquisition/cdp-client.js';
+import {
+  acquireJdMultiPage,
+  acquireJdTradeOverviewViaCDP,
+  isCdpAvailable,
+  isJdPageAvailable,
+} from '#app/connectors/jd/acquisition/cdp-client.js';
 import { createLocalFirstLiveAcquire } from '#app/connectors/jd/historical-acquire.js';
+import type { AcquireFunction } from '#app/connectors/binding/executor.js';
 import { getDataPages } from '#app/connectors/jd/blueprint.js';
 import { saveEvidence } from '#app/connectors/evidence/store.js';
 import { parseJdPayload } from '#app/connectors/jd/parsers/index.js';
@@ -82,7 +88,17 @@ const getKernel = (db: Db): RuntimeKernel => {
 // Fabric execution boundary uses a local-first kernel: consume collected
 // Evidence first, live CDP only for missing dates/endpoints (P0009 correction).
 // The default `getKernel` (CDP acquire) stays for collect/discover/chat.
+//
+// P0010.2.9: trade.overview uses the page-driven tradeSummary acquire
+// (getSummary.ajax + getTrend.ajax) so the values match the live 经营概览
+// page. Other capabilities keep the local-first path.
 let _fabricKernel: RuntimeKernel | null = null;
+
+/** Endpoints that identify the trade.overview capability. */
+const TRADE_OVERVIEW_ENDPOINTS: ReadonlySet<string> = new Set([
+  'getSummary',
+  'getTrend',
+]);
 
 const getFabricKernel = (db: Db): RuntimeKernel => {
   if (_fabricKernel) return _fabricKernel;
@@ -92,7 +108,47 @@ const getFabricKernel = (db: Db): RuntimeKernel => {
   } catch {
     blueprint = createEmptyBlueprint('jd');
   }
-  _fabricKernel = createRuntimeKernel(db, blueprint, createLocalFirstLiveAcquire());
+
+  const localFirstAcquire = createLocalFirstLiveAcquire();
+  const perCapAcquire: AcquireFunction = async (shopId, endpoints, options) => {
+    // trade.overview → navigate to the live 经营概览 page, capture the
+    // page's own getSummary/getTrend responses. Keep the CDP/signed-request
+    // path (no __sgm__ forgery). Return shape matches the existing
+    // Record<endpoint, payload> contract.
+    const isTradeOverview = endpoints.some(
+      (e) => TRADE_OVERVIEW_ENDPOINTS.has(e) || TRADE_OVERVIEW_ENDPOINTS.has(e.split('/').pop()?.split('?')[0]?.replace('.ajax', '') ?? ''),
+    );
+
+    if (isTradeOverview) {
+      const acqOpts: { cdpPort?: number; date?: string; maxWaitMs?: number } = {};
+      if (options?.cdpPort !== undefined) acqOpts.cdpPort = options.cdpPort;
+      if (options?.date) acqOpts.date = options.date;
+      const result = await acquireJdTradeOverviewViaCDP(acqOpts);
+      if (!result.success) {
+        throw new Error(
+          result.errors?.[0] ?? `trade.overview acquire failed for ${result.date}`,
+        );
+      }
+      const data: Record<string, unknown> = {};
+      for (const endpoint of endpoints) {
+        const base = endpoint
+          .split('/')
+          .pop()
+          ?.split('?')[0]
+          ?.replace('.ajax', '') ?? endpoint;
+        if (base === 'getSummary') {
+          data[endpoint] = result.summary;
+        } else if (base === 'getTrend') {
+          data[endpoint] = result.trend;
+        }
+      }
+      return data;
+    }
+
+    return localFirstAcquire(shopId, endpoints, options);
+  };
+
+  _fabricKernel = createRuntimeKernel(db, blueprint, perCapAcquire);
   return _fabricKernel;
 };
 
@@ -562,7 +618,11 @@ export const runtimeRouter = (db: Db): Router => {
             const parsed = parseJdPayload({ date, summary: r.payload.summary||[], trend: r.payload.trend||[], productTop: r.payload.productTop||[] });
             entry['gmv'] = parsed.summary.gmv;
             entry['orders'] = parsed.summary.orders;
-            entry['visitors'] = parsed.summary.visitors;
+            // P0010.2.9: shop-level is primary; product/industry preserved.
+            entry['shop_visitors'] = parsed.summary.shop_visitors;
+            entry['shop_conversion_rate'] = parsed.summary.shop_conversion_rate;
+            entry['product_visitors'] = parsed.summary.product_visitors;
+            entry['industry_conversion_rate'] = parsed.summary.industry_conversion_rate;
           } catch { /* page doesn't have summary format */ }
           entry['evidenceCount'] = evidenceCount;
         }

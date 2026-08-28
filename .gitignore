@@ -1,0 +1,26 @@
+node_modules/
+dist/
+data/*.db
+data/*.db-wal
+data/*.db-shm
+data/evidence/
+data/jd_live_data.json
+data/jd_full_discovery.json
+*.log
+.env
+.collector-auth/
+.DS_Store
+coverage/
+__pycache__/
+*.pyc
+# Override global gitignore for project docs
+!docs/
+!docs/**
+
+# P0008.3 generated Fabric Agent Workspace projection (rebuildable)
+data/fabric-workspace/
+data/test-fabric-workspace/
+
+# P0010.2.x schema-evolution live output (rebuildable from
+# apps/ecommerce/connectors/discovery/schema-evolution.ts)
+data/discovery-schema/

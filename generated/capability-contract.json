@@ -15,13 +15,13 @@
       "capability": "trade.overview",
       "domain": "trade",
       "name": "交易概览",
-      "description": "核心经营指标：GMV、订单、访客、转化率。每日汇总 + 24小时趋势 + Top5 商品排行。",
+      "description": "店铺级核心经营指标：GMV、订单、店铺访客、店铺成交转化率。每日汇总 + 24小时趋势 + Top5 商品排行。Source: tradeSummary/summary/getSummary.ajax + getTrend.ajax.",
       "intent": [
         "今天卖了多少",
         "GMV涨跌分析",
         "哪个商品卖得最好",
         "每小时销售趋势",
-        "转化率监控",
+        "店铺转化率监控",
         "经营概览"
       ],
       "inputs": {
@@ -36,12 +36,14 @@
       "outputs": [
         "gmv",
         "orders",
-        "visitors",
         "customers",
-        "conversion_rate",
+        "shop_visitors",
+        "shop_conversion_rate",
+        "product_visitors",
+        "industry_conversion_rate",
         "gmv_compare_pct",
         "orders_compare_pct",
-        "visitors_compare_pct",
+        "shop_visitors_compare_pct",
         "gmv_hourly"
       ],
       "metrics": [
@@ -60,13 +62,6 @@
           "verified": true
         },
         {
-          "canonical": "visitors",
-          "label": "商品访客数",
-          "unit": "count",
-          "confidence": 1,
-          "verified": true
-        },
-        {
           "canonical": "customers",
           "label": "成交客户数",
           "unit": "count",
@@ -74,8 +69,29 @@
           "verified": true
         },
         {
-          "canonical": "conversion_rate",
-          "label": "成交转化率",
+          "canonical": "shop_visitors",
+          "label": "店铺访客数",
+          "unit": "count",
+          "confidence": 1,
+          "verified": true
+        },
+        {
+          "canonical": "shop_conversion_rate",
+          "label": "店铺成交转化率",
+          "unit": "percentage",
+          "confidence": 1,
+          "verified": true
+        },
+        {
+          "canonical": "product_visitors",
+          "label": "商品访客数",
+          "unit": "count",
+          "confidence": 1,
+          "verified": true
+        },
+        {
+          "canonical": "industry_conversion_rate",
+          "label": "行业成交转化率",
           "unit": "percentage",
           "confidence": 1,
           "verified": true
@@ -95,8 +111,8 @@
           "verified": false
         },
         {
-          "canonical": "visitors_compare_pct",
-          "label": "访客环比",
+          "canonical": "shop_visitors_compare_pct",
+          "label": "店铺访客环比",
           "unit": "percentage",
           "confidence": 1,
           "verified": false
@@ -121,13 +137,14 @@
       },
       "validation": {
         "status": "verified",
-        "last_verified": "2026-08-09",
+        "last_verified": "2026-08-28",
         "verified_metrics": [
           "gmv",
           "orders",
-          "visitors",
-          "customers",
-          "conversion_rate"
+          "shop_visitors",
+          "shop_conversion_rate",
+          "product_visitors",
+          "industry_conversion_rate"
         ]
       },
       "constraints": {
@@ -253,7 +270,7 @@
         ]
       },
       "outputs": [
-        "visitors",
+        "product_visitors",
         "uv",
         "pv",
         "bounce_rate",
@@ -264,8 +281,8 @@
       ],
       "metrics": [
         {
-          "canonical": "visitors",
-          "label": "访客数",
+          "canonical": "product_visitors",
+          "label": "商品访客数",
           "unit": "count",
           "confidence": 0.7,
           "verified": false
@@ -363,7 +380,7 @@
       },
       "outputs": [
         "gmv",
-        "visitors",
+        "product_visitors",
         "exposure",
         "conversion",
         "sku_count",
@@ -378,7 +395,7 @@
           "verified": false
         },
         {
-          "canonical": "visitors",
+          "canonical": "product_visitors",
           "label": "商品访客",
           "unit": "count",
           "confidence": 0.6,

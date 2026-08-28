@@ -21,12 +21,17 @@ const makeMockAcquire = (): AcquireFunction => {
           data: [{
             gmv: 150000,
             orders: 320,
-            visitors: 8500,
             customers: 1200,
-            conversion_rate: 0.038,
+            // P0010.2.9: shop-level (primary for trade.overview)
+            shop_visitors: 8500,
+            shop_conversion_rate: 0.038,
+            // Product / industry level (preserved for other capabilities)
+            product_visitors: 7200,
+            industry_conversion_rate: 0.025,
+            // WoW percentages
             gmv_compare_pct: 0.12,
             orders_compare_pct: 0.08,
-            visitors_compare_pct: -0.03,
+            shop_visitors_compare_pct: -0.03,
           }],
         },
       }],
@@ -168,5 +173,57 @@ describe('executeRuntimePipeline', () => {
     expect(result.parsed).toBeNull();
     // No signals generated (no data)
     expect(result.signals).toHaveLength(0);
+  });
+
+  // P0010.2.9: the trade.overview page-driven acquire factory returns data
+  // keyed by endpoint name (`getSummary` / `getTrend` — the page's own
+  // apiNames). parseAcquiredData must recognize these as the canonical
+  // `summary` / `trend` payload, not drop them as "unknown endpoint".
+  test('parseAcquiredData recognizes getSummary / getTrend page apiNames (P0010.2.9)', async () => {
+    const pageApiNameAcquire: AcquireFunction = async () => ({
+      getSummary: [{
+        header: { code: 0 },
+        body: {
+          data: [{
+            jdr_sch_trade_deal_ord_ord_amt_sz_trade_deal_snapshot: 6801.02,
+            jdr_sch_trade_deal_ord_ord_qtty_sz_trade_deal_snapshot: 125,
+            jdr_sch_traffic_enter_shop__browse_page_cnt_shop_last_src: 928,
+            fo_jdr_sch_shop_deal_rate: 0.1336,
+            jdr_sch_user_deal_ord_user_cnt_sz_user_deal_snapshot: 124,
+          }],
+          size: 1,
+          cache: false,
+          traceId: null,
+          uuid: null,
+        },
+        errors: null,
+      }],
+      getTrend: [{
+        header: { code: 0 },
+        body: { data: [] },
+        errors: null,
+      }],
+    });
+
+    const result = await executeRuntimePipeline(
+      blueprint,
+      pageApiNameAcquire,
+      db,
+      { shopId: 'jd_shop_001', date: '2026-08-27', mock: true, capabilities: ['daily_summary'] },
+    );
+
+    expect(result.success).toBe(true);
+    expect(result.parsed).not.toBeNull();
+    // The new shop-level canonical names must be populated from the page's
+    // JDR field names (via the indicator map).
+    expect(result.parsed!.summary.gmv).toBe(6801.02);
+    expect(result.parsed!.summary.orders).toBe(125);
+    expect(result.parsed!.summary.shop_visitors).toBe(928);
+    expect(result.parsed!.summary.shop_conversion_rate).toBeCloseTo(0.1336);
+    // daily_summary signal must include the new fields under their canonical names
+    const daily = result.signals.find((s) => s.signal_name === 'daily_summary');
+    expect(daily).toBeDefined();
+    expect((daily!.metrics as Record<string, number>).gmv).toBe(6801.02);
+    expect((daily!.metrics as Record<string, number>).orders).toBe(125);
   });
 });

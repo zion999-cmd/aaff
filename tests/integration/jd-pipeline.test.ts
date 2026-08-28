@@ -45,7 +45,10 @@ describe('JD Pipeline (integration)', () => {
       metrics: {
         gmv: parsed.summary.gmv,
         orders: parsed.summary.orders,
-        uv: parsed.summary.visitors,
+        // P0010.2.9: uv maps to shop-level (the live page's value)
+        uv: parsed.summary.shop_visitors,
+        // cvr maps to shop-level deal rate
+        cvr: parsed.summary.shop_conversion_rate,
       },
       confidence: 0.9,
     };

@@ -26,12 +26,18 @@ const MODULE_RULES: readonly ModuleRule[] = [
     description: '首页核心指标 — GMV, orders, visitors, conversion, product rankings',
     test: (ep) =>
       ep.includes('indexSummary') ||
+      ep.includes('tradeSummary') ||
       ['trend', 'productTop', 'shopLevel',
        'targetState', 'showAiEntry', 'getShopStars',
        'getShopValueProposition', 'getProductToBeActiveDiagnosisDetail',
        'getChannelList', 'getProductAnalysisData', 'getFlowAnalysisData',
        'getFlowHead', 'getProductHead', 'getProductList', 'getProductListByChannel',
        'getIndustryHead', 'getIndustryTopTable', 'getHotCate',
+       // P0010.2.9: trade.overview pulls shop-level + realtime from
+       // tradeSummary/summary/{getSummary,getTrend}.ajax. The per-cap
+       // factory in routes/runtime.ts dispatches these to the page-driven
+       // acquire; for planner purposes they live in indexSummary.
+       'getSummary', 'getTrend',
       ].includes(ep),
   },
   {

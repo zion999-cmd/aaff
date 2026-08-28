@@ -1,6 +1,6 @@
 {
-  "platform": "--platform",
-  "generated_at": "2026-07-03T17:12:07.987Z",
+  "platform": "jd",
+  "generated_at": "2026-08-28T11:17:57.498Z",
   "signal_types": [
     "daily_summary",
     "campaign_performance",
@@ -30,6 +30,6 @@
     "analyze_trends",
     "detect_anomalies"
   ],
-  "total_apis_discovered": 70,
-  "apis_in_blueprint": 70
+  "total_apis_discovered": 72,
+  "apis_in_blueprint": 72
 }

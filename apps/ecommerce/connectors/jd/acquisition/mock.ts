@@ -61,12 +61,20 @@ export const mockJdData = (date?: string): ParsedJdData => {
     summary: {
       gmv: 4626.0 + Math.round(Math.random() * 3000),
       orders: 35 + Math.round(Math.random() * 25),
-      visitors: 750 + Math.round(Math.random() * 400),
       customers: 42 + Math.round(Math.random() * 30),
-      conversion_rate: 0.05 + Math.random() * 0.04,
+      // P0010.2.9 — shop-level (primary for trade.overview)
+      shop_visitors: 750 + Math.round(Math.random() * 400),
+      shop_conversion_rate: 0.05 + Math.random() * 0.04,
+      // Product / industry level (preserved for other capabilities)
+      product_visitors: 820 + Math.round(Math.random() * 300),
+      industry_conversion_rate: 0.05 + Math.random() * 0.04,
+      // WoW percentages
       gmv_compare_pct: Math.round((Math.random() * 0.4 - 0.2) * 100) / 100,
       orders_compare_pct: Math.round((Math.random() * 0.4 - 0.2) * 100) / 100,
-      visitors_compare_pct: Math.round((Math.random() * 0.3 - 0.1) * 100) / 100,
+      shop_visitors_compare_pct: Math.round((Math.random() * 0.3 - 0.1) * 100) / 100,
+      product_visitors_compare_pct: Math.round((Math.random() * 0.2 - 0.05) * 100) / 100,
+      shop_conversion_rate_compare_pct: Math.round((Math.random() * 0.2 - 0.05) * 100) / 100,
+      industry_conversion_rate_compare_pct: Math.round((Math.random() * 0.2 - 0.05) * 100) / 100,
     },
     hourly_gmv: Array.from({ length: 24 }, (_, i) => ({
       hour: `${d} ${String(i).padStart(2, '0')}:00:00`,
@@ -90,12 +98,20 @@ const buildMockSummaryResponse = (_date: string): unknown => ({
     data: [{
       jdr_sch_trade_deal_ord_ord_amt_sz_trade_deal_snapshot: 4626 + Math.round(Math.random() * 2000),
       jdr_sch_trade_deal_ord_ord_qtty_sz_trade_deal_snapshot: 35 + Math.round(Math.random() * 20),
-      jdr_sch_traffic_brow_sku__page_cnt_traffic_plat_item_di_sz_bsg: 820 + Math.round(Math.random() * 300),
       jdr_sch_user_deal_ord_user_cnt_sz_user_deal_snapshot: 45 + Math.round(Math.random() * 25),
+      // P0010.2.9 — shop-level (the live page values)
+      jdr_sch_traffic_enter_shop__browse_page_cnt_shop_last_src: 750 + Math.round(Math.random() * 400),
+      fo_jdr_sch_shop_deal_rate: 0.05 + Math.random() * 0.04,
+      // Product / industry level (preserved for other capabilities)
+      jdr_sch_traffic_brow_sku__page_cnt_traffic_plat_item_di_sz_bsg: 820 + Math.round(Math.random() * 300),
       fo_jdr_sch_industry_deal_rate: 0.05 + Math.random() * 0.04,
+      // WoW percentages
       'jdr_sch_trade_deal_ord_ord_amt_sz_trade_deal_snapshot##compare': Math.round((Math.random() * 0.3 - 0.1) * 100) / 100,
       'jdr_sch_trade_deal_ord_ord_qtty_sz_trade_deal_snapshot##compare': Math.round((Math.random() * 0.3 - 0.1) * 100) / 100,
+      'jdr_sch_traffic_enter_shop__browse_page_cnt_shop_last_src##compare': Math.round((Math.random() * 0.2 - 0.05) * 100) / 100,
+      'fo_jdr_sch_shop_deal_rate##compare': Math.round((Math.random() * 0.2 - 0.05) * 100) / 100,
       'jdr_sch_traffic_brow_sku__page_cnt_traffic_plat_item_di_sz_bsg##compare': Math.round((Math.random() * 0.2 - 0.05) * 100) / 100,
+      'fo_jdr_sch_industry_deal_rate##compare': Math.round((Math.random() * 0.2 - 0.05) * 100) / 100,
     }],
   },
 });

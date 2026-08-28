@@ -9,20 +9,48 @@ import type { JdApiResponse } from './indicator-map.js';
 export interface JdSummary {
   /** GMV (成交金额) */
   gmv: number;
-  /** Order count */
+  /** Order count (成交订单数) */
   orders: number;
-  /** Unique visitors */
-  visitors: number;
-  /** Unique customers */
+  /** Unique customers (成交客户数) */
   customers: number;
-  /** Conversion rate (百分比) */
-  conversion_rate: number;
+  /**
+   * P0010.2.9 — Shop-level (店铺) — primary for trade.overview.
+   * Visitors that entered THIS shop, computed by the live 经营概览 page.
+   * Source: jdr_sch_traffic_enter_shop__browse_page_cnt_shop_last_src
+   */
+  shop_visitors: number;
+  /**
+   * P0010.2.9 — Shop-level — primary for trade.overview.
+   * Shop deal rate (店铺成交转化率), as the live page shows.
+   * Source: fo_jdr_sch_shop_deal_rate
+   */
+  shop_conversion_rate: number;
+  /**
+   * P0010.2.9 — Product-level (商品). Previously mislabeled as `visitors`.
+   * Preserved for traffic.overview / product.overview.
+   * Source: jdr_sch_traffic_brow_sku__page_cnt_traffic_plat_item_di_sz_bsg
+   */
+  product_visitors: number;
+  /**
+   * P0010.2.9 — Industry-level (行业). Previously mislabeled as `conversion_rate`.
+   * Preserved for industry.benchmark.
+   * Source: fo_jdr_sch_industry_deal_rate
+   */
+  industry_conversion_rate: number;
+
+  // ---- WoW comparison percentages (signed) ----
   /** WoW GMV comparison percentage */
   gmv_compare_pct: number | null;
   /** WoW orders comparison percentage */
   orders_compare_pct: number | null;
-  /** WoW visitors comparison percentage */
-  visitors_compare_pct: number | null;
+  /** WoW shop_visitors comparison percentage */
+  shop_visitors_compare_pct: number | null;
+  /** WoW product_visitors comparison percentage */
+  product_visitors_compare_pct: number | null;
+  /** WoW shop_conversion_rate comparison percentage */
+  shop_conversion_rate_compare_pct: number | null;
+  /** WoW industry_conversion_rate comparison percentage */
+  industry_conversion_rate_compare_pct: number | null;
 }
 
 export interface JdHourlyPoint {
@@ -55,17 +83,25 @@ export interface ParsedJdData {
 const emptySummary = (): JdSummary => ({
   gmv: 0,
   orders: 0,
-  visitors: 0,
   customers: 0,
-  conversion_rate: 0,
+  shop_visitors: 0,
+  shop_conversion_rate: 0,
+  product_visitors: 0,
+  industry_conversion_rate: 0,
   gmv_compare_pct: null,
   orders_compare_pct: null,
-  visitors_compare_pct: null,
+  shop_visitors_compare_pct: null,
+  product_visitors_compare_pct: null,
+  shop_conversion_rate_compare_pct: null,
+  industry_conversion_rate_compare_pct: null,
 });
 
 /**
  * Parse a JD summary API response into structured metrics.
  * Handles both raw indicator keys and already-mapped canonical keys.
+ *
+ * P0010.2.9: Shop-level (shop_visitors / shop_conversion_rate) is the
+ * primary for trade.overview; product / industry level is preserved.
  */
 export const parseJdSummary = (
   responses: unknown[],
@@ -79,12 +115,17 @@ export const parseJdSummary = (
     return {
       gmv: asNum(row['gmv']),
       orders: asNum(row['orders']),
-      visitors: asNum(row['visitors']),
       customers: asNum(row['customers']),
-      conversion_rate: asNum(row['conversion_rate']),
+      shop_visitors: asNum(row['shop_visitors']),
+      shop_conversion_rate: asNum(row['shop_conversion_rate']),
+      product_visitors: asNum(row['product_visitors']),
+      industry_conversion_rate: asNum(row['industry_conversion_rate']),
       gmv_compare_pct: asNumOrNull(row['gmv_compare_pct']),
       orders_compare_pct: asNumOrNull(row['orders_compare_pct']),
-      visitors_compare_pct: asNumOrNull(row['visitors_compare_pct']),
+      shop_visitors_compare_pct: asNumOrNull(row['shop_visitors_compare_pct']),
+      product_visitors_compare_pct: asNumOrNull(row['product_visitors_compare_pct']),
+      shop_conversion_rate_compare_pct: asNumOrNull(row['shop_conversion_rate_compare_pct']),
+      industry_conversion_rate_compare_pct: asNumOrNull(row['industry_conversion_rate_compare_pct']),
     };
   }
   return emptySummary();

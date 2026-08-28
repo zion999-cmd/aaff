@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-07-03T17:12:07.949Z",
+  "generated_at": "2026-08-28T11:17:57.482Z",
   "source": "discovery/jd-capability",
   "rules": [
     {
@@ -1476,6 +1476,78 @@
       },
       "is_paginated": false,
       "is_time_series": false,
+      "data_quality": "medium"
+    },
+    {
+      "endpoint": "getSummary",
+      "strategy": "aggregate",
+      "fields_to_parse": [
+        "jdr_sch_trade_deal_ord_ord_amt_sz_trade_deal_snapshot",
+        "jdr_sch_trade_deal_ord_ord_qtty_sz_trade_deal_snapshot",
+        "jdr_sch_user_deal_ord_user_cnt_sz_user_deal_snapshot",
+        "jdr_sch_trade_deal_ord_sku_qtty_sz_trade_deal_snapshot",
+        "jdr_sch_traffic_enter_shop__browse_page_cnt_shop_last_src",
+        "jdr_sch_traffic_enter_shop__browse_page_qtty_shop_last_src",
+        "fo_jdr_sch_shop_deal_rate",
+        "fo_jdr_sch_traffic_enter_shop__browse_page_avg_duration_shop_last_src",
+        "fo_jdr_sch_add_cart_user_uv_rate@increase",
+        "fo_jdr_sch_trade_deal_ord_amt_user_sz_trade_deal_snapshot",
+        "jdr_sch_sku_add_cart_sku_sku_piece_shopping_cart",
+        "jdr_sch_sku_add_cart_sku_user_qtty_product_user_cart_add_minus_sz_bsg_shoppingcart@increase",
+        "jdr_sch_trade_deal_ord_ord_amt_sz_trade_deal_snapshot##compare",
+        "jdr_sch_trade_deal_ord_ord_amt_sz_trade_deal_snapshot##compareValue",
+        "jdr_sch_trade_deal_ord_ord_qtty_sz_trade_deal_snapshot##compare",
+        "jdr_sch_trade_deal_ord_ord_qtty_sz_trade_deal_snapshot##compareValue",
+        "jdr_sch_user_deal_ord_user_cnt_sz_user_deal_snapshot##compare",
+        "jdr_sch_user_deal_ord_user_cnt_sz_user_deal_snapshot##compareValue",
+        "jdr_sch_traffic_enter_shop__browse_page_cnt_shop_last_src##compare",
+        "jdr_sch_traffic_enter_shop__browse_page_cnt_shop_last_src##compareValue",
+        "fo_jdr_sch_shop_deal_rate##compare",
+        "fo_jdr_sch_shop_deal_rate##compareValue",
+        "status"
+      ],
+      "field_mapping": {
+        "jdr_sch_trade_deal_ord_ord_amt_sz_trade_deal_snapshot": "jdr_sch_trade_deal_ord_ord_amt_sz_trade_deal_snapshot",
+        "jdr_sch_trade_deal_ord_ord_qtty_sz_trade_deal_snapshot": "jdr_sch_trade_deal_ord_ord_qtty_sz_trade_deal_snapshot",
+        "jdr_sch_user_deal_ord_user_cnt_sz_user_deal_snapshot": "jdr_sch_user_deal_ord_user_cnt_sz_user_deal_snapshot",
+        "jdr_sch_trade_deal_ord_sku_qtty_sz_trade_deal_snapshot": "jdr_sch_trade_deal_ord_sku_qtty_sz_trade_deal_snapshot",
+        "jdr_sch_traffic_enter_shop__browse_page_cnt_shop_last_src": "jdr_sch_traffic_enter_shop__browse_page_cnt_shop_last_src",
+        "jdr_sch_traffic_enter_shop__browse_page_qtty_shop_last_src": "jdr_sch_traffic_enter_shop__browse_page_qtty_shop_last_src",
+        "fo_jdr_sch_shop_deal_rate": "fo_jdr_sch_shop_deal_rate",
+        "fo_jdr_sch_traffic_enter_shop__browse_page_avg_duration_shop_last_src": "fo_jdr_sch_traffic_enter_shop__browse_page_avg_duration_shop_last_src",
+        "fo_jdr_sch_add_cart_user_uv_rate@increase": "fo_jdr_sch_add_cart_user_uv_rate@increase",
+        "fo_jdr_sch_trade_deal_ord_amt_user_sz_trade_deal_snapshot": "fo_jdr_sch_trade_deal_ord_amt_user_sz_trade_deal_snapshot",
+        "jdr_sch_sku_add_cart_sku_sku_piece_shopping_cart": "jdr_sch_sku_add_cart_sku_sku_piece_shopping_cart",
+        "jdr_sch_sku_add_cart_sku_user_qtty_product_user_cart_add_minus_sz_bsg_shoppingcart@increase": "jdr_sch_sku_add_cart_sku_user_qtty_product_user_cart_add_minus_sz_bsg_shoppingcart@increase",
+        "jdr_sch_trade_deal_ord_ord_amt_sz_trade_deal_snapshot##compare": "jdr_sch_trade_deal_ord_ord_amt_sz_trade_deal_snapshot##compare",
+        "jdr_sch_trade_deal_ord_ord_amt_sz_trade_deal_snapshot##compareValue": "jdr_sch_trade_deal_ord_ord_amt_sz_trade_deal_snapshot##compareValue",
+        "jdr_sch_trade_deal_ord_ord_qtty_sz_trade_deal_snapshot##compare": "jdr_sch_trade_deal_ord_ord_qtty_sz_trade_deal_snapshot##compare",
+        "jdr_sch_trade_deal_ord_ord_qtty_sz_trade_deal_snapshot##compareValue": "jdr_sch_trade_deal_ord_ord_qtty_sz_trade_deal_snapshot##compareValue",
+        "jdr_sch_user_deal_ord_user_cnt_sz_user_deal_snapshot##compare": "jdr_sch_user_deal_ord_user_cnt_sz_user_deal_snapshot##compare",
+        "jdr_sch_user_deal_ord_user_cnt_sz_user_deal_snapshot##compareValue": "jdr_sch_user_deal_ord_user_cnt_sz_user_deal_snapshot##compareValue",
+        "jdr_sch_traffic_enter_shop__browse_page_cnt_shop_last_src##compare": "jdr_sch_traffic_enter_shop__browse_page_cnt_shop_last_src##compare",
+        "jdr_sch_traffic_enter_shop__browse_page_cnt_shop_last_src##compareValue": "jdr_sch_traffic_enter_shop__browse_page_cnt_shop_last_src##compareValue",
+        "fo_jdr_sch_shop_deal_rate##compare": "fo_jdr_sch_shop_deal_rate##compare",
+        "fo_jdr_sch_shop_deal_rate##compareValue": "fo_jdr_sch_shop_deal_rate##compareValue",
+        "status": "status"
+      },
+      "is_paginated": false,
+      "is_time_series": false,
+      "data_quality": "high"
+    },
+    {
+      "endpoint": "getTrend",
+      "strategy": "time_series",
+      "fields_to_parse": [
+        "jdr_sch_trade_deal_ord_ord_amt_sz_trade_deal_snapshot",
+        "status"
+      ],
+      "field_mapping": {
+        "jdr_sch_trade_deal_ord_ord_amt_sz_trade_deal_snapshot": "jdr_sch_trade_deal_ord_ord_amt_sz_trade_deal_snapshot",
+        "status": "status"
+      },
+      "is_paginated": false,
+      "is_time_series": true,
       "data_quality": "medium"
     }
   ]

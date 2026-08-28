@@ -5,19 +5,29 @@ import { describe, expect, test } from 'vitest';
 import { mapJdIndicator, mapJdDataRow } from '#app/connectors/jd/parsers/indicator-map.js';
 import { parseJdSummary, parseJdTrend, parseJdProductTop, parseJdPayload } from '#app/connectors/jd/parsers/index.js';
 
-// Golden fixture: a real JD summary API response (from agentCMS).
+// Golden fixture: a real JD summary API response (from agentCMS + 2026-08-28 page).
+// P0010.2.9: shop-level fields (shop_visitors, shop_conversion_rate) are
+// the primary for trade.overview; product / industry level is preserved.
 const SUMMARY_FIXTURE = [{
   header: { code: 0, desc: 'success' },
   body: {
     data: [{
-      jdr_sch_trade_deal_ord_ord_amt_sz_trade_deal_snapshot: 12351.35,
-      jdr_sch_trade_deal_ord_ord_qtty_sz_trade_deal_snapshot: 70,
-      jdr_sch_traffic_brow_sku__page_cnt_traffic_plat_item_di_sz_bsg: 896,
-      jdr_sch_user_deal_ord_user_cnt_sz_user_deal_snapshot: 70,
-      fo_jdr_sch_industry_deal_rate: 0.078125,
-      'jdr_sch_trade_deal_ord_ord_amt_sz_trade_deal_snapshot##compare': -0.2297,
-      'jdr_sch_trade_deal_ord_ord_qtty_sz_trade_deal_snapshot##compare': -0.0909,
+      // Core deal metrics
+      jdr_sch_trade_deal_ord_ord_amt_sz_trade_deal_snapshot: 6585.24,
+      jdr_sch_trade_deal_ord_ord_qtty_sz_trade_deal_snapshot: 120,
+      jdr_sch_user_deal_ord_user_cnt_sz_user_deal_snapshot: 118,
+      // Shop-level (P0010.2.9) — primary for trade.overview
+      jdr_sch_traffic_enter_shop__browse_page_cnt_shop_last_src: 861,
+      fo_jdr_sch_shop_deal_rate: 0.1394,
+      'jdr_sch_traffic_enter_shop__browse_page_cnt_shop_last_src##compare': 0.082,
+      'fo_jdr_sch_shop_deal_rate##compare': 0.012,
+      // Product / industry level — preserved for other capabilities
+      jdr_sch_traffic_brow_sku__page_cnt_traffic_plat_item_di_sz_bsg: 75,
+      fo_jdr_sch_industry_deal_rate: 0.0933,
       'jdr_sch_traffic_brow_sku__page_cnt_traffic_plat_item_di_sz_bsg##compare': 0.0079,
+      // WoW percentages (signed) for core deal metrics
+      'jdr_sch_trade_deal_ord_ord_amt_sz_trade_deal_snapshot##compare': 0.156,
+      'jdr_sch_trade_deal_ord_ord_qtty_sz_trade_deal_snapshot##compare': 0.091,
     }],
   },
 }];
@@ -54,17 +64,25 @@ const PRODUCT_TOP_FIXTURE = [{
 }];
 
 describe('JD Indicator Map', () => {
-  test('maps known JD indicator keys to canonical names', () => {
+  test('maps known JD indicator keys to canonical names (P0010.2.9)', () => {
     expect(mapJdIndicator('jdr_sch_trade_deal_ord_ord_amt_sz_trade_deal_snapshot')).toBe('gmv');
     expect(mapJdIndicator('jdr_sch_trade_deal_ord_ord_qtty_sz_trade_deal_snapshot')).toBe('orders');
-    expect(mapJdIndicator('jdr_sch_traffic_brow_sku__page_cnt_traffic_plat_item_di_sz_bsg')).toBe('visitors');
     expect(mapJdIndicator('jdr_sch_user_deal_ord_user_cnt_sz_user_deal_snapshot')).toBe('customers');
-    expect(mapJdIndicator('fo_jdr_sch_industry_deal_rate')).toBe('conversion_rate');
+    // Shop-level (P0010.2.9) — primary for trade.overview
+    expect(mapJdIndicator('jdr_sch_traffic_enter_shop__browse_page_cnt_shop_last_src')).toBe('shop_visitors');
+    expect(mapJdIndicator('fo_jdr_sch_shop_deal_rate')).toBe('shop_conversion_rate');
+    // Product / industry level (P0010.2.9) — was mislabeled as visitors/conversion_rate
+    expect(mapJdIndicator('jdr_sch_traffic_brow_sku__page_cnt_traffic_plat_item_di_sz_bsg')).toBe('product_visitors');
+    expect(mapJdIndicator('fo_jdr_sch_industry_deal_rate')).toBe('industry_conversion_rate');
   });
 
   test('maps comparison indicators (##compare suffix)', () => {
     expect(mapJdIndicator('jdr_sch_trade_deal_ord_ord_amt_sz_trade_deal_snapshot##compare')).toBe('gmv_compare_pct');
     expect(mapJdIndicator('jdr_sch_trade_deal_ord_ord_qtty_sz_trade_deal_snapshot##compare')).toBe('orders_compare_pct');
+    expect(mapJdIndicator('jdr_sch_traffic_enter_shop__browse_page_cnt_shop_last_src##compare')).toBe('shop_visitors_compare_pct');
+    expect(mapJdIndicator('fo_jdr_sch_shop_deal_rate##compare')).toBe('shop_conversion_rate_compare_pct');
+    expect(mapJdIndicator('jdr_sch_traffic_brow_sku__page_cnt_traffic_plat_item_di_sz_bsg##compare')).toBe('product_visitors_compare_pct');
+    expect(mapJdIndicator('fo_jdr_sch_industry_deal_rate##compare')).toBe('industry_conversion_rate_compare_pct');
   });
 
   test('returns original key for unknown indicators', () => {
@@ -74,35 +92,46 @@ describe('JD Indicator Map', () => {
   test('mapJdDataRow transforms all keys in a row', () => {
     const row = {
       'jdr_sch_trade_deal_ord_ord_amt_sz_trade_deal_snapshot': 5000,
-      'fo_jdr_sch_industry_deal_rate': 0.05,
+      'fo_jdr_sch_shop_deal_rate': 0.05,
+      'jdr_sch_traffic_enter_shop__browse_page_cnt_shop_last_src': 200,
     };
     const mapped = mapJdDataRow(row);
     expect(mapped['gmv']).toBe(5000);
-    expect(mapped['conversion_rate']).toBe(0.05);
+    expect(mapped['shop_conversion_rate']).toBe(0.05);
+    expect(mapped['shop_visitors']).toBe(200);
   });
 });
 
 describe('parseJdSummary', () => {
-  test('parses a valid JD summary API response', () => {
+  test('parses a valid JD summary API response (P0010.2.9 shape)', () => {
     const result = parseJdSummary(SUMMARY_FIXTURE);
-    expect(result.gmv).toBe(12351.35);
-    expect(result.orders).toBe(70);
-    expect(result.visitors).toBe(896);
-    expect(result.customers).toBe(70);
-    expect(result.conversion_rate).toBeCloseTo(0.078125);
+    // Core deal metrics
+    expect(result.gmv).toBe(6585.24);
+    expect(result.orders).toBe(120);
+    expect(result.customers).toBe(118);
+    // Shop-level (the page's actual values)
+    expect(result.shop_visitors).toBe(861);
+    expect(result.shop_conversion_rate).toBeCloseTo(0.1394);
+    // Product / industry level
+    expect(result.product_visitors).toBe(75);
+    expect(result.industry_conversion_rate).toBeCloseTo(0.0933);
   });
 
   test('parses comparison percentages', () => {
     const result = parseJdSummary(SUMMARY_FIXTURE);
-    expect(result.gmv_compare_pct).toBeCloseTo(-0.2297);
-    expect(result.orders_compare_pct).toBeCloseTo(-0.0909);
-    expect(result.visitors_compare_pct).toBeCloseTo(0.0079);
+    expect(result.gmv_compare_pct).toBeCloseTo(0.156);
+    expect(result.orders_compare_pct).toBeCloseTo(0.091);
+    expect(result.shop_visitors_compare_pct).toBeCloseTo(0.082);
+    expect(result.shop_conversion_rate_compare_pct).toBeCloseTo(0.012);
+    expect(result.product_visitors_compare_pct).toBeCloseTo(0.0079);
   });
 
   test('returns empty summary for non-JD-API responses', () => {
     const result = parseJdSummary([{ some: 'other-data' }]);
     expect(result.gmv).toBe(0);
     expect(result.orders).toBe(0);
+    expect(result.shop_visitors).toBe(0);
+    expect(result.shop_conversion_rate).toBe(0);
   });
 
   test('returns empty summary for empty array', () => {
@@ -152,7 +181,8 @@ describe('parseJdPayload', () => {
     };
     const result = parseJdPayload(raw);
     expect(result.date).toBe('2026-01-01');
-    expect(result.summary.gmv).toBe(12351.35);
+    expect(result.summary.gmv).toBe(6585.24);
+    expect(result.summary.shop_visitors).toBe(861);
     expect(result.hourly_gmv).toHaveLength(3);
     expect(result.top_products).toHaveLength(2);
   });

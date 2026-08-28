@@ -204,6 +204,10 @@ const parseAcquiredData = (
 
   // Try to map endpoint-keyed data to the expected keys.
   // Endpoints like "summary.ajax" → "summary", "trend.ajax" → "trend", etc.
+  // P0010.2.9: the trade.overview page-driven path uses the page's own
+  // apiNames — `getSummary` and `getTrend` — so we treat them as the new
+  // canonical names for `summary` / `trend` payload. The legacy
+  // `summary`/`trend` names from the snapshot endpoint are still accepted.
   // Evidence store data comes as single objects; the parser expects arrays.
   for (const [endpoint, data] of Object.entries(acquired)) {
     const base = endpoint.replace(/\.(ajax|json|html?)$/, '');
@@ -211,6 +215,11 @@ const parseAcquiredData = (
     const wrapped = Array.isArray(data) ? data : [data];
     if (base === 'summary' || base === 'trend' || base === 'productTop') {
       raw[base] = wrapped;
+    } else if (base === 'getSummary' || base === 'getTrend') {
+      // P0010.2.9: page-driven trade overview. Map to the same shape the
+      // parser expects (summary / trend).
+      const key = base === 'getSummary' ? 'summary' : 'trend';
+      raw[key] = wrapped;
     } else if (base.includes('product') || base.includes('top')) {
       raw['productTop'] = wrapped;
     } else if (base.includes('trend') || base.includes('hourly')) {
@@ -531,10 +540,29 @@ export const executeImportPipeline = async (
 
     // Signal generation
     if (useBlueprint && normalizerSpec && signalTypes) {
-      // Blueprint-driven signal generation
+      // Blueprint-driven signal generation.
+      // P0010.2.9: import records use the legacy JdSummary shape (visitors /
+      // conversion_rate / visitors_compare_pct). Map them into the new
+      // shop-level / product / industry shape so the blueprint-driven
+      // normalizer can resolve the new canonical names.
+      const legacy = r.summary;
       const parsed: ParsedJdData = {
         date: r.date,
-        summary: { ...r.summary },
+        summary: {
+          gmv: legacy.gmv,
+          orders: legacy.orders,
+          customers: legacy.customers,
+          shop_visitors: legacy.visitors ?? 0,
+          shop_conversion_rate: legacy.conversion_rate ?? 0,
+          product_visitors: 0,
+          industry_conversion_rate: 0,
+          gmv_compare_pct: legacy.gmv_compare_pct,
+          orders_compare_pct: legacy.orders_compare_pct,
+          shop_visitors_compare_pct: legacy.visitors_compare_pct,
+          product_visitors_compare_pct: null,
+          shop_conversion_rate_compare_pct: null,
+          industry_conversion_rate_compare_pct: null,
+        },
         hourly_gmv: r.hourly_gmv,
         top_products: r.top_products,
       };
@@ -560,8 +588,11 @@ export const executeImportPipeline = async (
         metrics: {
           gmv: r.summary.gmv,
           orders: r.summary.orders,
-          uv: r.summary.visitors,
-          cvr: r.summary.conversion_rate,
+          // P0010.2.9: uv/cvr map to shop-level fields (the live page values).
+          // Import is for historical agentCMS data which uses the old shape;
+          // the live fabric-execute path now uses the new shape.
+          uv: r.summary.visitors ?? 0,
+          cvr: r.summary.conversion_rate ?? 0,
         },
         confidence: 0.95,
       };

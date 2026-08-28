@@ -162,16 +162,24 @@ const mapSummaryMetrics = (
   const metrics: Record<string, number> = {};
 
   // Build a flat map from all summary fields
+  // P0010.2.9: shop-level (shop_visitors / shop_conversion_rate) is the
+  // primary for trade.overview. Product / industry level is preserved
+  // for the other capabilities.
   const raw: Record<string, number> = {
     gmv: parsed.summary.gmv,
     orders: parsed.summary.orders,
-    visitors: parsed.summary.visitors,
     customers: parsed.summary.customers,
-    conversion_rate: parsed.summary.conversion_rate,
+    shop_visitors: parsed.summary.shop_visitors,
+    shop_conversion_rate: parsed.summary.shop_conversion_rate,
+    product_visitors: parsed.summary.product_visitors,
+    industry_conversion_rate: parsed.summary.industry_conversion_rate,
   };
   if (parsed.summary.gmv_compare_pct !== null) raw.gmv_compare_pct = parsed.summary.gmv_compare_pct;
   if (parsed.summary.orders_compare_pct !== null) raw.orders_compare_pct = parsed.summary.orders_compare_pct;
-  if (parsed.summary.visitors_compare_pct !== null) raw.visitors_compare_pct = parsed.summary.visitors_compare_pct;
+  if (parsed.summary.shop_visitors_compare_pct !== null) raw.shop_visitors_compare_pct = parsed.summary.shop_visitors_compare_pct;
+  if (parsed.summary.product_visitors_compare_pct !== null) raw.product_visitors_compare_pct = parsed.summary.product_visitors_compare_pct;
+  if (parsed.summary.shop_conversion_rate_compare_pct !== null) raw.shop_conversion_rate_compare_pct = parsed.summary.shop_conversion_rate_compare_pct;
+  if (parsed.summary.industry_conversion_rate_compare_pct !== null) raw.industry_conversion_rate_compare_pct = parsed.summary.industry_conversion_rate_compare_pct;
 
   // Apply spec: for each canonical → aliases, pick the first matching alias from raw
   for (const [canonical, aliases] of Object.entries(spec)) {
@@ -183,11 +191,12 @@ const mapSummaryMetrics = (
     }
   }
 
-  // If spec didn't cover the basic fields, include them directly as fallback
+  // If spec didn't cover the basic fields, include them directly as fallback.
+  // P0010.2.9: uv/cvr fall back to shop-level fields (the live page values).
   if (!('gmv' in metrics)) metrics.gmv = parsed.summary.gmv;
   if (!('orders' in metrics)) metrics.orders = parsed.summary.orders;
-  if (!('uv' in metrics)) metrics.uv = parsed.summary.visitors;
-  if (!('cvr' in metrics)) metrics.cvr = parsed.summary.conversion_rate;
+  if (!('uv' in metrics)) metrics.uv = parsed.summary.shop_visitors;
+  if (!('cvr' in metrics)) metrics.cvr = parsed.summary.shop_conversion_rate;
 
   return metrics;
 };
