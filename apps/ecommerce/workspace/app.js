@@ -554,6 +554,17 @@ const getOutputStatusLabel = (status) =>
   (window.WORK_ITEM_STATUS_LABEL || {})[status] || status;
 const getOutputTypeLabel = (type) =>
   (window.WORK_ITEM_TYPE_LABEL || {})[type] || type || '交付物';
+// P0010.2.x — kind label / CSS class. The WorkItem's `kind` field
+// is optional (pre-C WorkItems don't have it). For missing values we
+// default to 'act' — the historical behavior was that every WorkItem
+// was treated as a to-do, so a missing kind renders as the same
+// yellow "待交付" chip a pre-C user would have seen. The chip
+// itself is rendered separately from the status chip (which still
+// tracks ready/delivered/acknowledged/closed).
+const getOutputKindLabel = (kind) =>
+  (window.WORK_ITEM_KIND_LABEL || {})[kind] || (kind === 'observe' ? '保持观察' : '待交付');
+const getOutputKindCssClass = (kind) =>
+  (window.WORK_ITEM_KIND_CSS_CLASS || {})[kind] || (kind === 'observe' ? 'output-kind-observe' : 'output-kind-act');
 let outputsActiveStatus = ''; // '' = 全部; otherwise WorkItemStatus
 
 async function loadOutputs() {
@@ -561,13 +572,25 @@ async function loadOutputs() {
   // and tab clicks always re-render. The 4s poller calls
   // `fetchAndRenderOutputs()` and dedups by fingerprint.
   state.outputsFingerprint = null;
+  // P0010.2.7-followup-2: the user-initiated entry point shows
+  // a "加载中…" placeholder briefly (operator just clicked, expects
+  // feedback). The 4s poller reuses the same fetch helper but
+  // bypasses this placeholder — `fetchAndRenderOutputs` does not
+  // write any intermediate "加载中…" copy, it just renders the
+  // final list (or the persistent "暂无交付物" empty-state on
+  // first load). Writing a placeholder here + removing it from
+  // the poller path is what stops the flicker the operator
+  // reported: the poller used to overwrite the rendered list with
+  // "加载中…" on every tick, then either re-render (visible flash)
+  // or bail via the fingerprint dedup (placeholder stuck for 4s).
+  const ct = document.getElementById('outputsContent');
+  if (ct) ct.innerHTML = '<p class="muted placeholder">加载中…</p>';
   await fetchAndRenderOutputs();
 }
 
 async function fetchAndRenderOutputs() {
   const ct = document.getElementById('outputsContent');
   if (!ct) return;
-  ct.innerHTML = '<p class="muted placeholder">加载中…</p>';
   try {
     // P0010.1 REPAIR-5: fetch BOTH the filtered list (for the table) and
     // the unfiltered list (for the sidebar badge). The badge must keep
@@ -595,7 +618,22 @@ async function fetchAndRenderOutputs() {
     }
     state.outputsFingerprint = fp;
 
-    renderOutputsCollection(items);
+    // P0010.2.7-followup-2: do NOT write an intermediate "加载中…"
+    // placeholder here. The 4s poller calls this function on every
+    // tick; if we wrote "加载中" and then immediately overwrote with
+    // the rendered list, the operator would see a brief "加载中"
+    // flash on every poll that returns new data — visually
+    // indistinguishable from the bug they reported. The
+    // user-initiated entry point (`loadOutputs`) shows the
+    // placeholder instead. Here we just render the final result,
+    // or write the empty-state copy if there are no items. The
+    // empty-state copy persists across polls (the fingerprint
+    // matches) so the DOM does not churn when nothing changes.
+    if (!items.length) {
+      ct.innerHTML = '<p class="muted placeholder">暂无交付物。运行 CDP 采集或发起调查后，系统会在这里生成交付物。</p>';
+    } else {
+      renderOutputsCollection(items);
+    }
     updateOutputsBadge(allItems);
   } catch (e) {
     ct.innerHTML = '<p class="muted">加载失败：' + escHtml(e && e.message ? e.message : String(e)) + '</p>';
@@ -658,10 +696,22 @@ function renderCollectionOutputItem(o) {
     (entityType ? ' <span class="muted">(' + escHtml(entityType) + (entityPlatform ? ' · ' + escHtml(entityPlatform) : '') + ')</span>' : '') +
   '</a>';
 
-  return '<div class="output-collection-item" data-output-id="' + escHtml(outputId) + '" data-output-status="' + escHtml(status) + '">' +
+  // P0010.2.x — surface the kind chip alongside the status chip.
+  // The two are orthogonal: status tracks the lifecycle
+  // (ready/delivered/acknowledged/closed); kind tells the operator
+  // what TYPE of recommendation this is (observe = status pill;
+  // act = to-do). Both are visible so the operator can tell at a
+  // glance "is this a to-do I should act on, or a watchful state
+  // I'm being kept informed of".
+  const kind = o.kind || 'act';
+  const kindLabel = getOutputKindLabel(kind);
+  const kindCssClass = getOutputKindCssClass(kind);
+
+  return '<div class="output-collection-item" data-output-id="' + escHtml(outputId) + '" data-output-status="' + escHtml(status) + '" data-output-kind="' + escHtml(kind) + '">' +
     '<div class="output-row1">' +
       '<span class="output-type">' + escHtml(typeLabel) + '</span>' +
       '<span class="output-content-summary">' + escHtml(content) + '</span>' +
+      '<span class="output-kind ' + escHtml(kindCssClass) + '">' + escHtml(kindLabel) + '</span>' +
       '<span class="output-status output-status-' + escHtml(status) + '">' + escHtml(statusLabel) + '</span>' +
     '</div>' +
     '<div class="output-meta">' +
@@ -797,6 +847,17 @@ function renderOutputDetail(out) {
   const status = out.status || 'ready';
   const statusLabel = getOutputStatusLabel(status);
   const typeLabel = getOutputTypeLabel(out.type);
+  // P0010.2.x — kind chip. Read from the WorkItem first (canonical
+  // place), fall back to the surfaced `currentSituation.recommendationKind`
+  // (which the route's `/outputs/:oid` endpoint computes from the
+  // canonical `ctx.investigation.recommendation.kind`). Both paths
+  // exist because the collection endpoint spreads the WorkItem
+  // (`...raw`) while the detail endpoint synthesizes a
+  // `currentSituation` object.
+  const cs = out.currentSituation || {};
+  const kind = out.kind || cs.recommendationKind || 'act';
+  const kindLabel = getOutputKindLabel(kind);
+  const kindCssClass = getOutputKindCssClass(kind);
   const createdAt = (out.createdAt || '').slice(0, 16).replace('T', ' ');
   const acknowledgedAt = (out.acknowledgedAt || '').slice(0, 16).replace('T', ' ');
   const closedAt = (out.closedAt || '').slice(0, 16).replace('T', ' ');
@@ -804,7 +865,6 @@ function renderOutputDetail(out) {
   const sitId = sit.situationId || out.situationId || '';
   const entityName = sit.entityName || sit.entityId || '未知来源';
   const sitDescription = (sit.description || '').slice(0, 100);
-  const cs = out.currentSituation || {};
   const judgment = cs.judgment || '';
   const stopReason = cs.stopReason || '';
   const recText = cs.recommendation || '';
@@ -891,7 +951,7 @@ function renderOutputDetail(out) {
 
   ct.innerHTML = '<div class="output-detail-header">' +
     '<a href="#" class="output-back-link" data-output-action="back-to-outputs">← 返回工作输出</a>' +
-    '<h2 class="output-detail-title">' + escHtml(typeLabel) + ' <span class="output-status output-status-' + escHtml(status) + '">' + escHtml(statusLabel) + '</span></h2>' +
+    '<h2 class="output-detail-title">' + escHtml(typeLabel) + ' <span class="output-kind ' + escHtml(kindCssClass) + '">' + escHtml(kindLabel) + '</span> <span class="output-status output-status-' + escHtml(status) + '">' + escHtml(statusLabel) + '</span></h2>' +
     '<p class="output-detail-source muted">' + escHtml(entityName) + (sit.entityType ? ' · ' + escHtml(sit.entityType) : '') + (sit.entityPlatform ? ' · ' + escHtml(sit.entityPlatform) : '') + '</p>' +
   '</div>' +
   '<div class="output-detail-region output-detail-region-content">' +
@@ -1214,7 +1274,19 @@ document.getElementById('archiveProfileSelect')?.addEventListener('change', load
 	  // the call from `loadRuntime`, not from a sibling helper. Loop
 	  // status updates on view switch + post-collect, same cadence as
 	  // pre-P0010.2.7 (the runtime-execution poller is independent).
+	  // P0010.2.7-followup-2: the user-initiated entry point shows a
+	  // brief "Loading execution history..." placeholder (operator
+	  // just clicked the view, expects feedback). The 4s poller
+	  // reuses `fetchAndRenderRuntime()` but bypasses this placeholder
+	  // — that helper does not write any intermediate loading copy,
+	  // it just renders the final list (or the persistent empty-state
+	  // "No execution records" on first load). This is the same fix
+	  // as the outputs panel flicker: the poller used to overwrite
+	  // the rendered list with "Loading..." on every tick, causing
+	  // the operator-visible flicker the user reported.
 	  state.runtimeFingerprint = null;
+	  const list = document.getElementById('runtimeExecutionsList');
+	  if (list) list.innerHTML = '<p class="muted">Loading execution history...</p>';
 	  await loadLoopStatus();
 	  await fetchAndRenderRuntime();
 	}
@@ -1224,11 +1296,18 @@ document.getElementById('archiveProfileSelect')?.addEventListener('change', load
 	  // point) so the workspace loop-status contract stays satisfied.
 	  // This helper now only handles the heavy execution-history data
 	  // with the 4s polling + fingerprint dedup.
+	  // P0010.2.7-followup-2: do NOT write an intermediate "Loading..."
+	  // placeholder here. The 4s poller calls this function on every
+	  // tick; if we wrote "Loading" and then immediately overwrote
+	  // with the rendered grid, the operator would see a brief
+	  // "Loading" flash on every poll that returns new data — the
+	  // same flicker pattern reported on the outputs panel. The
+	  // user-initiated entry point (`loadRuntime`) writes the
+	  // placeholder; the poller just renders the final result.
 	  const list = document.getElementById('runtimeExecutionsList');
 	  const countEl = document.getElementById('runtimeExecCount');
 	  const status = document.getElementById('runtimeCollectStatus');
 	  if (!list) return;
-	  list.innerHTML = '<p class="muted">Loading execution history...</p>';
 	  try {
 	    const executions = await apiGet('/api/runtime/executions?platform=jd&limit=366');
 	    // P0010.2.7 — Live-refresh dedup. If the executions list is

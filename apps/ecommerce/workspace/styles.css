@@ -802,6 +802,13 @@ ul, ol { list-style: none; }
 .output-collection-item[data-output-status="delivered"]    { border-left-color: #3b82f6; }
 .output-collection-item[data-output-status="acknowledged"] { border-left-color: #10b981; }
 .output-collection-item[data-output-status="closed"]       { border-left-color: #94a3b8; }
+
+/* P0010.2.x — kind left-border hint. observe = neutral grey (matches
+   the chip); act = amber (matches the chip). The status border is
+   drawn first; the kind border takes visual priority because it
+   tells the operator what TYPE of deliverable this is. */
+.output-collection-item[data-output-kind="observe"] { border-left-color: #94a3b8; }
+.output-collection-item[data-output-kind="act"]    { border-left-color: #fbbf24; }
 .output-collection-item .output-row1 {
   display: flex; align-items: flex-start; gap: 10px; margin-bottom: 6px;
 }
@@ -826,6 +833,35 @@ ul, ol { list-style: none; }
 .output-status-delivered    { background: #dbeafe; color: #1d4ed8; }
 .output-status-acknowledged { background: #d1fae5; color: #047857; }
 .output-status-closed       { background: #f1f5f9; color: #475569; }
+
+/* P0010.2.x — Recommendation kind chip (observe | act).
+   The kind chip is orthogonal to the status chip: status tracks the
+   lifecycle (ready / delivered / acknowledged / closed); kind tells
+   the operator what TYPE of recommendation this is.
+     - `observe` = grey "保持观察" — the Agent's watchful state, the
+       Operator is being informed, there is no to-do. Visually quiet
+       so the operator does not feel called to action.
+     - `act`    = amber/red "待交付" — there IS a to-do here. The
+       existing yellow ready-chip color is reused for the most common
+       "to-do" surface so the operator's mental model is preserved. */
+.output-kind {
+  display: inline-block;
+  font-size: 0.7rem;
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-weight: 500;
+  margin-right: 4px;
+  vertical-align: middle;
+}
+.output-kind-observe {
+  background: #f1f5f9;
+  color: #475569;
+  border: 1px solid #cbd5e1;
+}
+.output-kind-act {
+  background: #fef3c7;
+  color: #b45309;
+}
 
 /* ── P0010.1 Output Workspace v0 ─────────────────────────── */
 /* Output Detail (independent view, NOT Situation Detail). 4 regions:
