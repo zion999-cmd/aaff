@@ -2558,3 +2558,99 @@ trade.overview 4 个核心指标 (GMV, 订单, 店铺访客, 店铺 CVR) 生成�
 - Signal layer 仍存在但 producer 不消费 — 未来如果需要 "Signal-based composite metric" 路径可重新接入
 - 既有 Signal 路径 (`generateSignals` 仍被 `runtime-signal-engine.ts` 调用于 `daily_summary` 等其他 signal type) 完整保留 — `situation/producer.ts` 是唯一改动点
 - Evidence 路径的 business_date 字段对其他 consumer (Recovery / Investigation / Workspace trace) 也是 single source of truth, 后续审计可以接
+
+## ADR-072 — trade.overview acquisition = direct fetch via the page's own signed transport (P0010.2.11)
+
+- **日期**: 2026-08-29
+- **状态**: Accepted（typecheck 0 新增 / npm test 1230 passed / 2 pre-existing failed env-blocked / 3 skipped / 真实页面对账 4 项 0.00% delta / commit a989b50）
+- **来源**: 用户 verbatim "依然拿不到数据, 无论是当天的, 还是近1星期的" + "这些数据之前都是好的, 是你改bug全改没了. 为什么要重新做一遍? 所有的数据, 本身都可以拿得到的??"
+
+### 决策
+
+`acquireJdTradeOverviewViaCDP` 弃用 UI 交互路径（echo 点击 → 实时 chip → 查询按钮）与 Network-listener 捕获，改为 **direct fetch**: 页面内 hijack webpack require（`window.webpackChunksz_2024.push([[unique], {}, r => window.__wr = r])`），调用页面**自己的**签名 ajax helper（module 99859 `Fe`），请求体由页面**自己的**日期参数机构造（module 4461 `jD.SzDPParams` + module 22886 `M` trendParams）。签名/cookie/`__sgm__` 全部由页面自己的 transport 处理——**永远不伪造**任何头。
+
+### 根因（本 ADR 记录的确诊事实）
+
+1. **lazyLoad 可见性守卫是历史怪症的根源**: module 6611 的 `zN` guard 读 `window[Symbol('lazyLoad')]`（未注册 Symbol，无法通过 getOwnPropertySymbols 找到）。后台 tab 中**连页面自己的 boot fetch 都不触发**（30s 控制实验：0 个 getSummary/getTrend，只有 9 个 common endpoint）。这解释了"数据时有时无"——历史上只有 operator 正在看 tab 时采集才成功。
+2. **页面 boot 硬编码进 昨天 mode**（module 52306: `initValue: e => _r.jD.defaultValue(e, {currentKey: 'yesterday'})`），且 background tab 中 UI 交互（点击）不可靠。
+3. **页面当前 store 值 `p.value` 的形状** = `{key, value: <item 复制 + resolved value>, compareValue: <comparesMap.hb + resolved date>}`——compareValue **不能**传 item 本身（会产出 `compareType:'yesterday'` 的错误参数），必须传 `Object.assign({}, item.comparesMap.hb, {value: <前一日>})`。
+
+### 采集组成（单一用途，无模式歧义）
+
+| 请求 | 模式 | 产出 | 语义 |
+|---|---|---|---|
+| `getSummary.ajax` | realtime (`todayRealtime`, interval SECOND) | `summary[0]` | 当天 intraday + `##compareValue` 昨日同期基线（P0010.2.11-A: endpoint 不是 today-only）；business_date = 今天 |
+| `getTrend.ajax` | offline（昨天 item 构造，`trendM(params, 6)`） | `trend[0]` | 近 7 天 daily categories（近1星期）；`/api/fabric/trade-trend` 路由读 `payload[0]` |
+
+- `parseJdSummary` 取 responses 数组第一个有效 envelope → realtime summary 永远是 signals 来源（d7/offline trend 不污染）。
+- `jD.generateData` / `defaultValue` 路径**不可用**（`generateData(items)` 返回空数组 → defaultValue 返回 null）——offline 参数必须从 'yesterday' item 直接构造。
+- Envelope 直接从 `evaluate` 返回值读取——无捕获竞态、无 last-writer-wins 排序、response listener 移除（C1.6 的 listener-before-navigation 问题随 listener 一起消失）。
+
+### 边界
+
+- ❌ 不伪造 `__sgm__` / 任何签名头（P0005 路径不变：页面自己的 signed request）
+- ❌ 不切页面 UI 模式、不 click、不 reload（后台零交互；页面已在 tradeSummary.html 时跳过导航）
+- ❌ 不拆 trade.realtime capability（P0010.2.9 边界沿用）
+- ❌ 不改 executor 的 business_date stamping 语义（offline getSummary **不采集**——offline 数据落 today 的 business_date 会毒化 P0010.2.10 比较语义；昨日基线由 realtime `##compareValue` 提供，producer 走 F3 synthesis）
+- ❌ 不新增 capability / endpoint / DB 表
+
+### 验收（真实页面 reconciliation, 非仅测试）
+
+页面 echo `当前：2026-08-28`（昨天模式，只读 DOM，零交互）vs Fabric offline getTrend 8/28 点:
+
+| 指标 | 页面 | Fabric | Δ |
+|---|---:|---:|---:|
+| 成交金额 | ¥12,805.54 | 12805.54 | 0.00% |
+| 店铺访客数 | 1,099 | 1099 | 0.00% |
+| 店铺成交转化率 | 12.01% | 0.120109 | 0.00% |
+| 成交单量 | 132 (客单价 ¥97.01 交叉验证) | 132 | 0.00% |
+
+页面"对比时间"列 (8/27: ¥6,801.02 / 928 / 13.36%) 与 Fabric trend 8/27 点逐项一致（亦是 P0010.2.9 对账值的复现）。`POST /api/fabric/execute trade.overview` → completed/cdp, daily_summary gmv=6062.55 orders=122 uv=641 cvr=18.9%；producer 自动产出 8/29 vs 8/28 "较昨日" Situation（转化率 12.0%→19.1%）。
+
+## ADR-073 — trade.overview business-date fail-closed guard (C2.0, 2026-08-29)
+
+### 决策
+
+`trade.overview` direct-fetch 采集**只接受当前北京业务日**。新增纯函数
+`resolveTradeOverviewBusinessDate`（`apps/ecommerce/connectors/jd/acquisition/trade-overview-date.ts`），
+`acquireJdTradeOverviewViaCDP` 在**任何 CDP 动作之前**调用它：请求 date ≠ `beijingDate()` 时
+直接返回 `success:false` + 显式错误，**不连接 Chrome、不发起请求、不写任何 evidence**。
+
+### 背景事实（真实污染事故，2026-08-29）
+
+- `2026-08-22/27/28_getSummary.json` 被当天（8/29）realtime payload 覆写、却盖上调用方传入的
+  历史 business_date（shop_id 11855009，22/27 content_hash 逐字节相同）。
+- 根因：`options.date` 在 direct-fetch 路径下**只用于 stamping**，不改变请求内容（请求永远是
+  页面 todayRealtime）→ payload 语义日期与 metadata.business_date 必然错位。
+- producer 按 `shop_id==='jd_shop_001'` 过滤所以未消费这批脏文件，但脏数据真实存在于磁盘。
+
+### 不变量（Required Invariant）
+
+```
+payload semantic business date (current Beijing day)
+MUST equal
+evidence metadata.business_date
+```
+
+唯一安全的 stamp 是当前北京日；其余一律 fail-closed（诚实失败，不静默纠正）。
+UTC 派生的"昨天"日期（<08:00 北京时区错标类，P0010.2.11 F2 曾修过 executor 默认值）
+同样被拒——payload 描述的是北京"今天"。
+
+### 影响面 / 边界
+
+- ✅ 保护面：scheduler / `/api/fabric/execute` / 未来任何带历史 date 调 trade.overview 的路径
+  （全部经过 `createCapabilityAcquire` → 该 acquire）。
+- ✅ CLI 多日历史 walk（`executeLiveCDPPipeline` → `acquireJdData` snapshot walker）**不受影响**
+  （不走此 acquire）。
+- ❌ 不改 direct-fetch transport / getTrend 采集 / `/fabric/trade-trend` / Workspace 表格（用户批准项）。
+- ❌ 不静默把历史请求"纠正"为今天——调用方意图与 payload 语义不一致时必须失败并说明原因。
+
+### 验收
+
+- 单测 7 项 RED→GREEN（`tests/unit/connectors/jd/trade-overview-date.test.ts`）：
+  默认今天 / 接受今天 / 拒历史（8/22 污染模式）/ 拒 UTC 错标类 / 拒未来 /
+  acquire 在 CDP 之前 fail-closed / guard 结果与 CDP 可用性无关（dead port 同错误）。
+- 全 suite 1237 passed / 1 failed + 1 file error（均为 hermes-connect 既有失败，与本改动无关）；
+  typecheck 21 errors 全部 pre-existing（`apiName` TS6133 在 a989b50 即存在），0 新增。
+- 真实链路 probe：`POST /api/fabric/execute {capability:trade.overview, date:2026-08-22}` →
+  fail-closed（曾造成污染的确切调用路径）。

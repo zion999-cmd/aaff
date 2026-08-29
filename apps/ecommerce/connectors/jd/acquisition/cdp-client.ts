@@ -11,7 +11,7 @@
 // The user logs into 京东商智 once in Chrome, then this script reuses that session.
 
 import type { MockJdPayload } from './mock.js';
-import { beijingDate } from '#shared/utils/time.js';
+import { resolveTradeOverviewBusinessDate } from './trade-overview-date.js';
 
 // ---- Minimal Playwright CDP types (avoids depending on @types/playwright-core) ----
 
@@ -446,7 +446,12 @@ export const acquireJdViaCDP = async (
 export interface TradeOverviewAcquireOptions {
   /** Chrome CDP port (default: 9222) */
   cdpPort?: number;
-  /** Target date (ISO, default: today) */
+  /**
+   * Target date (ISO). MUST be the current Beijing business day — the
+   * direct-fetch transport always returns realtime data for today, so any
+   * other date is rejected (fail-closed) instead of being stamped onto a
+   * realtime payload (C2.0 invariant). Default: today (Beijing).
+   */
   date?: string;
   /** Max wait time for both responses (default: 15_000 ms) */
   maxWaitMs?: number;
@@ -675,9 +680,23 @@ export const acquireJdTradeOverviewViaCDP = async (
   options: TradeOverviewAcquireOptions = {},
 ): Promise<TradeOverviewAcquireResult> => {
   const { cdpPort = 9222, maxWaitMs = 15_000 } = options;
-  // Beijing calendar day — JD 商智 payloads describe the Beijing business
-  // day, and a UTC stamp mislabels everything acquired before 08:00 Beijing.
-  const date = options.date ?? beijingDate();
+  // C2.0 invariant guard — BEFORE any CDP work. The direct-fetch transport
+  // always returns the current Beijing business day's realtime data, so a
+  // non-today requested date could only produce a poisoned stamp (the
+  // 2026-08-22/27/28 evidence corruption). Fail closed with an explicit
+  // error instead of ever writing payload-date ≠ metadata.business_date.
+  const resolution = resolveTradeOverviewBusinessDate(options.date);
+  if (!resolution.ok) {
+    return {
+      success: false,
+      date: resolution.date,
+      summary: [],
+      trend: [],
+      cdpAvailable: true,
+      errors: [resolution.error],
+    };
+  }
+  const date = resolution.date;
   const empty = (cdpAvailable: boolean, errors?: string[]): TradeOverviewAcquireResult => ({
     success: false,
     date,

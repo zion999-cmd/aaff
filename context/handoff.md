@@ -1,3 +1,111 @@
+# Handoff — P0010.2.11 C2.0: trade.overview business-date fail-closed guard (2026-08-29, ADR-073)
+
+## 新增
+
+**不变量落地**：`payload semantic business date MUST equal evidence metadata.business_date`。
+新纯函数 `resolveTradeOverviewBusinessDate`（apps/ecommerce/connectors/jd/acquisition/trade-overview-date.ts，
+注入式 `now` 便于测试），`acquireJdTradeOverviewViaCDP` 在**任何 CDP 动作之前**调用：请求 date ≠
+`beijingDate()` 时返回 `success:false` + 显式错误——不连 Chrome、不发起请求、不写 evidence。
+
+## 背景（真实污染事故）
+
+2026-08-22/27/28_getSummary.json 被 8/29 realtime payload 覆写、却盖调用方传入的历史 business_date
+（shop_id 11855009；22/27 content_hash 逐字节相同 `5221de49…`；写入时间 22:04–22:08 北京）。
+根因：direct-fetch 路径下 `options.date` **只用于 stamping**，请求内容永远是页面 todayRealtime——
+调用方传什么日期，payload 语义日期都不变，两者必然错位。producer 因 `shop_id==='jd_shop_001'`
+过滤未消费这批脏文件，但脏数据真实在盘。
+
+## 重构 / 删除
+
+无（guard 是纯新增约束；cdp-client 只删了一个不再使用的 `beijingDate` import）。
+
+## 测试
+
+TDD RED→GREEN。新增 tests/unit/connectors/jd/trade-overview-date.test.ts（7 项）：
+默认今天 / 接受今天 / 拒历史（8/22 污染模式复现）/ 拒 UTC 错标类（23:58Z 采集 payload 是北京 8/29）/ 拒未来 /
+acquire 在 CDP 之前 fail-closed / guard 结果与 CDP 可用性无关（dead port 59999 同错误）。
+全 suite **1237 passed / 1 failed + 1 file error**（chat contract hermes-connect + p0010.2.4-live-d1，
+均为既有失败）/ 3 skipped。typecheck 21 errors **全部 pre-existing**（`apiName` TS6133 在 a989b50
+版本即存在），0 新增。
+
+## 真实链路验收（非仅测试）
+
+`POST /api/fabric/execute {"capability":"trade.overview","shopId":"jd_shop_001","date":"2026-08-22"}` ——
+即曾造成污染的确切调用路径 —— 现返回 fail-closed：
+`"trade.overview direct-fetch returns realtime data for the CURRENT Beijing business day (2026-08-29) only;
+refusing to stamp a realtime payload as business_date 2026-08-22..."`，且 22_getSummary.meta.json
+mtime 不变（零写入）。
+
+## 风险
+
+1. **3 个脏文件仍在磁盘**（22/27/28_getSummary.json + getTrend 同族）。producer 读不到，但任何
+   未来放宽 shop_id 过滤的代码会踩到。处置（删除 / 移入 quarantine / 重命名）待用户决定。
+2. 覆写者身份未定：代码层可确认 scheduler/route/loop 全部硬编码 `jd_shop_001`，而这批文件
+   shop_id=11855009 —— 签名指向 `cli collect jd 11855009 --mode live --date …` 或手工
+   `/api/fabric/execute`。guard 已使该路径失效（fail-closed），但行为审计未闭环。
+3. guard 只保护 trade.overview；未来 traffic.overview direct-fetch（P0010 closure 项）应从第一行
+   就复用 `resolveTradeOverviewBusinessDate` 同款不变量。
+
+## 建议下一步
+
+处置 3 个脏文件 → P0010.2.12（##compareValue producer 语义，注意 realtime compareValue = 昨日**同时段**
+非全天）→ traffic acquisition → E2E/workspace acceptance → freeze。
+
+---
+
+# Handoff — P0010.2.11: trade.overview Direct-Fetch 采集 + 近7天 trend 打通 (2026-08-29, commit a989b50)
+
+## 新增
+
+**Direct-fetch 采集路径 (ADR-072)**。用户投诉 "依然拿不到数据, 无论是当天的, 还是近1星期的" 的根因终于确诊: JD tradeSummary SPA 的 webpack module 6611 带 lazyLoad 可见性守卫 (`zN` 读 `window[Symbol('lazyLoad')]`, 未注册 Symbol), **后台 tab 中连页面自己的 boot fetch 都不触发** (30s 对照实验: 0 个 getSummary/getTrend); UI 点击 (echo → 实时 chip → 查询按钮) 在后台 tab 同样不可靠。这解释了整个 P0010.2.x 系列 "数据时有时无" 的历史怪症——不是我们改坏的, 是页面架构性门控, 之前只是碰巧 operator 开着 tab 才成功。
+
+`acquireJdTradeOverviewViaCDP` (apps/ecommerce/connectors/jd/acquisition/cdp-client.ts) 重写为 **direct fetch**: hijack webpack require → 调页面自己的签名 ajax helper (module 99859 `Fe`), 请求体由页面自己的参数机构造 (module 4461 `jD.SzDPParams` + module 22886 `M`)。签名/cookie/`__sgm__` 全部由页面自己的 transport 处理, 零伪造 (P0005 边界不变)。envelope 直接从 `evaluate` 返回值读取——无捕获竞态、无 last-writer-wins, C1.6 的 listener-before-navigation 问题随 listener 一起消失。
+
+**离线 (近1星期) trend 打通** (此前 d7 一直失败): 正确构造是昨天 item + `trendM(params, 6)`。两个关键事实: `jD.generateData(items)` 返回空数组不可用; compareValue 必须传 `Object.assign({}, item.comparesMap.hb, {value: 前一日})` 而不是 item 本身 (否则 compareType 错)。**offline getSummary 有意不采集**——昨日全天值落 today 的 business_date 会毒化 P0010.2.10 "较昨日"比较语义; 昨日基线由 realtime getSummary 的 `##compareValue` 提供。
+
+## 重构
+
+- `acquireJdTradeOverviewViaCDP` 全 body: 删 response listener / last-writer-wins 反序 / echo+chip+查询点击 / '核心指标' 等待; 新增 `buildTradeOverviewDirectFetchExpr` (46-entry BOOT_INDICATORS + 4-entry TREND_INDICATORS)、`isTradeOverviewEnvelope` 校验; 页面已在 tradeSummary.html 时跳过导航 (后台零交互)。
+- 采集组成: realtime getSummary → `summary[0]` (business_date=今天) + offline getTrend → `trend[0]` (`/api/fabric/trade-trend` 读 `payload[0]`)。
+
+## 删除
+
+- 8/29 stale evidence 重抓 (用户此前批准的 删除重抓): 29_getSummary.json/.meta + 29_getTrend.json/.meta 删除后重采, business_date=2026-08-29。
+- data/bundles/ (3.2MB 第三方 SPA bundles, 调试用) 加入 .gitignore, 未提交。
+
+## 测试 (count + pass/fail)
+
+目标定向 142 passed。全 suite: **1230 passed / 2 failed / 3 skipped** — 2 个 failed 均为 pre-existing 环境性 (chat contract collect_data 30s CDP timeout; p0010.2.4-live-d1 需 live Hermes), 1 个 pre-existing unhandled rejection (session-client slow-timer)。typecheck 0 新增 (1 个 pre-existing cdp-client 'apiName' unused 为 baseline)。净 +20 新测试, 0 新 regression。5 个 probe 脚本入 tests/probes/ (defaultValue 失败路径留档 + debug + yesterday-params + integrated-acquire + page-reconciliation)。
+
+## 真实页面对账 (硬规则: 验收别只看测试)
+
+页面 echo "当前: 2026-08-28" (昨天模式, 只读 DOM 零交互) vs Fabric offline getTrend 8/28 点:
+
+| 指标 | 页面显示 | Fabric trend 8/28 | Δ |
+|---|---:|---:|---:|
+| 成交金额 | ¥12,805.54 | 12805.54 | 0.00% |
+| 店铺访客数 | 1,099 | 1099 | 0.00% |
+| 店铺成交转化率 | 12.01% | 0.120109 | 0.00% |
+| 成交单量 | 132 (客单价 ¥97.01 交叉验证) | 132 | 0.00% |
+
+页面"对比时间"列 (8/27: ¥6,801.02 / 928 / 13.36%) 与 Fabric 8/27 点逐项一致——同时是 P0010.2.9 对账值的复现 (cross-validation)。Pipeline 链: POST /api/fabric/execute trade.overview → completed/cdp, daily_summary gmv=6062.55 orders=122 uv=641 cvr=0.18877; producer 自动产出 8/29 situation (转化率 12.0%→19.1% 较昨日 +58.9%); GET /api/fabric/trade-trend → 7 天全表。
+
+## 风险
+
+1. **Web劫持路径的脆弱性**: webpack module id (99859/4461/22886/6611/52306) 与 `webpackChunksz_2024` chunk 名是当前 bundle 的常量, JD 换版会失效——失败时 acquire 诚实返回 `ok:false + errors`, 不静默。探测/降级策略留待后续。
+2. **lazyLoad 根因未在页面侧修** (我们不动页面) — 所有 CDP 采集都必须走 direct fetch, 任何回到 UI 交互路径的"修复"都会复发。
+3. traffic.overview 仍然缺 acquire 函数 (只有 1/11 planned endpoints 有直接采集) — **scheduler 不得重启用** traffic 分支。
+4. realtime 数据是 intraday 快照, 与"当天累计"语义在营业日早期有天然偏差 (compareValue 基线已覆盖同比, P0010.2.10 语义依赖 business_date 分组不受影响)。
+
+## 建议下一步
+
+1. **P0010.2.12** (closure roadmap 下一项)。
+2. **traffic.overview 采集**: 按 ADR-072 同模式 (direct fetch + 页面自己 transport) 建 acquireJdTrafficOverviewViaCDP, 之前再谈 scheduler。
+3. E2E 验收 + workspace acceptance + freeze (per [[p0010-closure-roadmap]] 6 项清单, P0010.2.11 已划掉 1 项)。
+4. P0010.1 剩余 slices。
+
+---
+
 # Handoff — P0010.2.10: Situation "较昨日" 比较语义修复 (2026-08-29)
 
 ## Session goal
