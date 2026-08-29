@@ -23,6 +23,15 @@ export type LoopEvent =
   | { kind: 'acquisition_started'; capability: string }
   | { kind: 'acquisition_succeeded'; capability: string; evidenceCount: number }
   | { kind: 'acquisition_failed'; capability: string; error: string }
+  /**
+   * P0010.2.11 C1.7 — the autonomous per-day guard satisfied this tick
+   * without executing acquisition. Emitted INSTEAD OF
+   * `acquisition_succeeded` (skip ≠ success — the evidence store was not
+   * touched, no JD page was visited). `reason` states why; currently the
+   * only producer is the same-capability+business_date guard in
+   * runtime-loop.ts runCapability.
+   */
+  | { kind: 'acquisition_skipped'; capability: string; date: string; reason: string }
   | { kind: 'situations_updated'; created: number; skipped: number; createdIds: string[] }
   | {
       kind: 'investigation_triggered';
@@ -232,6 +241,7 @@ const mapLoopEventToTraceEvent = (e: LoopEvent): TraceEvent | null => {
     case 'acquisition_started':
     case 'acquisition_succeeded':
     case 'acquisition_failed':
+    case 'acquisition_skipped':
     case 'situations_updated':
       return null;
   }
@@ -289,6 +299,8 @@ const formatLoopEvent = (e: LoopEvent): string => {
       return `[loop] evidence updated capability=${e.capability} count=${e.evidenceCount}`;
     case 'acquisition_failed':
       return `[loop] acquisition failed capability=${e.capability} error=${e.error}`;
+    case 'acquisition_skipped':
+      return `[loop] acquisition skipped capability=${e.capability} date=${e.date} reason=${e.reason}`;
     case 'situations_updated':
       return `[loop] situation updated created=${e.created} skipped=${e.skipped}`;
     case 'investigation_triggered':

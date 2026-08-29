@@ -189,7 +189,34 @@ export const createRuntimeLoop = (options: RuntimeLoopOptions): RuntimeLoop => {
   let timer: ReturnType<typeof setInterval> | null = null;
   let tickInFlight: Promise<LoopTickSummary> | null = null;
 
+  // P0010.2.11 C1.7 — autonomous per-day acquisition guard.
+  //
+  // The scheduler's per-day guard (scheduler.ts tick()) lives behind
+  // `start()`, but the Loop drives acquisition through `runNow()`, which
+  // never checks it — so before C1.7 every 60s tick re-ran a real CDP
+  // acquisition for the same capability + business_date, overwriting the
+  // same evidence files. The guard belongs HERE (autonomous scheduling
+  // policy), not in `runNow` / the kernel: the manual
+  // `/api/fabric/execute` route builds its own kernel directly and must
+  // keep explicit execution semantics (an operator asking for a run gets
+  // a run).
+  //
+  // Semantics: only a COMPLETED acquisition is recorded (a failed tick
+  // may retry on the next tick). A new business_date re-enables
+  // acquisition automatically (keyed by date, not a boolean). Skip is
+  // reported as its own event — never as `acquisition_succeeded`.
+  const completedBusinessDate = new Map<string, string>();
+
   const runCapability = async (cap: string, date: string): Promise<{ ok: boolean; evidenceCount: number; error?: string }> => {
+    if (completedBusinessDate.get(cap) === date) {
+      logger.emit({
+        kind: 'acquisition_skipped',
+        capability: cap,
+        date,
+        reason: 'already_acquired_for_business_date',
+      });
+      return { ok: true, evidenceCount: 0 };
+    }
     logger.emit({ kind: 'acquisition_started', capability: cap });
     try {
       // We delegate to the runner's `runNow` because that's where the
@@ -204,6 +231,7 @@ export const createRuntimeLoop = (options: RuntimeLoopOptions): RuntimeLoop => {
       // (we did succeed — the actual count is owned by the kernel).
       const last = runner.list().find((s) => s.capability === cap);
       if (last?.lastStatus === 'completed') {
+        completedBusinessDate.set(cap, date);
         logger.emit({ kind: 'acquisition_succeeded', capability: cap, evidenceCount: 1 });
         return { ok: true, evidenceCount: 1 };
       }
@@ -600,6 +628,7 @@ const formatLoopEventFallback = (e: LoopEvent): string => {
     case 'acquisition_started': return `[loop] acquisition started capability=${e.capability}`;
     case 'acquisition_succeeded': return `[loop] evidence updated capability=${e.capability} count=${e.evidenceCount}`;
     case 'acquisition_failed': return `[loop] acquisition failed capability=${e.capability} error=${e.error}`;
+    case 'acquisition_skipped': return `[loop] acquisition skipped capability=${e.capability} date=${e.date} reason=${e.reason}`;
     case 'situations_updated': return `[loop] situation updated created=${e.created} skipped=${e.skipped}`;
     case 'investigation_triggered': return `[loop] investigation triggered situation=${e.situationId} reason=${e.reason}`;
     case 'investigation_skipped': return `[loop] investigation skipped situation=${e.situationId} reason=${e.reason}`;
