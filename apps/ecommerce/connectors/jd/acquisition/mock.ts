@@ -75,6 +75,11 @@ export const mockJdData = (date?: string): ParsedJdData => {
       product_visitors_compare_pct: Math.round((Math.random() * 0.2 - 0.05) * 100) / 100,
       shop_conversion_rate_compare_pct: Math.round((Math.random() * 0.2 - 0.05) * 100) / 100,
       industry_conversion_rate_compare_pct: Math.round((Math.random() * 0.2 - 0.05) * 100) / 100,
+      // P0010.2.11 C2 — yesterday absolute baseline (mock synthesizes today-1 values)
+      gmv_compare_value: null,
+      orders_compare_value: null,
+      shop_visitors_compare_value: null,
+      shop_conversion_rate_compare_value: null,
     },
     hourly_gmv: Array.from({ length: 24 }, (_, i) => ({
       hour: `${d} ${String(i).padStart(2, '0')}:00:00`,

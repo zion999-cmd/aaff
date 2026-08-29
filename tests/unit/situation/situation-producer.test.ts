@@ -34,6 +34,7 @@ const buildGetSummaryPayload = (
   orders: number,
   shopVisitors: number,
   shopConversionRate: number,
+  compareValues?: { gmv: number; orders: number; shopVisitors: number; shopConversionRate: number },
 ): unknown[] => [
   {
     header: { code: 0, desc: 'success' },
@@ -45,6 +46,14 @@ const buildGetSummaryPayload = (
           jdr_sch_traffic_enter_shop__browse_page_cnt_shop_last_src: shopVisitors,
           fo_jdr_sch_shop_deal_rate: shopConversionRate,
           jdr_sch_user_deal_ord_user_cnt_sz_user_deal_snapshot: Math.max(1, orders - 1),
+          ...(compareValues
+            ? {
+                'jdr_sch_trade_deal_ord_ord_amt_sz_trade_deal_snapshot##compareValue': compareValues.gmv,
+                'jdr_sch_trade_deal_ord_ord_qtty_sz_trade_deal_snapshot##compareValue': compareValues.orders,
+                'jdr_sch_traffic_enter_shop__browse_page_cnt_shop_last_src##compareValue': compareValues.shopVisitors,
+                'fo_jdr_sch_shop_deal_rate##compareValue': compareValues.shopConversionRate,
+              }
+            : {}),
         },
       ],
       size: 1,
@@ -65,11 +74,15 @@ const seedGetSummary = (
   orders: number,
   shopVisitors: number,
   shopConversionRate: number,
-  options: { acquisitionMethod?: 'cdp' | 'mock'; acquiredAt?: string } = {},
+  options: {
+    acquisitionMethod?: 'cdp' | 'mock';
+    acquiredAt?: string;
+    compareValues?: { gmv: number; orders: number; shopVisitors: number; shopConversionRate: number };
+  } = {},
 ) => {
   const acquisitionMethod = options.acquisitionMethod ?? 'cdp';
   const acquiredAt = options.acquiredAt ?? `${businessDate}T12:00:00.000Z`;
-  const payload = buildGetSummaryPayload(gmv, orders, shopVisitors, shopConversionRate);
+  const payload = buildGetSummaryPayload(gmv, orders, shopVisitors, shopConversionRate, options.compareValues);
   saveEvidence(TEST_PLATFORM, TEST_SHOP, businessDate, 'getSummary', payload, {
     acquisition_method: acquisitionMethod,
     processing_method: 'runtime',
@@ -467,5 +480,69 @@ describe('runSituationProducer', () => {
     expect(gmv).toBeDefined();
     expect(gmv.description).toContain('¥200');
     expect(gmv.description).toContain('¥100');
+  });
+});
+
+// ---- P0010.2.11 C2 — yesterday baseline from ##compareValue ----
+//
+// The JD getSummary payload bakes YESTERDAY's full-day absolute values into
+// the SAME response as today's realtime values (`<field>##compareValue`).
+// When no real previous-day cdp evidence exists (the normal state for a
+// freshly-bootstrapped store — see the 2026-08-29 stopgap), the producer
+// synthesizes the missing "yesterday" observation from those fields instead
+// of emitting nothing.
+
+describe('runSituationProducer — C2 compareValue yesterday baseline', () => {
+  let db: ReturnType<typeof Database>;
+
+  beforeEach(() => {
+    db = openDb(':memory:');
+    initDatabase(db);
+    try { rmSync(TEST_EVIDENCE_ROOT, { recursive: true, force: true }); } catch { /* ok */ }
+  });
+
+  afterEach(() => {
+    db.close();
+    try { rmSync(TEST_EVIDENCE_ROOT, { recursive: true, force: true }); } catch { /* ok */ }
+  });
+
+  test('single cdp day + ##compareValue baseline → today vs synthesized yesterday (4 changes)', () => {
+    // Only ONE real observation exists (2026-08-29). The 8/28 baseline comes
+    // from the payload's ##compareValue fields (yesterday full-day absolute).
+    seedGetSummary('2026-08-29', 6801.02, 125, 928, 0.1336, {
+      compareValues: { gmv: 1000, orders: 10, shopVisitors: 100, shopConversionRate: 0.05 },
+    });
+
+    const result = runSituationProducer(db, { shopId: TEST_SHOP, shopName: '测试店铺', platform: TEST_PLATFORM });
+    const changes = result.situations.filter((s) => s.tags[0] === 'meaningful_change');
+    expect(changes).toHaveLength(4);
+    const gmv = changes.find((s) => s.tags.includes('gmv'))!;
+    expect(gmv.temporal.observedAt).toBe('2026-08-29');
+    expect(gmv.temporal.windowStart).toBe('2026-08-28'); // synthesized baseline date = day-1
+    expect(gmv.description).toContain('¥1000'); // baseline value from compareValue
+  });
+
+  test('does NOT synthesize when real previous-day cdp evidence already exists', () => {
+    // Both days are real — compareValue must be ignored, the real pair is used.
+    seedGetSummary('2026-08-28', 1000, 10, 100, 0.05);
+    seedGetSummary('2026-08-29', 6801.02, 125, 928, 0.1336, {
+      compareValues: { gmv: 999999, orders: 999, shopVisitors: 9999, shopConversionRate: 0.5 },
+    });
+
+    const result = runSituationProducer(db, { shopId: TEST_SHOP, shopName: '测试店铺', platform: TEST_PLATFORM });
+    const changes = result.situations.filter((s) => s.tags[0] === 'meaningful_change');
+    expect(changes).toHaveLength(4);
+    const gmv = changes.find((s) => s.tags.includes('gmv'))!;
+    // Baseline must be the REAL 8/28 value (1000), not the compareValue 999999.
+    expect(gmv.description).toContain('¥1000');
+    expect(gmv.description).not.toContain('999999');
+  });
+
+  test('no synthesis when ##compareValue fields are incomplete', () => {
+    // compareValues omitted → payload has no baseline → 0 situations (honest).
+    seedGetSummary('2026-08-29', 6801.02, 125, 928, 0.1336);
+
+    const result = runSituationProducer(db, { shopId: TEST_SHOP, shopName: '测试店铺', platform: TEST_PLATFORM });
+    expect(result.situations).toHaveLength(0);
   });
 });

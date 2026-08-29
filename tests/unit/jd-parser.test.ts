@@ -28,6 +28,11 @@ const SUMMARY_FIXTURE = [{
       // WoW percentages (signed) for core deal metrics
       'jdr_sch_trade_deal_ord_ord_amt_sz_trade_deal_snapshot##compare': 0.156,
       'jdr_sch_trade_deal_ord_ord_qtty_sz_trade_deal_snapshot##compare': 0.091,
+      // ##compareValue — yesterday absolute baseline (P0010.2.11 C2)
+      'jdr_sch_trade_deal_ord_ord_amt_sz_trade_deal_snapshot##compareValue': 5393.11,
+      'jdr_sch_trade_deal_ord_ord_qtty_sz_trade_deal_snapshot##compareValue': 112,
+      'jdr_sch_traffic_enter_shop__browse_page_cnt_shop_last_src##compareValue': 780,
+      'fo_jdr_sch_shop_deal_rate##compareValue': 0.1218,
     }],
   },
 }];
@@ -124,6 +129,20 @@ describe('parseJdSummary', () => {
     expect(result.shop_visitors_compare_pct).toBeCloseTo(0.082);
     expect(result.shop_conversion_rate_compare_pct).toBeCloseTo(0.012);
     expect(result.product_visitors_compare_pct).toBeCloseTo(0.0079);
+  });
+
+  test('extracts ##compareValue yesterday absolute values (P0010.2.11 C2 baseline)', () => {
+    const result = parseJdSummary(SUMMARY_FIXTURE);
+    expect(result.gmv_compare_value).toBeCloseTo(5393.11);
+    expect(result.orders_compare_value).toBe(112);
+    expect(result.shop_visitors_compare_value).toBe(780);
+    expect(result.shop_conversion_rate_compare_value).toBeCloseTo(0.1218);
+  });
+
+  test('compare_value fields are null when ##compareValue keys are absent', () => {
+    const result = parseJdSummary([{ some: 'other-data' }]);
+    expect(result.gmv_compare_value).toBeNull();
+    expect(result.shop_conversion_rate_compare_value).toBeNull();
   });
 
   test('returns empty summary for non-JD-API responses', () => {

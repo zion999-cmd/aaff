@@ -24,3 +24,4 @@ data/test-fabric-workspace/
 # P0010.2.x schema-evolution live output (rebuildable from
 # apps/ecommerce/connectors/discovery/schema-evolution.ts)
 data/discovery-schema/
+data/bundles/

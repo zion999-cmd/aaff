@@ -9,6 +9,12 @@
 // investigation skipped when policy says skip.
 
 import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest';
+
+// These tests run the REAL ScheduledAcquisitionRunner → real CDP acquisition
+// against the live Chrome (no runner injection seam yet — see P0010.2.11 C1.7
+// handoff). F1's forced 实时 mode click pushed a full tick past the 5s
+// default; the file-wide budget reflects the real acquisition cost.
+vi.setConfig({ testTimeout: 30_000 });
 import type Database from 'better-sqlite3';
 import { openDb } from '#platform/storage/connection.js';
 import { initDatabase } from '#platform/storage/init.js';

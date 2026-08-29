@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'vitest';
-import { diffDays, hourBucket, isWithin, parseIso, windowBounds } from '#shared/utils/time.js';
+import { beijingDate, diffDays, hourBucket, isWithin, parseIso, windowBounds } from '#shared/utils/time.js';
 
 describe('parseIso', () => {
   test('valid iso -> Date', () => {
@@ -51,5 +51,23 @@ describe('isWithin', () => {
     const start = new Date('2026-06-07T00:00:00.000Z');
     const now = new Date('2026-06-14T00:00:00.000Z');
     expect(isWithin('2026-06-01T00:00:00.000Z', start, now)).toBe(false);
+  });
+});
+
+describe('beijingDate (P0010.2.11 C2 — Asia/Shanghai calendar day)', () => {
+  test('UTC 2026-08-28T23:58Z is Beijing 2026-08-29 (the mislabel that broke evidence)', () => {
+    expect(beijingDate(new Date('2026-08-28T23:58:31.240Z'))).toBe('2026-08-29');
+  });
+
+  test('UTC midday maps to same Beijing day', () => {
+    expect(beijingDate(new Date('2026-08-29T06:26:37.886Z'))).toBe('2026-08-29');
+  });
+
+  test('UTC 2026-08-29T15:59Z is still Beijing 8/29 (23:59 CST)', () => {
+    expect(beijingDate(new Date('2026-08-29T15:59:00.000Z'))).toBe('2026-08-29');
+  });
+
+  test('UTC 2026-08-29T16:00Z is Beijing 8/30 (00:00 CST rollover)', () => {
+    expect(beijingDate(new Date('2026-08-29T16:00:00.000Z'))).toBe('2026-08-30');
   });
 });

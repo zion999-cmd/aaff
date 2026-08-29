@@ -79,6 +79,13 @@ const DEFAULT_RANKING_PROFILE = 'operator_mode';
 /** The 4 trade.overview metrics, in the canonical names rules.ts expects. */
 const TRADE_OVERVIEW_METRICS = ['gmv', 'orders', 'uv', 'cvr'] as const;
 
+/** Previous UTC calendar day of a YYYY-MM-DD string. */
+const previousCalendarDay = (date: string): string => {
+  const d = new Date(`${date}T00:00:00.000Z`);
+  d.setUTCDate(d.getUTCDate() - 1);
+  return d.toISOString().slice(0, 10);
+};
+
 /**
  * Load store-level daily observations for the trade.overview 4-metric
  * "today vs yesterday" comparison.
@@ -116,6 +123,9 @@ const loadStoreDailyFromEvidence = (
   }
 
   const observations: StoreDailyObservation[] = [];
+  // Parsed summaries keyed by business_date — kept so the C2 baseline pass
+  // below can read the LATEST payload's ##compareValue fields.
+  const parsedByDate = new Map<string, ReturnType<typeof parseJdSummary>>();
   for (const [date, evs] of byDate.entries()) {
     // Latest by acquired_at wins. ISO-8601 sorts lexicographically; if
     // two have identical acquired_at (rare), tie-break by file_path so
@@ -138,6 +148,7 @@ const loadStoreDailyFromEvidence = (
     if (!Array.isArray(data)) continue;
 
     const summary = parseJdSummary(data as unknown[]);
+    parsedByDate.set(date, summary);
 
     // Map JdSummary's canonical names to the rules.ts vocabulary
     // (uv ← shop_visitors, cvr ← shop_conversion_rate per P0010.2.9).
@@ -154,6 +165,30 @@ const loadStoreDailyFromEvidence = (
     if (!allPresent) continue;
 
     observations.push({ date, metrics });
+  }
+
+  // P0010.2.11 C2 — fill the missing "yesterday" observation from the
+  // LATEST payload's ##compareValue fields. getSummary bakes yesterday's
+  // full-day absolute values into the SAME response as today's realtime
+  // values, so a today-vs-yesterday comparison needs no historical backfill.
+  // Only synthesizes when (a) there IS a latest real observation, (b) no
+  // real cdp evidence exists for its previous calendar day, and (c) all 4
+  // compareValue fields are present — otherwise honest silence (no
+  // fabricated baseline).
+  const latest = observations[observations.length - 1];
+  if (latest && !observations.some((o) => o.date === previousCalendarDay(latest.date))) {
+    const summary = parsedByDate.get(latest.date);
+    if (summary) {
+      const baseline: Record<string, number> = {
+        gmv: summary.gmv_compare_value ?? Number.NaN,
+        orders: summary.orders_compare_value ?? Number.NaN,
+        uv: summary.shop_visitors_compare_value ?? Number.NaN,
+        cvr: summary.shop_conversion_rate_compare_value ?? Number.NaN,
+      };
+      if (TRADE_OVERVIEW_METRICS.every((k) => Number.isFinite(baseline[k]))) {
+        observations.push({ date: previousCalendarDay(latest.date), metrics: baseline });
+      }
+    }
   }
 
   observations.sort((a, b) => a.date.localeCompare(b.date));

@@ -47,3 +47,15 @@ export const isWithin = (iso: string, start: Date, now: Date): boolean => {
   if (!d) return false;
   return d.getTime() >= start.getTime() && d.getTime() <= now.getTime();
 };
+
+/**
+ * Asia/Shanghai (UTC+8, fixed offset — no DST) calendar date, YYYY-MM-DD.
+ *
+ * P0010.2.11 C2: JD 商智 realtime endpoints report the BEIJING business
+ * day ("今日实时" / "昨天"), so evidence acquired at e.g. 2026-08-28T23:58Z
+ * (= Beijing 2026-08-29 07:58) must be stamped business_date 2026-08-29 —
+ * the UTC calendar date mislabeled it as 8/28 while the payload actually
+ * described the 8/29 realtime view.
+ */
+export const beijingDate = (at: Date = new Date()): string =>
+  new Date(at.getTime() + 8 * 60 * 60 * 1000).toISOString().slice(0, 10);

@@ -1487,6 +1487,60 @@ async function loadSituationFeed(filter) {
   // operator "no flash, no scroll reset" while the page is open.
   state.feedFingerprint = null;
   await fetchAndRenderSituations(filter);
+  // P0010.2.11 F4 — 近7天经营趋势 (latest cdp getTrend evidence).
+  // Fire-and-forget: on failure the card simply stays hidden.
+  loadTradeTrend();
+}
+
+// P0010.2.11 F4 — render the 7-day trade trend table from
+// GET /api/fabric/trade-trend. Loading-flicker rule: this runs on view
+// entry only (not on the 4s poller) and NEVER writes a "加载中" state —
+// the card stays display:none until real data arrives, and stays hidden
+// on any failure (honest absence).
+const TRADE_TREND_ROWS = [
+  { key: 'gmv', label: '成交金额' },
+  { key: 'orders', label: '成交单量' },
+  { key: 'shop_visitors', label: '店铺访客数' },
+  { key: 'shop_conversion_rate', label: '店铺成交转化率' },
+];
+
+async function loadTradeTrend() {
+  var card = document.getElementById('tradeTrendCard');
+  var body = document.getElementById('tradeTrendBody');
+  var meta = document.getElementById('tradeTrendMeta');
+  if (!card || !body) return;
+  try {
+    var d = await apiGet('/api/fabric/trade-trend');
+    var categories = Array.isArray(d.categories) ? d.categories : [];
+    var series = Array.isArray(d.series) ? d.series : [];
+    if (!categories.length || !series.length) return;
+    var byName = {};
+    series.forEach(function (s) { if (s.name && byName[s.name] === undefined) byName[s.name] = s.data; });
+    var fmt = function (v, isRate) {
+      if (v === null || v === undefined || isNaN(v)) return '—';
+      return isRate ? (v * 100).toFixed(2) + '%' : Number(v).toLocaleString('zh-CN', { maximumFractionDigits: 2 });
+    };
+    var html = '<table class="trade-trend-table"><thead><tr><th>指标</th>';
+    categories.forEach(function (c) { html += '<th>' + c.slice(5) + '</th>'; });
+    html += '</tr></thead><tbody>';
+    TRADE_TREND_ROWS.forEach(function (row) {
+      var data = byName[row.key];
+      var isRate = row.key === 'shop_conversion_rate';
+      html += '<tr><td>' + row.label + '</td>';
+      if (Array.isArray(data)) {
+        data.forEach(function (v) { html += '<td>' + fmt(v, isRate) + '</td>'; });
+      } else {
+        html += '<td colspan="' + categories.length + '">—</td>';
+      }
+      html += '</tr>';
+    });
+    html += '</tbody></table>';
+    body.innerHTML = html;
+    if (meta) meta.textContent = '数据时间 ' + (d.acquired_at || '').replace('T', ' ').slice(0, 16) + ' UTC';
+    card.style.display = '';
+  } catch (e) {
+    // No evidence yet / endpoint missing — the card stays hidden (honest).
+  }
 }
 
 // P0010.2.7 — Pure fetcher + dedup + render. Used by both the initial

@@ -30,6 +30,11 @@ const makeParsedData = (): ParsedJdData => ({
     product_visitors_compare_pct: null,
     shop_conversion_rate_compare_pct: null,
     industry_conversion_rate_compare_pct: null,
+    // P0010.2.11 C2 fields
+    gmv_compare_value: null,
+    orders_compare_value: null,
+    shop_visitors_compare_value: null,
+    shop_conversion_rate_compare_value: null,
   },
   hourly_gmv: [
     { hour: '2026-07-04 10:00:00', gmv: 8500 },

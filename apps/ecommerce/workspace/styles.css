@@ -1073,3 +1073,11 @@ ul, ol { list-style: none; }
   padding-left: 22px;
   color: var(--muted);
 }
+
+/* P0010.2.11 F4 — 近7天经营趋势 card (今日经营 view, below the feed) */
+.trade-trend-card { margin-top: 20px; padding: 14px 16px; border: 1px solid var(--border, #e5e7eb); border-radius: 10px; background: var(--surface, #fff); }
+.trade-trend-card .view-title-row { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 10px; }
+.trade-trend-table { width: 100%; border-collapse: collapse; font-size: 0.8rem; }
+.trade-trend-table th, .trade-trend-table td { padding: 6px 8px; text-align: right; border-bottom: 1px solid var(--border, #f0f1f3); white-space: nowrap; }
+.trade-trend-table th:first-child, .trade-trend-table td:first-child { text-align: left; color: var(--muted, #6b7280); font-weight: normal; }
+.trade-trend-table thead th { color: var(--muted, #6b7280); font-weight: 500; }

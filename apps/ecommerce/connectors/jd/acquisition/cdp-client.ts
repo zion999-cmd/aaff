@@ -11,6 +11,7 @@
 // The user logs into 京东商智 once in Chrome, then this script reuses that session.
 
 import type { MockJdPayload } from './mock.js';
+import { beijingDate } from '#shared/utils/time.js';
 
 // ---- Minimal Playwright CDP types (avoids depending on @types/playwright-core) ----
 
@@ -418,17 +419,29 @@ export const acquireJdViaCDP = async (
   return result;
 };
 
-// ---- Trade Overview (P0010.2.9) ----
+// ---- Trade Overview (P0010.2.9 / P0010.2.11) ----
 //
 // trade.overview is the live 经营概览 page. It calls the lowcode endpoints
 // `tradeSummary/summary/getSummary.ajax` + `getTrend.ajax` — NOT the snapshot
-// `indexSummary/summary.ajax` that the historical walker uses. Page-driven:
-//   1. Navigate to /szweb/view/tradeAnalysis/tradeSummary.html
-//   2. Let the SPA fire its own signed XHR (no body rewrite — the page knows
-//      `todayRealtime` mode is correct)
-//   3. Capture both responses in memory
+// `indexSummary/summary.ajax` that the historical walker uses.
 //
-// Keep CDP/browser signed-request path: do NOT try to forge __sgm__.
+// P0010.2.11 — DIRECT FETCH (replaces the dead UI-interaction path):
+// the page gates its own boot fetches behind a lazyLoad visibility guard
+// (module 6611 `zN` / `window[Symbol('lazyLoad')]`), so in a background tab
+// NOTHING fires — not even the SPA's own boot requests. UI clicks (echo →
+// 实时 chip → 查询) were equally unreliable. The verified approach bypasses
+// both: hijack the page's webpack require, call the page's OWN signed ajax
+// helper (module 99859 `Fe`) with params built by the page's own date-param
+// builder (module 4461 `jD.SzDPParams` + module 22886 `M` trendParams), and
+// read the envelopes straight out of the evaluate return value. Signing,
+// cookies and `__sgm__` are all handled by the page's own transport — we
+// never forge headers.
+//
+// Two requests, each with a single purpose (no mode ambiguity):
+//   1. realtime getSummary  → summary[0]  (today intraday + ##compareValue
+//      yesterday-same-time baseline — the daily observation, business_date=today)
+//   2. offline (yesterday) getTrend → trend[0] (7 daily categories — the
+//      近7天 data the /fabric/trade-trend route reads from payload[0])
 
 export interface TradeOverviewAcquireOptions {
   /** Chrome CDP port (default: 9222) */
@@ -448,16 +461,211 @@ export interface TradeOverviewAcquireResult {
   cdpAvailable: boolean;
 }
 
-const TRADE_OVERVIEW_URL = 'https://jdsz.jd.com/szweb/view/tradeAnalysis/tradeSummary.html';
+/** Shape resolved by the in-page direct-fetch script ({@link buildTradeOverviewDirectFetchExpr}). */
+interface TradeOverviewDirectFetchResult {
+  ok: boolean;
+  errors?: string[];
+  realtimeParams?: unknown;
+  offlineTrendParams?: unknown;
+  summary?: unknown;
+  trend?: unknown;
+}
 
 /**
- * Acquire trade.overview via the live 经营概览 page.
+ * A JD lowcode response envelope that the endpoint actually accepted:
+ * `{ header: { code: 0 }, body: ... }` — the same filter the old
+ * Network-listener capture applied before pushing into `captured`.
+ */
+const isTradeOverviewEnvelope = (value: unknown): boolean => {
+  if (typeof value !== 'object' || value === null) return false;
+  const header = (value as { header?: { code?: unknown } }).header;
+  return typeof header === 'object' && header !== null && header.code === 0
+    && typeof (value as { body?: unknown }).body !== 'undefined';
+};
+
+const TRADE_OVERVIEW_URL = 'https://jdsz.jd.com/szweb/view/tradeAnalysis/tradeSummary.html';
+
+// Boot (昨天-mode) indicator list captured 2026-08-29 from the page's own
+// boot getSummary request — every shop-level indicator plus its
+// ##compareValue / ##compare / ##industry / ##preIndustry variants.
+const TRADE_SUMMARY_BOOT_INDICATORS: readonly string[] = Object.freeze([
+  'jdr_sch_trade_deal_ord_ord_amt_sz_trade_deal_snapshot',
+  'jdr_sch_trade_deal_ord_ord_amt_sz_trade_deal_snapshot##compareValue',
+  'jdr_sch_trade_deal_ord_ord_amt_sz_trade_deal_snapshot##compare',
+  'jdr_sch_trade_deal_ord_ord_amt_sz_trade_shop_cate_and_level_snapshot##industry',
+  'jdr_sch_trade_deal_ord_ord_amt_sz_trade_shop_cate_and_level_snapshot##preIndustry',
+  'jdr_sch_trade_deal_ord_sku_qtty_sz_trade_deal_snapshot',
+  'jdr_sch_trade_deal_ord_sku_qtty_sz_trade_deal_snapshot##compareValue',
+  'jdr_sch_trade_deal_ord_sku_qtty_sz_trade_deal_snapshot##compare',
+  'jdr_sch_trade_deal_ord_sku_qtty_sz_trade_shop_cate_and_level_snapshot##industry',
+  'jdr_sch_trade_deal_ord_sku_qtty_sz_trade_shop_cate_and_level_snapshot##preIndustry',
+  'jdr_sch_user_deal_ord_user_cnt_sz_user_deal_snapshot',
+  'jdr_sch_user_deal_ord_user_cnt_sz_user_deal_snapshot##compareValue',
+  'jdr_sch_user_deal_ord_user_cnt_sz_user_deal_snapshot##compare',
+  'jdr_sch_user_deal_ord_user_cnt_sz_shop_cate_and_level_user_deal_snapshot##industry',
+  'jdr_sch_user_deal_ord_user_cnt_sz_shop_cate_and_level_user_deal_snapshot##preIndustry',
+  'jdr_sch_trade_deal_ord_ord_qtty_sz_trade_deal_snapshot',
+  'jdr_sch_trade_deal_ord_ord_qtty_sz_trade_deal_snapshot##compareValue',
+  'jdr_sch_trade_deal_ord_ord_qtty_sz_trade_deal_snapshot##compare',
+  'jdr_sch_trade_deal_ord_ord_qtty_sz_trade_shop_cate_and_level_snapshot##industry',
+  'jdr_sch_trade_deal_ord_ord_qtty_sz_trade_shop_cate_and_level_snapshot##preIndustry',
+  'fo_jdr_sch_shop_deal_rate',
+  'fo_jdr_sch_shop_deal_rate##compareValue',
+  'fo_jdr_sch_shop_deal_rate##compare',
+  'fo_jdr_sch_trade_deal_ord_amt_user_sz_trade_deal_snapshot',
+  'fo_jdr_sch_trade_deal_ord_amt_user_sz_trade_deal_snapshot##compareValue',
+  'fo_jdr_sch_trade_deal_ord_amt_user_sz_trade_deal_snapshot##compare',
+  'fo_jdr_sch_sz_trade_shop_cate_and_level_deal_snapshot##industry',
+  'fo_jdr_sch_sz_trade_shop_cate_and_level_deal_snapshot##preIndustry',
+  'jdr_sch_traffic_enter_shop__browse_page_qtty_shop_last_src',
+  'jdr_sch_traffic_enter_shop__browse_page_qtty_shop_last_src##compareValue',
+  'jdr_sch_traffic_enter_shop__browse_page_qtty_shop_last_src##compare',
+  'jdr_sch_traffic_enter_shop__browse_page_cnt_shop_last_src',
+  'jdr_sch_traffic_enter_shop__browse_page_cnt_shop_last_src##compareValue',
+  'jdr_sch_traffic_enter_shop__browse_page_cnt_shop_last_src##compare',
+  'fo_jdr_sch_traffic_enter_shop__browse_page_avg_duration_shop_last_src',
+  'fo_jdr_sch_traffic_enter_shop__browse_page_avg_duration_shop_last_src##compareValue',
+  'fo_jdr_sch_traffic_enter_shop__browse_page_avg_duration_shop_last_src##compare',
+  'jdr_sch_sku_add_cart_sku_user_qtty_product_user_cart_add_minus_sz_bsg_shoppingcart@increase',
+  'jdr_sch_sku_add_cart_sku_user_qtty_product_user_cart_add_minus_sz_bsg_shoppingcart@increase##compareValue',
+  'jdr_sch_sku_add_cart_sku_user_qtty_product_user_cart_add_minus_sz_bsg_shoppingcart@increase##compare',
+  'jdr_sch_sku_add_cart_sku_sku_piece_shopping_cart',
+  'jdr_sch_sku_add_cart_sku_sku_piece_shopping_cart##compareValue',
+  'jdr_sch_sku_add_cart_sku_sku_piece_shopping_cart##compare',
+  'fo_jdr_sch_add_cart_user_uv_rate@increase',
+  'fo_jdr_sch_add_cart_user_uv_rate@increase##compareValue',
+  'fo_jdr_sch_add_cart_user_uv_rate@increase##compare',
+]);
+
+// The 4 canonical trend indicators (GMV / orders / shop visitors / shop CVR)
+// — the series the 近7天 table renders.
+const TRADE_SUMMARY_TREND_INDICATORS: readonly string[] = Object.freeze([
+  'jdr_sch_trade_deal_ord_ord_amt_sz_trade_deal_snapshot',
+  'jdr_sch_trade_deal_ord_ord_qtty_sz_trade_deal_snapshot',
+  'jdr_sch_traffic_enter_shop__browse_page_cnt_shop_last_src',
+  'fo_jdr_sch_shop_deal_rate',
+]);
+
+const ONE_DAY_MS = 86_400_000;
+
+/**
+ * Build the in-page direct-fetch script (P0010.2.11).
  *
- * The page fires `tradeSummary/summary/getSummary.ajax` + `getTrend.ajax` on
- * its own (with the page's own CSRF headers + signed request context). We
- * navigate to the page, let it fire, and capture the responses — no body
- * rewrite, no `__sgm__` forgery. Returns a non-paged (single-day) payload
- * keyed by `summary` and `trend` (the same keys the parsers expect).
+ * Runs inside the tradeSummary SPA context. Returns a string expression
+ * (an async IIFE) so it can go through `page.evaluate` without any closure
+ * serialization: the indicator lists are embedded via JSON.
+ *
+ * The expressione resolves to
+ * `{ ok: true, realtimeParams, offlineTrendParams, summary, trend }` or
+ * `{ ok: false, errors: [...] }`. `summary` is the realtime getSummary
+ * envelope; `trend` is the offline (昨天-mode) getTrend envelope with 7
+ * daily categories.
+ */
+export const buildTradeOverviewDirectFetchExpr = (
+  bootIndicators: readonly string[],
+  trendIndicators: readonly string[],
+): string => `(
+async (cfg) => {
+  const fail = (msg) => ({ ok: false, errors: [msg] });
+  try {
+    // 1. Hijack the page's webpack require (unique chunk id per call).
+    if (typeof window.__wr !== 'function') {
+      window.webpackChunksz_2024.push(
+        [[Math.floor(Math.random() * 1e9)], {}, (r) => { window.__wr = r; }],
+      );
+    }
+    if (typeof window.__wr !== 'function') return fail('webpack require hijack failed');
+    const ajax = window.__wr(99859);
+    const jD = window.__wr(4461).jD;
+    const trendM = window.__wr(22886).M;
+    if (!ajax || !jD || !trendM) return fail('page modules 99859/4461/22886 not resolvable');
+
+    // 2. Walk the React fiber from the picker echo span up to the page
+    //    component (the one holding picker data + a 7s refresh interval).
+    const echo = document.querySelector('span.jmt-combo-date-picker-echo-item');
+    if (!echo) return fail('date picker echo span not found (SPA not loaded?)');
+    const fiberKey = Object.keys(echo).find((k) => k.startsWith('__reactFiber$'));
+    if (!fiberKey) return fail('React fiber key not found on echo span');
+    let fiber = echo[fiberKey];
+    let comp = null;
+    for (let i = 0; i < 10 && fiber; i++) {
+      const pp = fiber.memoizedProps;
+      if (pp && pp.onChange && pp.data && pp.refreshInterval === 7000) { comp = fiber; break; }
+      fiber = fiber.return;
+    }
+    if (!comp) return fail('page component (refreshInterval=7000) not found in fiber tree');
+    const picker = comp.memoizedProps;
+    const items = picker.data.dimVals || picker.data;
+    const M = items.reduce((acc, it) => {
+      if (it && it.key) acc[it.key] = { min: it.min, max: it.max };
+      return acc;
+    }, {});
+
+    // 3. Realtime (today) getSummary params — the verified construction:
+    //    resolve the todayRealtime option's value/compareValue functions,
+    //    then let the page's own SzDPParams produce the signed body.
+    const rt = items.find((it) => it && it.key === 'realtime');
+    if (!rt) return fail("picker item 'realtime' not found");
+    const rtOpt = rt.config.panels[0].options[0];
+    const rtResolved = rtOpt.value(rtOpt);
+    const rtHb = (rtOpt.comparesMap || {}).hb;
+    if (!rtHb) return fail("realtime option has no 'hb' compare");
+    const rtHbResolved = typeof rtHb.value === 'function' ? rtHb.value(rtResolved) : rtHb.value;
+    const rtValue = {
+      key: 'realtime',
+      value: Object.assign({}, rtOpt, { value: rtResolved }),
+      compareValue: Object.assign({}, rtHb, { value: rtHbResolved }),
+    };
+    const realtimeParams = jD.SzDPParams(rtValue, M);
+
+    // 4. Offline (昨天) getTrend params — deterministic construction from the
+    //    'yesterday' quick item (independent of the picker's current mode).
+    const y = items.find((it) => it && it.key === 'yesterday');
+    if (!y) return fail("picker item 'yesterday' not found");
+    const yResolved = typeof y.value === 'function' ? y.value(y) : y.value;
+    if (typeof yResolved !== 'string' || !/^\\d{4}-\\d{2}-\\d{2}$/.test(yResolved)) {
+      return fail('yesterday item did not resolve to a YYYY-MM-DD date');
+    }
+    const yDayBefore = new Date(
+      new Date(yResolved + 'T00:00:00Z').getTime() - ${ONE_DAY_MS},
+    ).toISOString().slice(0, 10);
+    const yValue = {
+      key: 'yesterday',
+      value: Object.assign({}, y, { value: yResolved }),
+      compareValue: Object.assign({}, y.comparesMap.hb, { value: yDayBefore }),
+    };
+    const offlineTrendParams = trendM(jD.SzDPParams(yValue, M), 6);
+
+    // 5. Fire both requests through the page's own signed transport.
+    const summaryResp = await ajax.Fe({
+      url: '/api/lowcode/tradeSummary/summary/getSummary.ajax',
+      method: 'post',
+      data: Object.assign({}, realtimeParams, { channel: 'all', indicators: cfg.bootIndicators }),
+    });
+    const trendResp = await ajax.Fe({
+      url: '/api/lowcode/tradeSummary/summary/getTrend.ajax',
+      method: 'post',
+      data: Object.assign({}, offlineTrendParams, { channel: 'all', indicators: cfg.trendIndicators }),
+    });
+    return { ok: true, realtimeParams, offlineTrendParams, summary: summaryResp, trend: trendResp };
+  } catch (e) {
+    return fail(String((e && e.message) || e));
+  }
+})(${JSON.stringify({ bootIndicators: [...bootIndicators], trendIndicators: [...trendIndicators] })})`;
+
+/**
+ * Acquire trade.overview via the live 经营概览 page (P0010.2.11 direct fetch).
+ *
+ * The page gates its own boot fetches behind a lazyLoad visibility guard, so
+ * in a background tab nothing fires on its own. Instead of UI interaction we
+ * call the page's OWN signed ajax helper directly (webpack hijack → module
+ * 99859 `Fe`), with request bodies built by the page's own date-param
+ * machinery — no body rewrite, no `__sgm__` forgery. Two requests:
+ *
+ *   - realtime `getSummary.ajax` → `summary[0]` (today intraday + yesterday-
+ *     same-time ##compareValue baseline; business_date = today)
+ *   - offline (昨天) `getTrend.ajax` → `trend[0]` (7 daily categories — the
+ *     近7天 data the /fabric/trade-trend route reads from payload[0])
  *
  * This is a sibling to {@link acquireJdViaCDP} (the multi-day snapshot walker)
  * and {@link acquireJdMultiPage} (the multi-page discovery walker). It is the
@@ -467,7 +675,9 @@ export const acquireJdTradeOverviewViaCDP = async (
   options: TradeOverviewAcquireOptions = {},
 ): Promise<TradeOverviewAcquireResult> => {
   const { cdpPort = 9222, maxWaitMs = 15_000 } = options;
-  const date = options.date ?? new Date().toISOString().slice(0, 10);
+  // Beijing calendar day — JD 商智 payloads describe the Beijing business
+  // day, and a UTC stamp mislabels everything acquired before 08:00 Beijing.
+  const date = options.date ?? beijingDate();
   const empty = (cdpAvailable: boolean, errors?: string[]): TradeOverviewAcquireResult => ({
     success: false,
     date,
@@ -506,10 +716,7 @@ export const acquireJdTradeOverviewViaCDP = async (
     return empty(true, [`CDP connect failed: ${err instanceof Error ? err.message : String(err)}`]);
   }
 
-  // Hoisted so the `finally` block can detach the response listener on
-  // every exit path (result / throw / early-return) — no cross-tick leak.
   let targetPage: CdpPage | undefined;
-  let responseHandler: ((response: CdpResponse) => Promise<void>) | null = null;
 
   try {
     // 4. Find any open JD page (operator must be logged in)
@@ -530,78 +737,56 @@ export const acquireJdTradeOverviewViaCDP = async (
       ]);
     }
 
-    // 5. Set up response capture BEFORE any navigation (P0010.2.11 C1.6).
-    // The goto below triggers a full page reload even when the tab is
-    // already on tradeSummary.html. Registering the listener after the
-    // navigation raced the page lifecycle: on the first tick of a fresh
-    // dev server the reload's follow-up fetches fired before the
-    // listener was attached, so `captured` stayed empty and the first
-    // acquisition failed ("Did not capture …"). Registering first means
-    // every response — including those fired during/before the reload —
-    // is observable. The filter below keeps only the two target APIs,
-    // so nothing unrelated is accumulated. The handler is removed in
-    // the `finally` block on every exit path (result, throw, empty).
-    const captured: { api: string; data: unknown }[] = [];
-    const targetApis = new Set(['getSummary', 'getTrend']);
-
-    const handler = async (response: CdpResponse): Promise<void> => {
-      const url = response.url();
-      if (!url.includes('szgateway.jd.com/api/lowcode/tradeSummary/')) return;
-      const apiName = url.split('/').pop()?.split('?')[0]?.replace('.ajax', '') || '';
-      if (!targetApis.has(apiName)) return;
-      try {
-        const body = await response.text();
-        const parsed = JSON.parse(body) as { header?: { code: number } };
-        if (parsed?.header?.code === 0) {
-          captured.push({ api: apiName, data: parsed });
-        }
-      } catch {
-        // Skip non-JSON
-      }
-    };
-    responseHandler = handler;
-    targetPage.on('response', handler);
-
-    // 6. Navigate to trade summary page
-    await targetPage.goto(TRADE_OVERVIEW_URL, {
-      waitUntil: 'domcontentloaded',
-      timeout: 15_000,
-    });
-
-    // 7. Wait for SPA to render the 核心指标 / 交易概览 shell
+    // 5. Make sure the tradeSummary SPA is loaded. Skip the navigation when
+    // the tab is already there (a reload is wasted work and can disturb the
+    // operator's tab); otherwise navigate, then wait for the date picker's
+    // echo span — the reliable "SPA mounted" marker (the picker fiber is the
+    // direct-fetch script's entry point).
+    if (!targetPage.url().includes('tradeSummary.html')) {
+      await targetPage.goto(TRADE_OVERVIEW_URL, {
+        waitUntil: 'domcontentloaded',
+        timeout: 15_000,
+      });
+    }
     try {
-      await targetPage.waitForSelector('text=核心指标', { timeout: 10_000 });
+      await targetPage.waitForSelector('span.jmt-combo-date-picker-echo-item', {
+        timeout: maxWaitMs,
+      });
     } catch {
-      // Selector not present in this build — continue. The response
-      // capture above is the source of truth.
+      return empty(true, [
+        `Trade summary SPA did not render its date picker within ${maxWaitMs}ms (not logged in or page changed?)`,
+      ]);
     }
 
-    // 8. Click "查询" to force a fresh fetch. The page is in 实时 mode by
-    // default, but the click guarantees the SPA fires getSummary/getTrend
-    // even if a stale value is on screen. Multiple 查询 buttons may exist
-    // — pick the first one inside the page content area.
+    // 6. Direct fetch through the page's own signed ajax transport — no UI
+    // interaction, no visibility-guard dependence. The envelopes come back
+    // as the evaluate return value, so there is no capture race at all.
+    let direct: TradeOverviewDirectFetchResult;
     try {
-      await targetPage.click('button:has-text("查询")', { timeout: 5_000 });
-    } catch {
-      // Button not found / not clickable — rely on initial fetch.
+      direct = await targetPage.evaluate<TradeOverviewDirectFetchResult>(
+        buildTradeOverviewDirectFetchExpr(
+          TRADE_SUMMARY_BOOT_INDICATORS,
+          TRADE_SUMMARY_TREND_INDICATORS,
+        ),
+      );
+    } catch (err) {
+      return empty(true, [
+        `Direct fetch evaluate failed: ${err instanceof Error ? err.message : String(err)}`,
+      ]);
+    }
+    if (!direct || !direct.ok) {
+      return empty(true, direct?.errors ?? ['Direct fetch returned no result']);
     }
 
-    // 9. Wait for both responses (or until maxWaitMs)
-    const start = Date.now();
-    while (Date.now() - start < maxWaitMs) {
-      const haveSummary = captured.some((c) => c.api === 'getSummary');
-      const haveTrend = captured.some((c) => c.api === 'getTrend');
-      if (haveSummary && haveTrend) break;
-      await new Promise((resolve) => setTimeout(resolve, 500));
-    }
-
-    // 10. Build result
+    // 7. Build result — an envelope counts only when the endpoint accepted
+    // it (header.code === 0), mirroring the old Network-listener filter.
+    const errors: string[] = [];
     const summary: unknown[] = [];
     const trend: unknown[] = [];
-    for (const c of captured) {
-      if (c.api === 'getSummary') summary.push(c.data);
-      else if (c.api === 'getTrend') trend.push(c.data);
-    }
+    if (isTradeOverviewEnvelope(direct.summary)) summary.push(direct.summary);
+    else errors.push('getSummary returned a non-zero or malformed envelope');
+    if (isTradeOverviewEnvelope(direct.trend)) trend.push(direct.trend);
+    else errors.push('getTrend returned a non-zero or malformed envelope');
 
     const result: TradeOverviewAcquireResult = {
       success: summary.length > 0,
@@ -610,29 +795,11 @@ export const acquireJdTradeOverviewViaCDP = async (
       trend,
       cdpAvailable: true,
     };
-    const missing: string[] = [];
-    if (summary.length === 0) missing.push('getSummary');
-    if (trend.length === 0) missing.push('getTrend');
-    if (missing.length > 0) {
-      result.errors = [`Did not capture: ${missing.join(', ')} within ${maxWaitMs}ms`];
-    }
+    if (errors.length > 0) result.errors = errors;
     return result;
   } catch (err) {
     return empty(true, [err instanceof Error ? err.message : String(err)]);
   } finally {
-    // C1.6 — detach the response listener on EVERY exit path (success,
-    // failure result, thrown error) so no handler survives the tick. The
-    // browser connection is closed right after, which would drop it
-    // anyway, but the explicit detach makes the no-leak invariant
-    // structural instead of incidental.
-    if (targetPage && responseHandler) {
-      try {
-        targetPage.off('response', responseHandler);
-      } catch {
-        // Page may already be gone (navigation crash) — nothing to detach.
-      }
-    }
-    responseHandler = null;
     await browser.close().catch(() => {});
   }
 };

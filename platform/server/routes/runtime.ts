@@ -22,6 +22,7 @@ import { createCapabilityAcquire } from '#app/connectors/jd/historical-acquire.j
 import { getDataPages } from '#app/connectors/jd/blueprint.js';
 import { saveEvidence } from '#app/connectors/evidence/store.js';
 import { parseJdPayload } from '#app/connectors/jd/parsers/index.js';
+import { mapJdIndicator } from '#app/connectors/jd/parsers/indicator-map.js';
 import { SignalFacade } from '#app/analysis/metrics/facade.js';
 import { loadEvidence, listEvidence } from '#app/connectors/evidence/store.js';
 import { readFileSync, existsSync } from 'node:fs';
@@ -255,6 +256,46 @@ export const runtimeRouter = (db: Db): Router => {
         return;
       }
       fail(res, 500, msg);
+    }
+  });
+
+  // GET /api/fabric/trade-trend — P0010.2.11 F4: surface the 近7天 data that
+  // getTrend acquisition already persists. The evidence payload carries
+  // { categories: [YYYY-MM-DD ×7], series: [{code, data}] } straight from the
+  // page's own endpoint; this route picks the LATEST getTrend evidence, maps
+  // the JDR indicator codes to canonical names, and hands the table to the
+  // Workspace 今日经营 view. Read-only, no acquisition, no DB writes.
+  router.get('/fabric/trade-trend', (req, res) => {
+    try {
+      const shopId = (req.query['shopId'] as string | undefined) ?? 'jd_shop_001';
+      const rows = listEvidence({ source: 'jd', shopId, dataType: 'getTrend', limit: 100 })
+        .filter((ev) => ev.metadata.acquisition_method === 'cdp')
+        .sort((a, b) => b.metadata.acquired_at.localeCompare(a.metadata.acquired_at));
+      const latest = rows[0];
+      if (!latest) {
+        fail(res, 404, 'No cdp getTrend evidence yet');
+        return;
+      }
+      const payload = JSON.parse(readFileSync(latest.file_path, 'utf-8')) as Array<{
+        body?: { data?: Array<{ trend?: { categories?: string[]; series?: Array<{ code: string; data: Array<number | null> }> } }> };
+      }>;
+      const trend = payload[0]?.body?.data?.[0]?.trend;
+      if (!trend || !Array.isArray(trend.categories) || !Array.isArray(trend.series)) {
+        fail(res, 502, 'getTrend evidence has no trend block');
+        return;
+      }
+      ok(res, {
+        business_date: latest.metadata.business_date,
+        acquired_at: latest.metadata.acquired_at,
+        categories: trend.categories,
+        series: trend.series.map((s) => ({
+          code: s.code,
+          name: mapJdIndicator(s.code),
+          data: s.data,
+        })),
+      });
+    } catch (err) {
+      fail(res, 500, err instanceof Error ? err.message : 'trade-trend read failed');
     }
   });
 

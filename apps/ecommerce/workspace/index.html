@@ -16,7 +16,7 @@
     <header class="workspace-header">
       <div class="header-left">
         <span class="header-brand">agentFabric</span>
-        <span class="header-version" id="headerVersion">v0.9.1</span>
+        <span class="header-version" id="headerVersion">v—</span>
       </div>
       <div class="header-center">
         <span class="header-title">Agent Workspace</span>
@@ -85,7 +85,7 @@
         <div class="sidebar-footer">
           <div class="sidebar-footer-header"><span data-i18n="sidebar.agent">运营Agent</span><span class="status-badge running" data-i18n="sidebar.running">运行中</span></div>
           <div class="sidebar-footer-stats">
-            <div class="sidebar-stat-row"><span data-i18n="sidebar.version">版本</span><span id="sidebarVersion">v0.9.1</span></div>
+            <div class="sidebar-stat-row"><span data-i18n="sidebar.version">版本</span><span id="sidebarVersion">v—</span></div>
             <!-- P0010.2.6: the 3 rows below (数据时间 / 今日决策 / 准确率)
                  previously showed hardcoded "--" with no JS writer —
                  false state. Removed until a real backend source lands. -->
@@ -109,6 +109,12 @@
               </div>
             </div>
             <div id="situationFeedList" class="situation-feed-list"><p class="muted placeholder">加载 Situation 中...</p></div>
+            <!-- P0010.2.11 F4: 近7天经营趋势 — from the latest cdp getTrend evidence.
+                 Hidden until data arrives; never shows a fake state. -->
+            <div id="tradeTrendCard" class="trade-trend-card" style="display:none;">
+              <div class="view-title-row"><h3 class="view-title" style="font-size:0.95rem;">近7天经营趋势</h3><span class="muted" id="tradeTrendMeta"></span></div>
+              <div id="tradeTrendBody"></div>
+            </div>
           </div>
         </div>
 

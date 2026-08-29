@@ -51,6 +51,20 @@ export interface JdSummary {
   shop_conversion_rate_compare_pct: number | null;
   /** WoW industry_conversion_rate comparison percentage */
   industry_conversion_rate_compare_pct: number | null;
+
+  // ---- ##compareValue — yesterday absolute baseline (P0010.2.11 C2) ----
+  // The getSummary payload bakes YESTERDAY's full-day absolute values into
+  // the SAME response as today's realtime values, so a today-vs-yesterday
+  // comparison needs no historical backfill. Null when the endpoint did not
+  // return the field.
+  /** Yesterday GMV (absolute) */
+  gmv_compare_value: number | null;
+  /** Yesterday orders (absolute) */
+  orders_compare_value: number | null;
+  /** Yesterday shop visitors (absolute) */
+  shop_visitors_compare_value: number | null;
+  /** Yesterday shop conversion rate (absolute) */
+  shop_conversion_rate_compare_value: number | null;
 }
 
 export interface JdHourlyPoint {
@@ -94,6 +108,10 @@ const emptySummary = (): JdSummary => ({
   product_visitors_compare_pct: null,
   shop_conversion_rate_compare_pct: null,
   industry_conversion_rate_compare_pct: null,
+  gmv_compare_value: null,
+  orders_compare_value: null,
+  shop_visitors_compare_value: null,
+  shop_conversion_rate_compare_value: null,
 });
 
 /**
@@ -126,6 +144,10 @@ export const parseJdSummary = (
       product_visitors_compare_pct: asNumOrNull(row['product_visitors_compare_pct']),
       shop_conversion_rate_compare_pct: asNumOrNull(row['shop_conversion_rate_compare_pct']),
       industry_conversion_rate_compare_pct: asNumOrNull(row['industry_conversion_rate_compare_pct']),
+      gmv_compare_value: asNumOrNull(row['gmv_compare_value']),
+      orders_compare_value: asNumOrNull(row['orders_compare_value']),
+      shop_visitors_compare_value: asNumOrNull(row['shop_visitors_compare_value']),
+      shop_conversion_rate_compare_value: asNumOrNull(row['shop_conversion_rate_compare_value']),
     };
   }
   return emptySummary();

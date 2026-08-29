@@ -19,6 +19,7 @@ import { executePlan } from '#app/connectors/binding/executor.js';
 import { buildExecutionPlan } from '#app/connectors/binding/planner.js';
 import { parseJdPayload } from '#app/connectors/jd/parsers/index.js';
 import type { ParsedJdData } from '#app/connectors/jd/parsers/index.js';
+import { beijingDate } from '#shared/utils/time.js';
 import { INDICATOR_OVERRIDES } from '#app/connectors/jd/parsers/indicator-map.js';
 import { acquireJdData } from '#app/connectors/jd/acquisition/index.js';
 import { saveEvidence } from '#app/connectors/evidence/store.js';
@@ -90,7 +91,12 @@ export const executeRuntimePipeline = async (
     processingMethod = 'runtime',
   } = options;
 
-  const executionDate = date ?? new Date().toISOString().slice(0, 10);
+  // P0010.2.11 C2 — default the execution/business date to the BEIJING
+  // calendar day (Asia/Shanghai), not UTC. JD 商智 realtime payloads describe
+  // the Beijing business day; a UTC stamp mislabels everything acquired
+  // before 08:00 Beijing (e.g. 8/28T23:58Z → Beijing 8/29 was stamped 8/28).
+  // Explicit `date` (historical walk / replay) still wins.
+  const executionDate = date ?? beijingDate();
   const errors: string[] = [];
   const blueprintDriven = true;
 
@@ -562,6 +568,10 @@ export const executeImportPipeline = async (
           product_visitors_compare_pct: null,
           shop_conversion_rate_compare_pct: null,
           industry_conversion_rate_compare_pct: null,
+          gmv_compare_value: null,
+          orders_compare_value: null,
+          shop_visitors_compare_value: null,
+          shop_conversion_rate_compare_value: null,
         },
         hourly_gmv: r.hourly_gmv,
         top_products: r.top_products,
