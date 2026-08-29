@@ -1,0 +1,81 @@
+[
+  {
+    "header": {
+      "code": 0,
+      "desc": "success"
+    },
+    "body": {
+      "data": [
+        {
+          "trend": {
+            "series": [
+              {
+                "code": "jdr_sch_trade_deal_ord_ord_amt_sz_trade_deal_snapshot",
+                "data": [
+                  5393.11,
+                  6203.57,
+                  7250.49,
+                  7546.280000000001,
+                  6620.219999999999,
+                  6801.0199999999995,
+                  12805.539999999999
+                ]
+              },
+              {
+                "code": "jdr_sch_trade_deal_ord_ord_qtty_sz_trade_deal_snapshot",
+                "data": [
+                  29,
+                  26,
+                  39,
+                  39,
+                  139,
+                  125,
+                  132
+                ]
+              },
+              {
+                "code": "jdr_sch_traffic_enter_shop__browse_page_cnt_shop_last_src",
+                "data": [
+                  682,
+                  661,
+                  629,
+                  624,
+                  1107,
+                  928,
+                  1099
+                ]
+              },
+              {
+                "code": "fo_jdr_sch_shop_deal_rate",
+                "data": [
+                  0.0425219941348974,
+                  0.0393343419062027,
+                  0.0620031796502385,
+                  0.0608974358974359,
+                  0.1246612466124661,
+                  0.1336206896551724,
+                  0.1201091901728844
+                ]
+              }
+            ],
+            "categories": [
+              "2026-08-22",
+              "2026-08-23",
+              "2026-08-24",
+              "2026-08-25",
+              "2026-08-26",
+              "2026-08-27",
+              "2026-08-28"
+            ]
+          }
+        }
+      ],
+      "size": null,
+      "cache": true,
+      "traceId": "10925675.73483.17880072875712960",
+      "uuid": "5ebcb73e-9626-4549-a27f-11eb766ef3ec"
+    },
+    "errors": null,
+    "loading": false
+  }
+]

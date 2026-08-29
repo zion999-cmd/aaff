@@ -1,0 +1,56 @@
+[
+  {
+    "header": {
+      "code": 0,
+      "desc": "success"
+    },
+    "body": {
+      "data": [
+        {
+          "jdr_sch_traffic_enter_shop__browse_page_cnt_shop_last_src": 688,
+          "jdr_sch_trade_deal_ord_ord_qtty_sz_trade_deal_snapshot##compare": -0.031496062992125984,
+          "fo_jdr_sch_traffic_enter_shop__browse_page_avg_duration_shop_last_src##compare": null,
+          "jdr_sch_sku_add_cart_sku_user_qtty_product_user_cart_add_minus_sz_bsg_shoppingcart@increase": 76,
+          "fo_jdr_sch_traffic_enter_shop__browse_page_avg_duration_shop_last_src##compareValue": 49.20765550239234,
+          "fo_jdr_sch_shop_deal_rate": 0.1773255813953488,
+          "fo_jdr_sch_shop_deal_rate##compareValue": 0.1215311004784689,
+          "jdr_sch_sku_add_cart_sku_sku_piece_shopping_cart": 58,
+          "jdr_sch_user_deal_ord_user_cnt_sz_user_deal_snapshot": 122,
+          "jdr_sch_trade_deal_ord_ord_qtty_sz_trade_deal_snapshot": 123,
+          "jdr_sch_user_deal_ord_user_cnt_sz_user_deal_snapshot##compare": -0.03937007874015748,
+          "jdr_sch_trade_deal_ord_sku_qtty_sz_trade_deal_snapshot##compare": -0.15294117647058825,
+          "jdr_sch_user_deal_ord_user_cnt_sz_user_deal_snapshot##compareValue": 127,
+          "fo_jdr_sch_trade_deal_ord_amt_user_sz_trade_deal_snapshot##compare": -0.45497278735442337,
+          "jdr_sch_traffic_enter_shop__browse_page_qtty_shop_last_src##compareValue": 3528,
+          "fo_jdr_sch_add_cart_user_uv_rate@increase##compare": 0.1792464333617858,
+          "jdr_sch_trade_deal_ord_ord_amt_sz_trade_deal_snapshot": 6245.55,
+          "jdr_sch_trade_deal_ord_ord_amt_sz_trade_deal_snapshot##compareValue": 11928.789999999997,
+          "jdr_sch_trade_deal_ord_sku_qtty_sz_trade_deal_snapshot##compareValue": 170,
+          "jdr_sch_sku_add_cart_sku_sku_piece_shopping_cart##compare": 0.8125,
+          "jdr_sch_sku_add_cart_sku_user_qtty_product_user_cart_add_minus_sz_bsg_shoppingcart@increase##compare": 0.288135593220339,
+          "jdr_sch_traffic_enter_shop__browse_page_cnt_shop_last_src##compareValue": 1045,
+          "fo_jdr_sch_traffic_enter_shop__browse_page_avg_duration_shop_last_src": null,
+          "jdr_sch_trade_deal_ord_sku_qtty_sz_trade_deal_snapshot": 144,
+          "jdr_sch_sku_add_cart_sku_sku_piece_shopping_cart##compareValue": 32,
+          "fo_jdr_sch_trade_deal_ord_amt_user_sz_trade_deal_snapshot": 51.19303278688525,
+          "fo_jdr_sch_trade_deal_ord_amt_user_sz_trade_deal_snapshot##compareValue": 93.9274803149606,
+          "jdr_sch_traffic_enter_shop__browse_page_cnt_shop_last_src##compare": -0.3416267942583732,
+          "jdr_sch_sku_add_cart_sku_user_qtty_product_user_cart_add_minus_sz_bsg_shoppingcart@increase##compareValue": 59,
+          "fo_jdr_sch_add_cart_user_uv_rate@increase##compareValue": 0.0579567779960707,
+          "fo_jdr_sch_add_cart_user_uv_rate@increase": 0.0683453237410072,
+          "jdr_sch_trade_deal_ord_ord_amt_sz_trade_deal_snapshot##compare": -0.4764305516318083,
+          "jdr_sch_traffic_enter_shop__browse_page_qtty_shop_last_src##compare": -0.35090702947845803,
+          "jdr_sch_traffic_enter_shop__browse_page_qtty_shop_last_src": 2290,
+          "jdr_sch_trade_deal_ord_ord_qtty_sz_trade_deal_snapshot##compareValue": 127,
+          "fo_jdr_sch_shop_deal_rate##compare": 0.45909631935542894
+        }
+      ],
+      "size": 1,
+      "cache": false,
+      "traceId": null,
+      "uuid": null
+    },
+    "errors": null,
+    "loading": false
+  }
+]

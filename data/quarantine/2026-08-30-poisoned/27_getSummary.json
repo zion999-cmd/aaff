@@ -1,0 +1,23 @@
+[
+  {
+    "header": {
+      "code": 0
+    },
+    "body": {
+      "data": [
+        {
+          "jdr_sch_trade_deal_ord_ord_amt_sz_trade_deal_snapshot": 6801.02,
+          "jdr_sch_trade_deal_ord_ord_qtty_sz_trade_deal_snapshot": 125,
+          "jdr_sch_traffic_enter_shop__browse_page_cnt_shop_last_src": 928,
+          "fo_jdr_sch_shop_deal_rate": 0.1336,
+          "jdr_sch_user_deal_ord_user_cnt_sz_user_deal_snapshot": 124
+        }
+      ],
+      "size": 1,
+      "cache": false,
+      "traceId": null,
+      "uuid": null
+    },
+    "errors": null
+  }
+]

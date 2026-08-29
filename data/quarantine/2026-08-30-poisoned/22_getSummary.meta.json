@@ -1,0 +1,18 @@
+{
+  "source": "jd",
+  "shop_id": "11855009",
+  "data_type": "getSummary",
+  "business_date": "2026-08-22",
+  "acquired_at": "2026-08-29T14:08:00.609Z",
+  "acquisition_method": "cdp",
+  "processing_method": "runtime",
+  "processed_at": "2026-08-29T14:08:00.609Z",
+  "method": "cdp",
+  "version": "1.0.0",
+  "operator": "system",
+  "runtime": "node",
+  "connector": "jd",
+  "content_hash": "5221de4967b72abdbc6e700f58fd16b681697bce00c4983c89b32b873be98ff8",
+  "mime_type": "application/json",
+  "tags": []
+}

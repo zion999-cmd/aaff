@@ -1,0 +1,27 @@
+[
+  {
+    "header": {
+      "code": 0,
+      "desc": "success"
+    },
+    "body": {
+      "data": [
+        {
+          "jdr_sch_trade_deal_ord_ord_amt_sz_trade_deal_snapshot": 6259,
+          "jdr_sch_trade_deal_ord_ord_qtty_sz_trade_deal_snapshot": 52,
+          "jdr_sch_user_deal_ord_user_cnt_sz_user_deal_snapshot": 58,
+          "jdr_sch_traffic_enter_shop__browse_page_cnt_shop_last_src": 1002,
+          "fo_jdr_sch_shop_deal_rate": 0.05568792357059388,
+          "jdr_sch_traffic_brow_sku__page_cnt_traffic_plat_item_di_sz_bsg": 848,
+          "fo_jdr_sch_industry_deal_rate": 0.0734069855166091,
+          "jdr_sch_trade_deal_ord_ord_amt_sz_trade_deal_snapshot##compare": 0.02,
+          "jdr_sch_trade_deal_ord_ord_qtty_sz_trade_deal_snapshot##compare": 0.15,
+          "jdr_sch_traffic_enter_shop__browse_page_cnt_shop_last_src##compare": 0.1,
+          "fo_jdr_sch_shop_deal_rate##compare": 0,
+          "jdr_sch_traffic_brow_sku__page_cnt_traffic_plat_item_di_sz_bsg##compare": 0.05,
+          "fo_jdr_sch_industry_deal_rate##compare": 0.11
+        }
+      ]
+    }
+  }
+]

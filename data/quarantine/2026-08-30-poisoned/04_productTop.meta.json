@@ -1,0 +1,18 @@
+{
+  "source": "jd",
+  "shop_id": "jd_shop_001",
+  "data_type": "productTop",
+  "business_date": "2026-07-04",
+  "acquired_at": "2026-08-29T15:38:58.615Z",
+  "acquisition_method": "mock",
+  "processing_method": "runtime",
+  "processed_at": "2026-08-29T15:38:58.612Z",
+  "method": "mock",
+  "version": "1.0.0",
+  "operator": "system",
+  "runtime": "node",
+  "connector": "jd",
+  "content_hash": "719c5084076273092343d07479fd5f25d45054bfdad118ee43a210c9bbede95f",
+  "mime_type": "application/json",
+  "tags": []
+}

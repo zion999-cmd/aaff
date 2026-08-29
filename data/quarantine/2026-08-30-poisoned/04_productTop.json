@@ -1,0 +1,30 @@
+[
+  {
+    "header": {
+      "code": 0,
+      "desc": "success"
+    },
+    "body": {
+      "data": [
+        {
+          "sku_id": "10072457189341",
+          "sku_id#name_cn": "祁门红茶特级",
+          "jdr_sch_trade_deal_ord_ord_amt_sz_trade_deal_snapshot": 1850,
+          "sku_id_item_url": "https://item.jd.com/10072457189341.html"
+        },
+        {
+          "sku_id": "10072457189342",
+          "sku_id#name_cn": "祁门红茶一级",
+          "jdr_sch_trade_deal_ord_ord_amt_sz_trade_deal_snapshot": 1240,
+          "sku_id_item_url": "https://item.jd.com/10072457189342.html"
+        },
+        {
+          "sku_id": "10072457189343",
+          "sku_id#name_cn": "祁门红茶礼盒装",
+          "jdr_sch_trade_deal_ord_ord_amt_sz_trade_deal_snapshot": 890,
+          "sku_id_item_url": "https://item.jd.com/10072457189343.html"
+        }
+      ]
+    }
+  }
+]

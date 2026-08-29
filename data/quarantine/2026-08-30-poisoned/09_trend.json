@@ -1,0 +1,108 @@
+[
+  {
+    "header": {
+      "code": 0,
+      "desc": "success"
+    },
+    "body": {
+      "data": [
+        {
+          "dt": "2026-07-09 00:00:00",
+          "jdr_sch_trade_deal_ord_ord_amt_sz_trade_deal_snapshot": 11
+        },
+        {
+          "dt": "2026-07-09 01:00:00",
+          "jdr_sch_trade_deal_ord_ord_amt_sz_trade_deal_snapshot": 68
+        },
+        {
+          "dt": "2026-07-09 02:00:00",
+          "jdr_sch_trade_deal_ord_ord_amt_sz_trade_deal_snapshot": 22
+        },
+        {
+          "dt": "2026-07-09 03:00:00",
+          "jdr_sch_trade_deal_ord_ord_amt_sz_trade_deal_snapshot": 9
+        },
+        {
+          "dt": "2026-07-09 04:00:00",
+          "jdr_sch_trade_deal_ord_ord_amt_sz_trade_deal_snapshot": 26
+        },
+        {
+          "dt": "2026-07-09 05:00:00",
+          "jdr_sch_trade_deal_ord_ord_amt_sz_trade_deal_snapshot": 7
+        },
+        {
+          "dt": "2026-07-09 06:00:00",
+          "jdr_sch_trade_deal_ord_ord_amt_sz_trade_deal_snapshot": 76
+        },
+        {
+          "dt": "2026-07-09 07:00:00",
+          "jdr_sch_trade_deal_ord_ord_amt_sz_trade_deal_snapshot": 35
+        },
+        {
+          "dt": "2026-07-09 08:00:00",
+          "jdr_sch_trade_deal_ord_ord_amt_sz_trade_deal_snapshot": 842
+        },
+        {
+          "dt": "2026-07-09 09:00:00",
+          "jdr_sch_trade_deal_ord_ord_amt_sz_trade_deal_snapshot": 157
+        },
+        {
+          "dt": "2026-07-09 10:00:00",
+          "jdr_sch_trade_deal_ord_ord_amt_sz_trade_deal_snapshot": 387
+        },
+        {
+          "dt": "2026-07-09 11:00:00",
+          "jdr_sch_trade_deal_ord_ord_amt_sz_trade_deal_snapshot": 356
+        },
+        {
+          "dt": "2026-07-09 12:00:00",
+          "jdr_sch_trade_deal_ord_ord_amt_sz_trade_deal_snapshot": 532
+        },
+        {
+          "dt": "2026-07-09 13:00:00",
+          "jdr_sch_trade_deal_ord_ord_amt_sz_trade_deal_snapshot": 631
+        },
+        {
+          "dt": "2026-07-09 14:00:00",
+          "jdr_sch_trade_deal_ord_ord_amt_sz_trade_deal_snapshot": 427
+        },
+        {
+          "dt": "2026-07-09 15:00:00",
+          "jdr_sch_trade_deal_ord_ord_amt_sz_trade_deal_snapshot": 183
+        },
+        {
+          "dt": "2026-07-09 16:00:00",
+          "jdr_sch_trade_deal_ord_ord_amt_sz_trade_deal_snapshot": 370
+        },
+        {
+          "dt": "2026-07-09 17:00:00",
+          "jdr_sch_trade_deal_ord_ord_amt_sz_trade_deal_snapshot": 186
+        },
+        {
+          "dt": "2026-07-09 18:00:00",
+          "jdr_sch_trade_deal_ord_ord_amt_sz_trade_deal_snapshot": 269
+        },
+        {
+          "dt": "2026-07-09 19:00:00",
+          "jdr_sch_trade_deal_ord_ord_amt_sz_trade_deal_snapshot": 821
+        },
+        {
+          "dt": "2026-07-09 20:00:00",
+          "jdr_sch_trade_deal_ord_ord_amt_sz_trade_deal_snapshot": 459
+        },
+        {
+          "dt": "2026-07-09 21:00:00",
+          "jdr_sch_trade_deal_ord_ord_amt_sz_trade_deal_snapshot": 848
+        },
+        {
+          "dt": "2026-07-09 22:00:00",
+          "jdr_sch_trade_deal_ord_ord_amt_sz_trade_deal_snapshot": 871
+        },
+        {
+          "dt": "2026-07-09 23:00:00",
+          "jdr_sch_trade_deal_ord_ord_amt_sz_trade_deal_snapshot": 26
+        }
+      ]
+    }
+  }
+]
