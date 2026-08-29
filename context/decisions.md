@@ -2654,3 +2654,36 @@ UTC 派生的"昨天"日期（<08:00 北京时区错标类，P0010.2.11 F2 曾�
   typecheck 21 errors 全部 pre-existing（`apiName` TS6133 在 a989b50 即存在），0 新增。
 - 真实链路 probe：`POST /api/fabric/execute {capability:trade.overview, date:2026-08-22}` →
   fail-closed（曾造成污染的确切调用路径）。
+
+## ADR-074 — RuntimeLoop autonomous scheduling 使用北京业务日 (C2.0.1, 2026-08-30)
+
+- **日期**: 2026-08-30
+- **状态**: Accepted（3 个 loop 级测试 RED→GREEN，full suite 1240 passed / 既有 hermes 失败不变，typecheck 0 新增；真实 autonomous RuntimeLoop 验收通过——北京 04:28 tick `date=2026-08-30`、ADR-073 guard 放行、direct-fetch 采集、evidence `business_date=2026-08-30`、payload 语义日一致、下一 tick `already_acquired_for_business_date`）
+
+### 决策
+
+autonomous RuntimeLoop 的 capability 业务日**必须**是 tick 时刻的北京业务日：
+`const date = beijingDate(new Date(startedAt))`（复用 `#shared/utils/time.js` 的 `beijingDate`，
+禁止本地重写 UTC+8 逻辑）。替换原 `startedAt.slice(0, 10)`（UTC 日历日）。
+
+### 背景（事实）
+
+loop 默认 schedule 在 `00:00`（北京）触发 trade.overview。北京 00:00–08:00 = 前一 UTC 日
+16:00–24:00，UTC slice 得到"昨天"→ ADR-073 guard **诚实拒绝**每一次 autonomous tick
+（fail-closed 正确、输入日期错误——真实观察：北京 8/30 凌晨所有 tick 打出 `date=2026-08-29` 并被拒）。
+这是 ADR-073 fail-closed 设计**按预期工作**暴露出的 caller-side 缺陷，不是 guard 缺陷。
+
+### 契约
+
+**Beijing business date = 传入 capability execution 的 date**：UTC 2026-08-29T17:05Z → 2026-08-30；
+UTC 2026-08-30T08:00Z → 2026-08-30；UTC 15:59:59Z → 当日、16:00:00Z → 次日（北京午夜翻转）。
+与 ADR-073 组合成完整闭环：loop 供给北京今天 → guard 校验北京今天 → 一致 → 采集放行。
+
+### 边界
+
+- ❌ 不改 ADR-073 guard（不放宽 / 不自动纠正 / 不忽略 caller date / 不删 fail-closed）。
+- ❌ 不动 producer / ##compareValue / baseline 优先级 / 跨日 Situation 语义 / getTrend /
+  scheduler cadence / acquisition API contract / shop 双轨 / executor.test.ts 污染（只记录）。
+- 测试必须证明 **loop 本身**（`tick_started` 事件 date + `runNow` 实参，faked clock），
+  不仅是 `beijingDate()` utility：`tests/unit/loop/runtime-loop-beijing-date.test.ts`
+  （acquisition runner seam 打 mock，无真实 CDP）。

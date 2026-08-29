@@ -1,3 +1,49 @@
+# Handoff — P0010.2.11 C2.0.1: RuntimeLoop 北京业务日 (2026-08-30, ADR-074)
+
+## 新增
+
+`runtime-loop.ts` tick 业务日从 `startedAt.slice(0, 10)`（UTC）改为
+`beijingDate(new Date(startedAt))`（复用 shared/utils/time.js，零本地 UTC+8 重写）。
+新测试 `tests/unit/loop/runtime-loop-beijing-date.test.ts`：3 个 loop 级 case
+（acquisition runner seam mock + faked Date，证明的是 loop 而非 utility）——
+Case1 2026-08-29T17:05Z→2026-08-30；Case2 2026-08-30T08:00Z→2026-08-30；
+Case3 15:59:59Z→2026-08-29 / 16:00:00Z→2026-08-30（含 per-day guard 翻日重启用）。
+断言两层：`tick_started` 事件 date + `runNow` 实参。
+
+## 真实 autonomous 验收（00:00–08:00 北京窗口，非 manual execute）
+
+tsx-watch dev server 热加载后，真实 loop tick：UTC 2026-08-29T20:28Z 下
+`date=2026-08-30`（修复前此处全是 2026-08-29 被拒）→ ADR-073 guard 放行 →
+direct-fetch 执行 → `evidence updated count=1` →
+`30_getSummary.meta.json` business_date=2026-08-30，payload 为北京 04:28 realtime
+（visitors 50 / cvr 0.02，非全天错标；realtime payload 无 date 字段，语义日=采集时北京日=一致）。
+下一 tick：`acquisition skipped reason=already_acquired_for_business_date`（C1.7 guard 正常）。
+修复前 tick 序列（date=2026-08-29 × N，guard 拒绝）在同一日志文件中完整可见（行 1002–1047）。
+
+## 过程事实（诚实记录）
+
+- `npm test` 重新写入 executor.test.ts mock 污染（27_getSummary 等）+ 运行中的 loop producer
+  在清理前的一个 tick 内以确定性 ID 重建了 4 条 situation → cleanup probe 幂等重跑清掉；
+  随后 producer 又从现存真实 evidence 重建同 ID（内容为昨晚 clean re-run 的 compareValue-fallback
+  对比，非污染）。净效果：无数据丢失，但 4 条 learning_contexts 被删 → recovery 扫描会触发
+  这几条的真实 Hermes 重调查（良性、真实链路行为）。executor.test.ts 污染向量仍未堵（只记录，不修）。
+- typecheck 21 errors = stash 对照基线完全一致，0 新增。full suite 1240 passed
+  （1237 基线 + 3 新增）/ 既有 hermes 失败不变。
+
+## 风险 / 遗留（不修，只记录）
+
+- getTrend 7 天窗口锚定 tab 加载时刻（跨日后 category 滞后）；
+- shop 双轨 11855009 / jd_shop_001 同路径覆写；
+- 凌晨 partial-day vs full-day 的 Situation 窗口语义（producer 侧，C2.1 范围待审）；
+- executor.test.ts 向真实 evidence 目录写 mock。
+
+## 建议下一步
+
+等用户审查本次 commit-pre 报告后决定是否 commit；下一刀候选仍是 C2.1（producer 比较语义）
+与 P0010 closure roadmap 的剩余项。
+
+---
+
 # Handoff — P0010.2.11 C2.0: trade.overview business-date fail-closed guard (2026-08-29, ADR-073)
 
 ## 新增

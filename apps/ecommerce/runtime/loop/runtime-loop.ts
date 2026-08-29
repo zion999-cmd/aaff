@@ -50,7 +50,7 @@
 
 import type { Database as Db } from 'better-sqlite3';
 import { resolve } from 'node:path';
-import { nowIso } from '#shared/utils/time.js';
+import { beijingDate, nowIso } from '#shared/utils/time.js';
 import {
   createScheduledAcquisitionRunner,
   type ScheduledAcquisition,
@@ -376,7 +376,12 @@ export const createRuntimeLoop = (options: RuntimeLoopOptions): RuntimeLoop => {
 
   const tick = async (): Promise<LoopTickSummary> => {
     const startedAt = nowIso();
-    const date = startedAt.slice(0, 10);
+    // C2.0.1 — the capability business date is the BEIJING business date of
+    // the tick time, not the UTC calendar date. During Beijing 00:00–08:00
+    // the UTC date is still yesterday, which made every autonomous
+    // trade.overview tick fail the ADR-073 guard (fail-closed). Reuses the
+    // shared timezone helper — no local UTC+8 re-implementation.
+    const date = beijingDate(new Date(startedAt));
     const errors: string[] = [];
     let capabilities = 0;
     let investigationsTriggered = 0;
