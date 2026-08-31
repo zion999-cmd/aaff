@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'vitest';
-import { beijingDate, diffDays, hourBucket, isWithin, parseIso, windowBounds } from '#shared/utils/time.js';
+import { beijingDate, beijingHourBucket, diffDays, hourBucket, isWithin, parseIso, windowBounds } from '#shared/utils/time.js';
 
 describe('parseIso', () => {
   test('valid iso -> Date', () => {
@@ -28,6 +28,31 @@ describe('hourBucket', () => {
 
   test('invalid passthrough', () => {
     expect(hourBucket('bad')).toBe('bad');
+  });
+});
+
+describe('beijingHourBucket', () => {
+  test('mid-morning Beijing -> YYYY-MM-DDTHH', () => {
+    // 2026-08-31 08:20 Beijing = 2026-08-31 00:20 UTC.
+    expect(beijingHourBucket(new Date('2026-08-31T00:20:00.000Z'))).toBe('2026-08-31T08');
+  });
+
+  test('Beijing 00:00 (UTC previous-day 16:00) stays on the Beijing day', () => {
+    // 2026-08-31 00:30 Beijing = 2026-08-30 16:30 UTC — bucket must be 08-31T00.
+    expect(beijingHourBucket(new Date('2026-08-30T16:30:00.000Z'))).toBe('2026-08-31T00');
+  });
+
+  test('Beijing 23:00 (UTC 15:00) is T23', () => {
+    expect(beijingHourBucket(new Date('2026-08-31T15:00:00.000Z'))).toBe('2026-08-31T23');
+  });
+
+  test('same Beijing hour keeps the same bucket; next hour differs', () => {
+    const a = beijingHourBucket(new Date('2026-08-31T00:05:00.000Z')); // 08:05 北京
+    const b = beijingHourBucket(new Date('2026-08-31T00:55:00.000Z')); // 08:55 北京
+    const c = beijingHourBucket(new Date('2026-08-31T01:05:00.000Z')); // 09:05 北京
+    expect(a).toBe('2026-08-31T08');
+    expect(b).toBe('2026-08-31T08');
+    expect(c).toBe('2026-08-31T09');
   });
 });
 

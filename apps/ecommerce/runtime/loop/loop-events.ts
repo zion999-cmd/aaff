@@ -31,7 +31,7 @@ export type LoopEvent =
    * only producer is the same-capability+business_date guard in
    * runtime-loop.ts runCapability.
    */
-  | { kind: 'acquisition_skipped'; capability: string; date: string; reason: string }
+  | { kind: 'acquisition_skipped'; capability: string; date: string; hour: string; reason: string }
   | { kind: 'situations_updated'; created: number; skipped: number; createdIds: string[] }
   | {
       kind: 'investigation_triggered';
@@ -300,7 +300,7 @@ const formatLoopEvent = (e: LoopEvent): string => {
     case 'acquisition_failed':
       return `[loop] acquisition failed capability=${e.capability} error=${e.error}`;
     case 'acquisition_skipped':
-      return `[loop] acquisition skipped capability=${e.capability} date=${e.date} reason=${e.reason}`;
+      return `[loop] acquisition skipped capability=${e.capability} date=${e.date} hour=${e.hour} reason=${e.reason}`;
     case 'situations_updated':
       return `[loop] situation updated created=${e.created} skipped=${e.skipped}`;
     case 'investigation_triggered':

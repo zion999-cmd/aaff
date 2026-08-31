@@ -50,7 +50,7 @@
 
 import type { Database as Db } from 'better-sqlite3';
 import { resolve } from 'node:path';
-import { beijingDate, nowIso } from '#shared/utils/time.js';
+import { beijingDate, beijingHourBucket, nowIso } from '#shared/utils/time.js';
 import {
   createScheduledAcquisitionRunner,
   type ScheduledAcquisition,
@@ -189,7 +189,7 @@ export const createRuntimeLoop = (options: RuntimeLoopOptions): RuntimeLoop => {
   let timer: ReturnType<typeof setInterval> | null = null;
   let tickInFlight: Promise<LoopTickSummary> | null = null;
 
-  // P0010.2.11 C1.7 — autonomous per-day acquisition guard.
+  // P0010.2.11 — autonomous per-HOUR-BUCKET acquisition guard.
   //
   // The scheduler's per-day guard (scheduler.ts tick()) lives behind
   // `start()`, but the Loop drives acquisition through `runNow()`, which
@@ -201,19 +201,27 @@ export const createRuntimeLoop = (options: RuntimeLoopOptions): RuntimeLoop => {
   // keep explicit execution semantics (an operator asking for a run gets
   // a run).
   //
-  // Semantics: only a COMPLETED acquisition is recorded (a failed tick
-  // may retry on the next tick). A new business_date re-enables
-  // acquisition automatically (keyed by date, not a boolean). Skip is
-  // reported as its own event — never as `acquisition_succeeded`.
-  const completedBusinessDate = new Map<string, string>();
+  // Semantics (Business-Time hourly bucket): acquisition is allowed once per
+  // Beijing business-hour bucket (e.g. 2026-08-31T08 = 08:00–08:59). Only a
+  // COMPLETED acquisition is recorded (a failed tick may retry on the next
+  // tick). Rolling into the next hour re-enables acquisition automatically
+  // (keyed by hour bucket, not a per-day boolean) — steady-state: new
+  // Evidence flows every hour, not once per day. Skip is reported as its own
+  // event — never as `acquisition_succeeded`.
+  const completedBusinessHour = new Map<string, string>();
 
-  const runCapability = async (cap: string, date: string): Promise<{ ok: boolean; evidenceCount: number; error?: string }> => {
-    if (completedBusinessDate.get(cap) === date) {
+  const runCapability = async (
+    cap: string,
+    date: string,
+    hourBucket: string,
+  ): Promise<{ ok: boolean; evidenceCount: number; error?: string }> => {
+    if (completedBusinessHour.get(cap) === hourBucket) {
       logger.emit({
         kind: 'acquisition_skipped',
         capability: cap,
         date,
-        reason: 'already_acquired_for_business_date',
+        hour: hourBucket,
+        reason: 'already_acquired_for_hour_bucket',
       });
       return { ok: true, evidenceCount: 0 };
     }
@@ -231,7 +239,7 @@ export const createRuntimeLoop = (options: RuntimeLoopOptions): RuntimeLoop => {
       // (we did succeed — the actual count is owned by the kernel).
       const last = runner.list().find((s) => s.capability === cap);
       if (last?.lastStatus === 'completed') {
-        completedBusinessDate.set(cap, date);
+        completedBusinessHour.set(cap, hourBucket);
         logger.emit({ kind: 'acquisition_succeeded', capability: cap, evidenceCount: 1 });
         return { ok: true, evidenceCount: 1 };
       }
@@ -382,6 +390,9 @@ export const createRuntimeLoop = (options: RuntimeLoopOptions): RuntimeLoop => {
     // trade.overview tick fail the ADR-073 guard (fail-closed). Reuses the
     // shared timezone helper — no local UTC+8 re-implementation.
     const date = beijingDate(new Date(startedAt));
+    // Business-Time hourly acquisition cadence: one acquisition per Beijing
+    // hour bucket, re-enabled when the hour rolls over.
+    const hour = beijingHourBucket(new Date(startedAt));
     const errors: string[] = [];
     let capabilities = 0;
     let investigationsTriggered = 0;
@@ -394,7 +405,7 @@ export const createRuntimeLoop = (options: RuntimeLoopOptions): RuntimeLoop => {
       if (!cfg.enabled) continue;
       capabilities++;
       logger.emit({ kind: 'tick_started', capability: cfg.capability, date });
-      const r = await runCapability(cfg.capability, date);
+      const r = await runCapability(cfg.capability, date, hour);
       if (!r.ok) errors.push(`${cfg.capability}: ${r.error ?? 'unknown'}`);
     }
 
@@ -633,7 +644,7 @@ const formatLoopEventFallback = (e: LoopEvent): string => {
     case 'acquisition_started': return `[loop] acquisition started capability=${e.capability}`;
     case 'acquisition_succeeded': return `[loop] evidence updated capability=${e.capability} count=${e.evidenceCount}`;
     case 'acquisition_failed': return `[loop] acquisition failed capability=${e.capability} error=${e.error}`;
-    case 'acquisition_skipped': return `[loop] acquisition skipped capability=${e.capability} date=${e.date} reason=${e.reason}`;
+    case 'acquisition_skipped': return `[loop] acquisition skipped capability=${e.capability} date=${e.date} hour=${e.hour} reason=${e.reason}`;
     case 'situations_updated': return `[loop] situation updated created=${e.created} skipped=${e.skipped}`;
     case 'investigation_triggered': return `[loop] investigation triggered situation=${e.situationId} reason=${e.reason}`;
     case 'investigation_skipped': return `[loop] investigation skipped situation=${e.situationId} reason=${e.reason}`;

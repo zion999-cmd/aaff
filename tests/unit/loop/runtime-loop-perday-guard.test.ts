@@ -1,13 +1,15 @@
-// P0010.2.11 C1.7 — RuntimeLoop autonomous per-day acquisition guard.
+// P0010.2.11 — RuntimeLoop autonomous per-HOUR-BUCKET acquisition guard.
 //
 // The Loop drives acquisition through `runner.runNow()`, which does NOT
 // check the scheduler's per-day guard (that guard only lives inside
-// scheduler.tick(), behind `start()`). C1.7 moved the guard into the
-// Loop's `runCapability`: the first COMPLETED acquisition for a
-// (capability, business_date) pair is executed; every later tick on the
-// same date skips — no JD page visit, no evidence overwrite, and the
-// event emitted is `acquisition_skipped` (never a synthetic
-// `acquisition_succeeded`). A new business_date re-enables acquisition.
+// scheduler.tick(), behind `start()`). The guard moved into the Loop's
+// `runCapability`: the first COMPLETED acquisition for a
+// (capability, Beijing hour bucket) pair is executed; every later tick on
+// the same hour bucket skips — no JD page visit, no evidence overwrite,
+// and the event emitted is `acquisition_skipped` (never a synthetic
+// `acquisition_succeeded`). Rolling into a NEW hour bucket re-enables
+// acquisition automatically (steady-state: one acquisition per hour, not
+// per day).
 //
 // The real ScheduledAcquisitionRunner is mocked out here: these tests
 // assert the Loop's coordination ONLY, and must not touch the network /
@@ -43,7 +45,7 @@ vi.mock('#app/runtime/situation/index.js', () => ({
 
 const { createRuntimeLoop } = await import('#app/runtime/loop/runtime-loop.js');
 
-describe('RuntimeLoop per-day acquisition guard (C1.7)', () => {
+describe("RuntimeLoop per-hour-bucket acquisition guard (P0010.2.11)", () => {
   let db: Database.Database;
 
   const makeLoop = () => {
@@ -79,7 +81,7 @@ describe('RuntimeLoop per-day acquisition guard (C1.7)', () => {
     db.close();
   });
 
-  test('first tick of a business_date executes acquisition (started → succeeded)', async () => {
+  test('first tick of a business-hour bucket executes acquisition (started → succeeded)', async () => {
     const { loop, events } = makeLoop();
     await loop.tickNow();
     expect(runNowMock).toHaveBeenCalledTimes(1);
@@ -90,7 +92,7 @@ describe('RuntimeLoop per-day acquisition guard (C1.7)', () => {
     loop.stop();
   });
 
-  test('second tick on the same business_date skips (no runNow, no fake success)', async () => {
+  test('second tick on the same business-hour bucket skips (no runNow, no fake success)', async () => {
     const { loop, events } = makeLoop();
     await loop.tickNow();
     await loop.tickNow();
@@ -102,7 +104,9 @@ describe('RuntimeLoop per-day acquisition guard (C1.7)', () => {
     const skip = events.find((e) => e.kind === 'acquisition_skipped');
     expect(skip?.capability).toBe('trade.overview');
     expect(skip?.date).toBe('2026-08-29');
-    expect(skip?.reason).toBe('already_acquired_for_business_date');
+    // 2026-08-29T10:00:00Z = 北京 18:00 → bucket 2026-08-29T18.
+    expect(skip?.hour).toBe('2026-08-29T18');
+    expect(skip?.reason).toBe('already_acquired_for_hour_bucket');
     loop.stop();
   });
 
@@ -121,6 +125,19 @@ describe('RuntimeLoop per-day acquisition guard (C1.7)', () => {
     loop.stop();
   });
 
+  test('rolling into a NEW hour bucket re-enables acquisition (same business day)', async () => {
+    const { loop, events } = makeLoop();
+    await loop.tickNow(); // 2026-08-29T10:00Z = 北京 18:00 → bucket T18 — executes
+    vi.setSystemTime(new Date('2026-08-29T11:00:00.000Z')); // 北京 19:00 → bucket T19
+    await loop.tickNow(); // same business date, next hour — must execute again
+
+    expect(runNowMock).toHaveBeenCalledTimes(2);
+    const kinds = events.map((e) => e.kind);
+    expect(kinds.filter((k) => k === 'acquisition_succeeded')).toHaveLength(2);
+    expect(kinds).not.toContain('acquisition_skipped');
+    loop.stop();
+  });
+
   test('a new business_date re-enables acquisition', async () => {
     const { loop, events } = makeLoop();
     await loop.tickNow(); // 2026-08-29 — executes
@@ -131,6 +148,21 @@ describe('RuntimeLoop per-day acquisition guard (C1.7)', () => {
     const kinds = events.map((e) => e.kind);
     expect(kinds.filter((k) => k === 'acquisition_succeeded')).toHaveLength(2);
     expect(kinds).not.toContain('acquisition_skipped');
+    loop.stop();
+  });
+
+  test('ticks within the same hour bucket keep skipping (no per-tick storm)', async () => {
+    const { loop, events } = makeLoop();
+    await loop.tickNow(); // 北京 18:00 — executes
+    vi.setSystemTime(new Date('2026-08-29T10:45:00.000Z')); // 北京 18:45 — SAME bucket T18
+    await loop.tickNow(); // skips
+    vi.setSystemTime(new Date('2026-08-29T10:59:00.000Z')); // 北京 18:59 — SAME bucket T18
+    await loop.tickNow(); // skips
+
+    expect(runNowMock).toHaveBeenCalledTimes(1); // only the first tick acquired
+    const kinds = events.map((e) => e.kind);
+    expect(kinds.filter((k) => k === 'acquisition_succeeded')).toHaveLength(1);
+    expect(kinds.filter((k) => k === 'acquisition_skipped')).toHaveLength(2);
     loop.stop();
   });
 });

@@ -59,3 +59,14 @@ export const isWithin = (iso: string, start: Date, now: Date): boolean => {
  */
 export const beijingDate = (at: Date = new Date()): string =>
   new Date(at.getTime() + 8 * 60 * 60 * 1000).toISOString().slice(0, 10);
+
+/**
+ * Beijing (UTC+8) hour bucket — "YYYY-MM-DDTHH", e.g. "2026-08-31T08" for
+ * 08:00–08:59 Beijing. Used by the RuntimeLoop acquisition cadence guard:
+ * one acquisition per business-hour bucket, re-enabled automatically when the
+ * hour rolls over.
+ */
+export const beijingHourBucket = (at: Date = new Date()): string => {
+  const bjHour = (at.getUTCHours() + 8) % 24;
+  return `${beijingDate(at)}T${String(bjHour).padStart(2, '0')}`;
+};
