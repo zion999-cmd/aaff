@@ -9,6 +9,7 @@
 import { readFileSync, existsSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { DEFAULT_JD_PROVIDER_SHOP_ID } from './shop-identity.js';
 
 // ---- Types ----
 
@@ -127,7 +128,11 @@ const parseBlueprintYaml = (yaml: string): JdBlueprint => {
     platform: 'jd',
     name: getValue('name') || '京东商智',
     base_url: getValue('base_url') || 'https://jdsz.jd.com',
-    shop_id: getValue('shop_id') || '11855009',
+    // Provider-internal shop id (JD real shop number), NOT the Fabric canonical
+    // key ('jd_shop_001'). Execution boundaries normalize it via
+    // normalizeFabricShopId so Evidence is always written under the canonical
+    // key (see apps/ecommerce/connectors/jd/shop-identity.ts).
+    shop_id: getValue('shop_id') || DEFAULT_JD_PROVIDER_SHOP_ID,
     shop_name: getValue('name') || '祁门红茶旗舰店',
     pages,
   };

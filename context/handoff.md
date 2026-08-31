@@ -2761,3 +2761,36 @@ user-initiated entry point and `fetchAndRenderSituations` is the
 poller helper. The pattern there already writes the placeholder
 AFTER the dedup check (the correct pattern), so no change needed
 — but worth a quick read to confirm it didn't drift.
+# Handoff — P0010 主闭环：shop_id 污染修复 + Investigation 性能回归溯源 (2026-08-31, ADR-075/076)
+
+## 本会话背景（承接上几次 session 的连续工作）
+
+数据全清（3 次，bak/bak2/bak3/bak4）→ 重测 #1/#2 → Investigation 500-600s 超时根因猎杀 → 回归 bisect → 恢复验证 → Tool Boundary 审计 → shop_id 污染修复。
+
+## 新增 / 修复
+
+1. **ADR-075 — Investigation Tool Boundary = Runtime limitation**（只记录不实现）：Step 1 验证证明 Hermes 0.20.5 主 Session 无 tool-name allowlist（session.create/prompt.submit 无工具参数；enabled_toolsets 仅 toolset 级且全局；唯一 tool-name blocked_tools 只在 delegate 子代理）。用户决策：不 fork/patch Hermes；工具面 = toolset + Prompt policy，标注 advisory boundary；架构 = AgentFabric 声明 Investigation Capability Policy → Runtime Adapter 映射 → Hermes。
+2. **ADR-076 — shop_id=11855009 污染修复**（本会话核心，已实现+验收）：
+   - 新增 `apps/ecommerce/connectors/jd/shop-identity.ts`：`FABRIC_CANONICAL_SHOP_KEY='jd_shop_001'` + `DEFAULT_JD_PROVIDER_SHOP_ID='11855009'` + `normalizeFabricShopId()`（canonical 原样 / provider id → canonical / 未知 throw）。
+   - `runtime-kernel.ts` execute/executeLiveCDP 统一入口归一化（不依赖运行时 blueprint——generated/connector-blueprint.json 无 shop_id 字段）。
+   - `runtime.ts` execute/collect catch：Unknown shopId → 400（fail-fast）。
+   - `blueprint.ts` 默认值复用共享常量。
+   - 清理 3 个 Hermes skill 硬编码 11855009 → jd_shop_001（business-anomaly-investigation / uv-cvr-noise-rule / explorer-fabric）。
+   - 测试 `tests/unit/connectors/jd/shop-identity.test.ts`（4 tests）。
+   - **真实链路验收**：execute 传 `11855009` → 落盘 evidence `shop_id=jd_shop_001`，全目录零污染；`jd_shop_002` → 400。全量 1244 passed / 1 pre-existing flaky（session-client-lazy-token，连 9120 竞态）。
+
+## Investigation 性能回归（全链证据，已闭环）
+
+- **现象**：8/28 50-90s / reasoning 0 → 8/29 20:49 起 600s / reasoning 45-70k chars/turn → 8/31 07:50 起恢复 51-86s / reasoning 0。
+- **根因（provider 端）**：同一 serve 进程（PID 62343，8/28 15:56 起）、同一模型别名 `ark-code-latest`、config/env/代码全未变；reasoning 出现（8/29 08:19）与消失（8/31 07:50）都无 Hermes 侧对应变化，且 cli/tui/fabric 三来源同步翻转 → **ark 端模型行为变化**。glm-5.3 flash 从未被 fabric 调查实际使用（state.db/agent.log 零记录）。
+- **性能构成**：~35 tok/s 生成速度；reasoning 占输出 70-75%（29k reasoning vs 3.3k 合同）；600s 上限 ≈ 21k 输出 token 预算，一次调查 19-25k → 贴线。
+- **注**：模型当前把分析写进 content（非 reasoning_content 字段），总量小 6 倍，不影响正确性。
+
+## 风险 / 建议下一步
+
+- 风险：kernel 归一化影响所有 execute 调用者（均传 canonical，行为不变）；skill 已清但 agent 若从历史 memory 学到 11855009，归一化兜底。
+- **下一步（用户指定顺序）**：Business Time 窗口错配（当前实时数据 vs 昨日历史 evidence 的窗口错配；JD 首页已证明"当前时刻 vs 昨日同一时刻"）→ 之后 Knowledge Index / Embedding / Fast Judgment。
+- 待处理事项：`tests/probes/c2-0-1-producer-forensic.ts`（违规探针，用户发话即删）；dev server 由我启动（PID 45238）仍在跑。
+- 遗留（不修，只记录）：executor.test.ts mock 污染；business_traces/signal_weights 等采集表已清；investigation 工具面 advisory（ADR-075）。
+
+---

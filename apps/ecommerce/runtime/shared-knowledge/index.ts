@@ -77,9 +77,11 @@ export const initSharedKnowledgeLayer = (workspaceRoot: string): SharedKnowledge
   writeIfAbsent('knowledge-sources/raw/marketing-case.md', RAW_MARKETING_CASE);
 
   // Navigation + log + seed compiled page — seed if absent (Agent-maintained).
+  // P0011: knowledge pages are organized by SEMANTIC DOMAIN. 内容化推广 is a
+  // platform promotion product → operations (经营) domain.
   writeIfAbsent('knowledge/INDEX.md', SEED_INDEX);
   writeIfAbsent('knowledge/log.md', SEED_LOG);
-  writeIfAbsent('knowledge/platform/京东内容化推广.md', SEED_PLATFORM_PAGE);
+  writeIfAbsent('knowledge/operations/京东内容化推广.md', SEED_PLATFORM_PAGE);
 
   return { files };
 };

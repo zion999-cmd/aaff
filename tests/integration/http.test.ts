@@ -146,9 +146,11 @@ describe('HTTP server (integration)', () => {
       expect(typeof s.referenced).toBe('boolean');
       expect(Array.isArray(s.referencedBy)).toBe(true);
       // platform-promotion.md is seeded and referenced by the seed page.
+      // P0011: knowledge pages live under SEMANTIC DOMAIN dirs — 内容化推广
+      // (a platform promotion product) is seeded under operations/.
       if (s.file === 'platform-promotion.md') {
         expect(s.referenced).toBe(true);
-        expect(s.referencedBy.some((p) => p.includes('knowledge/platform'))).toBe(true);
+        expect(s.referencedBy.some((p) => p.includes('knowledge/operations'))).toBe(true);
       }
     }
   });

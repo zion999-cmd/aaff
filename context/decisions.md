@@ -2687,3 +2687,57 @@ UTC 2026-08-30T08:00Z → 2026-08-30；UTC 15:59:59Z → 当日、16:00:00Z → 
 - 测试必须证明 **loop 本身**（`tick_started` 事件 date + `runNow` 实参，faked clock），
   不仅是 `beijingDate()` utility：`tests/unit/loop/runtime-loop-beijing-date.test.ts`
   （acquisition runner seam 打 mock，无真实 CDP）。
+## ADR-075 — Investigation Tool Boundary = Runtime Limitation; Capability Policy owned by AgentFabric (2026-08-31)
+
+- **日期**: 2026-08-31
+- **状态**: Accepted（只记录，不实现）
+- **来源**: 用户审查 Step 1 工具边界验证后决策。验证证明 Hermes 0.20.5 主 Session 无细粒度 Tool Capability Boundary（session.create/prompt.submit 无工具参数；enabled_toolsets 仅 toolset 级且全局；唯一 tool-name 级 blocked_tools 只在 delegate_task 子代理）。为 Investigation session 建立 tool-name allowlist 需 fork/patch Hermes 加 `enabled_tool_names`。
+
+**决策**:
+1. **不 patch Hermes。** 不为 AgentFabric fork/patch Hermes 增加 `enabled_tool_names`。一旦开始，将承担 Hermes 升级、协议兼容、补丁维护 —— 与"Runtime 不自建、不侵入 Hermes"方向冲突。
+2. **Tool Boundary 记录为已知 Runtime limitation**，Investigation 工具面 = Hermes toolset + Prompt policy，明确标注为 **advisory boundary，不是 enforced security boundary**。AgentFabric 是受控运行环境，接受该技术债。
+3. **能力策略归 AgentFabric 所有**，三层结构：
+
+```
+AgentFabric
+    │  声明所需能力策略（declares desired capability policy）
+    ▼
+Runtime Adapter
+    │  把策略映射为 runtime-native enforcement
+    ▼
+Hermes
+```
+
+   未来不做 `HermesSessionClient.enabled_tool_names=[...]` 这种 Hermes 专用业务逻辑。而是 AgentFabric 拥有 **Investigation Capability Policy**（read knowledge / discover capability / acquire evidence / no arbitrary execution / no filesystem mutation），Runtime Adapter 判断目标 Runtime 能执行到什么程度。Hermes 0.20.5 当前只报告 `enforcement = advisory / toolset-level`；将来 Hermes 原生支持 tool-level filtering，再映射过去。
+
+**Why**: 上层声明需要什么能力，底层 Runtime 决定如何提供 —— 与 Fabric 思想一致。
+
+**边界**:
+- ❌ 不改 Hermes config / source / protocol。
+- ❌ 不为工具边界新增 AgentFabric session 参数。
+- ✅ 工具面约束继续以 Prompt policy 表达，并注明 advisory。
+- ✅ P0010 主闭环优先：shop identity 污染 → Business Time → Knowledge/Embedding/Fast Judgment 留在后面。
+
+## ADR-076 — Canonical Shop Identity: provider internal id → Fabric key normalization (P0010, 2026-08-31)
+
+- **日期**: 2026-08-31
+- **状态**: Accepted（实现 + 真实链路验收通过）
+- **来源**: P0010 主闭环第一项。Investigation agent 从 Hermes skill 示例学到真实 JD 店铺号 `11855009`，通过 `fabric_execute_capability` 回采时显式传 `shopId=11855009` → evidence 写入 `shop_id="11855009"` → producer 读 canonical `jd_shop_001` 的证据时看不见 → 经营分析数据分裂/隐形（2026-08-30T22:04:02Z 实证）。
+
+**问题根源**: 系统存在两个 shop 身份概念：canonical Fabric key（`jd_shop_001`）与 provider 内部 id（`11855009`，blueprint.shop_id）。Evidence 必须只写 canonical，但 agent 可从任意 skill/记忆学到 provider id 并回采。
+
+**决策**:
+1. **归一化而非拒绝**（用户确认）：execute 边界收到 provider internal id → 静默映射 canonical。拒绝会令 agent 反复 400 失败浪费调查 turn。
+2. **归一化在 kernel 统一入口**（`runtime-kernel.ts` 的 `execute`/`executeLiveCDP`），覆盖所有写 evidence 的调用者；未知 shopId fail-fast（throw → 路由 400）。
+3. **归一化内置映射表，不依赖运行时 blueprint**（generated/connector-blueprint.json 无 shop_id 字段）：`apps/ecommerce/connectors/jd/shop-identity.ts` 定义 `FABRIC_CANONICAL_SHOP_KEY='jd_shop_001'` + `DEFAULT_JD_PROVIDER_SHOP_ID='11855009'`，blueprint.ts 复用该常量作为默认值（消除 hardcode 漂移）。
+4. **源头防治**：清理 3 个 Hermes skill 里硬编码的 `11855009` 示例（business-anomaly-investigation / uv-cvr-noise-rule / explorer-fabric），替换为 `jd_shop_001`。skill 是业务技能内容，不违反 ADR-064。
+
+**Why**: 上层（Fabric）只认 canonical shop key；provider 内部 id 是执行层细节，不得泄漏进 Evidence。归一化让"agent 学错"永远无害。
+
+**边界**:
+- ❌ 不拒绝 provider id（归一化而非 400，除非完全未知）。
+- ❌ 不改 provider 采集逻辑 / CDP / 页面识别（provider id 在采集内部仍可用）。
+- ❌ 不引入 shop 多租户重构（YAGNI；映射表已支持扩展）。
+- ✅ Evidence 永远只写 canonical `jd_shop_001`。
+
+**测试**: `tests/unit/connectors/jd/shop-identity.test.ts`（4 tests）。**验收**: 真实 execute 传 `11855009` → 落盘 evidence `shop_id=jd_shop_001`；`jd_shop_002` → 400 fail-fast。

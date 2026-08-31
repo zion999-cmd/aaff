@@ -26,6 +26,7 @@ import type {
   RuntimeImportResult,
 } from './runtime-executor.js';
 import { acquireJdData } from '#app/connectors/jd/acquisition/index.js';
+import { normalizeFabricShopId } from '#app/connectors/jd/shop-identity.js';
 
 // ---- Kernel Interface ----
 
@@ -106,10 +107,18 @@ export const createRuntimeKernel = (
   return {
     platform: blueprint.platform,
     blueprint,
-    execute: (options: RuntimeExecuteOptions) =>
-      executeRuntimePipeline(blueprint, acquire, db, options),
-    executeLiveCDP: (options: RuntimeLiveCDPOptions) =>
-      executeLiveCDPPipeline(blueprint, db, options),
+    // P0010: normalize every incoming shopId to the canonical Fabric key
+    // before any evidence write — the Investigation agent historically
+    // re-acquired with the provider internal id (blueprint.shop_id), splitting
+    // Evidence away from the key the producer reads. Unknown ids fail fast.
+    execute: (options: RuntimeExecuteOptions) => {
+      const shopId = normalizeFabricShopId(options.shopId);
+      return executeRuntimePipeline(blueprint, acquire, db, { ...options, shopId });
+    },
+    executeLiveCDP: (options: RuntimeLiveCDPOptions) => {
+      const shopId = normalizeFabricShopId(options.shopId);
+      return executeLiveCDPPipeline(blueprint, db, { ...options, shopId });
+    },
     executeImport: (options: RuntimeImportOptions) =>
       executeImportPipeline(blueprint, db, options),
   };

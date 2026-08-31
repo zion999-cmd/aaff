@@ -206,7 +206,13 @@ export const runtimeRouter = (db: Db): Router => {
         blueprintDriven: result.blueprintDriven,
       });
     } catch (err) {
-      fail(res, 500, err instanceof Error ? err.message : 'Runtime execution failed');
+      const msg = err instanceof Error ? err.message : 'Runtime execution failed';
+      // P0010: an unknown shopId is a caller error (fail-fast).
+      if (msg.startsWith('Unknown shopId')) {
+        fail(res, 400, msg);
+        return;
+      }
+      fail(res, 500, msg);
     }
   });
 
@@ -244,6 +250,12 @@ export const runtimeRouter = (db: Db): Router => {
       });
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Execution failed';
+      // P0010: an unknown shopId is a caller error (fail-fast), not a server
+      // failure — the agent should retry with the canonical key.
+      if (msg.startsWith('Unknown shopId')) {
+        fail(res, 400, msg);
+        return;
+      }
       // Distinguish CDP-unavailable from generic failure (honest readiness).
       if (msg.includes('CDP') || msg.includes('Chrome')) {
         ok(res, {
