@@ -26,7 +26,7 @@ import { nowIso } from '#shared/utils/time.js';
 import { readFileSync } from 'node:fs';
 import { listEvidence } from '#app/connectors/evidence/store.js';
 import { parseJdSummary } from '#app/connectors/jd/parsers/index.js';
-import { detectSituations } from './rules.js';
+import { buildMeaningfulChangeDescription, detectSituations } from './rules.js';
 import type { StoreDailyObservation } from './rules.js';
 
 export interface SituationProducerOptions {
@@ -44,10 +44,29 @@ export interface SituationProducerOptions {
 
 export interface SituationRunResult {
   created: number;
+  refreshed: number;
   skipped: number;
   /** situationIds actually inserted this run (for P0010.1 automatic investigation). */
   createdIds: string[];
   situations: Situation[];
+}
+
+/**
+ * Latest-projection facts for one Situation (P0010.2.11 fact refresh).
+ *
+ * Computed from the latest Evidence + the same-time ##compareValue baseline
+ * (ADR-077) for the corresponding metric. Stored on `situations` and refreshed
+ * on every producer run so the Workspace always shows the freshest numbers
+ * for a stable deterministic situation_id (identity is preserved; only the
+ * "current observation" changes).
+ */
+interface SituationLatestFacts {
+  currentValue: number;
+  baselineValue: number;
+  changePct: number;
+  evidenceId: string;
+  acquiredAt: string;
+  contentHash: string;
 }
 
 const DEFAULT_SHOP_NAME = '京东店铺';
@@ -104,7 +123,7 @@ const previousCalendarDay = (date: string): string => {
 const loadStoreDailyFromEvidence = (
   platform: string,
   shopId: string,
-): StoreDailyObservation[] => {
+): { observations: StoreDailyObservation[]; rawEvidence: ReturnType<typeof listEvidence> } => {
   const all = listEvidence({
     source: platform,
     shopId,
@@ -122,7 +141,7 @@ const loadStoreDailyFromEvidence = (
     byDate.set(date, list);
   }
 
-  const observations: StoreDailyObservation[] = [];
+  let observations: StoreDailyObservation[] = [];
   // Parsed summaries keyed by business_date — kept so the C2 baseline pass
   // below can read the LATEST payload's ##compareValue fields.
   const parsedByDate = new Map<string, ReturnType<typeof parseJdSummary>>();
@@ -167,32 +186,37 @@ const loadStoreDailyFromEvidence = (
     observations.push({ date, metrics });
   }
 
-  // P0010.2.11 C2 — fill the missing "yesterday" observation from the
-  // LATEST payload's ##compareValue fields. getSummary bakes yesterday's
-  // full-day absolute values into the SAME response as today's realtime
-  // values, so a today-vs-yesterday comparison needs no historical backfill.
-  // Only synthesizes when (a) there IS a latest real observation, (b) no
-  // real cdp evidence exists for its previous calendar day, and (c) all 4
-  // compareValue fields are present — otherwise honest silence (no
-  // fabricated baseline).
+  // P0010 — Realtime Situation same-time baseline enforcement.
+  //
+  // The canonical today-vs-yesterday baseline is the SAME getSummary
+  // response's ##compareValue (yesterday same-moment), NOT a real
+  // previous-day observation: that evidence's acquisition window may not
+  // align with today's (e.g. today 08:20 vs yesterday 16:00) — calendar
+  // adjacency ≠ window alignment. The previous-day observation is therefore
+  // unconditionally dropped; when the latest payload has no ##compareValue,
+  // no aligned comparison exists → honest silence (no today Situation).
   const latest = observations[observations.length - 1];
-  if (latest && !observations.some((o) => o.date === previousCalendarDay(latest.date))) {
+  if (latest) {
+    const prevDate = previousCalendarDay(latest.date);
     const summary = parsedByDate.get(latest.date);
+    let baseline: Record<string, number> | null = null;
     if (summary) {
-      const baseline: Record<string, number> = {
+      const candidate: Record<string, number> = {
         gmv: summary.gmv_compare_value ?? Number.NaN,
         orders: summary.orders_compare_value ?? Number.NaN,
         uv: summary.shop_visitors_compare_value ?? Number.NaN,
         cvr: summary.shop_conversion_rate_compare_value ?? Number.NaN,
       };
-      if (TRADE_OVERVIEW_METRICS.every((k) => Number.isFinite(baseline[k]))) {
-        observations.push({ date: previousCalendarDay(latest.date), metrics: baseline });
+      if (TRADE_OVERVIEW_METRICS.every((k) => Number.isFinite(candidate[k]))) {
+        baseline = candidate;
       }
     }
+    observations = observations.filter((o) => o.date !== prevDate);
+    if (baseline) observations.push({ date: prevDate, metrics: baseline });
   }
 
   observations.sort((a, b) => a.date.localeCompare(b.date));
-  return observations;
+  return { observations, rawEvidence: all };
 };
 
 /**
@@ -208,7 +232,10 @@ export const runSituationProducer = (db: Db, options: SituationProducerOptions):
 
   // 1. Load store daily observations from Evidence (P0010.2.10).
   //    getSummary + cdp only; latest by acquired_at within business_date.
-  const storeDaily = loadStoreDailyFromEvidence(platform, shopId);
+  //    Also keep the raw evidence list so the fact-refresh persist can
+  //    record the latest evidence id / acquired_at / content_hash for each
+  //    Situation.
+  const { observations: storeDaily, rawEvidence: all } = loadStoreDailyFromEvidence(platform, shopId);
 
   // 2. Load rankings + product names (for ranking-attention detection).
   const rankings = RankingFacade.load(db, rankingProfile);
@@ -224,42 +251,208 @@ export const runSituationProducer = (db: Db, options: SituationProducerOptions):
     productNames,
   });
 
-  // 4. Persist (dedup via deterministic situationId + INSERT OR IGNORE).
+  // 4. Persist (P0010.2.11 fact refresh).
+  //
+  // Phase A — refresh EVERY existing `meaningful_change` situation's
+  // `latest_*` projection + description from the freshest evidence,
+  // independent of `detectSituations`'s threshold-based emit. Without this,
+  // a Situation whose daily delta has cooled below threshold (e.g. uv
+  // changed from +28.7% to +10.97%) would never refresh its facts and
+  // the Workspace would keep showing a stale observation. Identity columns
+  // (type, window_start, tags, lifecycle) are not touched.
+  //
+  // Phase B — `detectSituations` may emit NEW candidate situations this
+  // tick; for those, INSERT (or UPDATE if the deterministic id already
+  // exists). The candidate persist also writes the latest_* projection,
+  // so the Phase A refresh and Phase B insert are idempotent on overlapping
+  // situation_ids (Phase A ran first, Phase B sees an existing row →
+  // UPDATE; the UPDATE overwrites the same latest_* columns with the
+  // same latest evidence so the final state is consistent).
   const insert = db.prepare(
-    `INSERT OR IGNORE INTO situations (
+    `INSERT INTO situations (
        situation_id, domain, type, entity_id, entity_type, entity_name, entity_platform,
-       observed_at, window_start, window_end, description, tags, lifecycle, created_at, updated_at
-     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?)`,
+       observed_at, window_start, window_end, description, tags, lifecycle,
+       created_at, updated_at,
+       latest_current_value, latest_baseline_value, latest_change_pct,
+       latest_evidence_id, latest_evidence_acquired_at, latest_evidence_content_hash
+     ) VALUES (
+       ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?,
+       ?, ?, ?, ?, ?, ?
+     )`,
   );
+  const refresh = db.prepare(
+    `UPDATE situations SET
+       description = ?,
+       updated_at = ?,
+       latest_current_value = ?,
+       latest_baseline_value = ?,
+       latest_change_pct = ?,
+       latest_evidence_id = ?,
+       latest_evidence_acquired_at = ?,
+       latest_evidence_content_hash = ?
+     WHERE situation_id = ?`,
+  );
+  const exists = db.prepare('SELECT 1 FROM situations WHERE situation_id = ?');
 
   let created = 0;
-  let skipped = 0;
+  let refreshed = 0;
   const createdIds: string[] = [];
   const now = nowIso();
+  // Map each freshly-detected Situation to the latest evidence that produced
+  // its current value, so we can store the evidence id / acquired_at /
+  // content_hash alongside the latest facts. The evidence list is the same
+  // collection `loadStoreDailyFromEvidence` used (deduped to one per
+  // business_date, latest acquired_at wins). We use the latest evidence for
+  // the *current* business_date — the same data the description's
+  // "today realtime" half is drawn from.
+  const latestEvidenceForCurrentDate = (date: string) => {
+    const evs = all.filter(
+      (e) => e.metadata.acquisition_method === 'cdp' && e.metadata.business_date === date,
+    );
+    evs.sort((a, b) => b.metadata.acquired_at.localeCompare(a.metadata.acquired_at));
+    return evs[0] ?? null;
+  };
+  // Pure: compute latest-projection facts from a metric + the freshest
+  // storeDaily pair (latest realtime vs ##compareValue-synthesized
+  // baseline — ADR-077). No coupling to Situation input — usable by both
+  // Phase A (refresh existing) and Phase B (persist candidates).
+  const computeLatestFacts = (metric: string): SituationLatestFacts | null => {
+    if (!['gmv', 'orders', 'uv', 'cvr'].includes(metric)) return null;
+    const latest = storeDaily[storeDaily.length - 1];
+    const previous = storeDaily[storeDaily.length - 2];
+    if (!latest || !previous) return null; // no comparison partner yet
+    const cur = latest.metrics[metric];
+    const prev = previous.metrics[metric];
+    if (cur === undefined || prev === undefined) return null;
+    if (!Number.isFinite(cur) || !Number.isFinite(prev) || prev === 0) return null;
+    const ev = latestEvidenceForCurrentDate(latest.date);
+    if (!ev) return null;
+    return {
+      currentValue: cur,
+      baselineValue: prev,
+      changePct: ((cur - prev) / prev) * 100,
+      evidenceId: ev.evidence_id,
+      acquiredAt: ev.metadata.acquired_at,
+      contentHash: ev.metadata.content_hash,
+    };
+  };
+  // Build a refreshed description for an existing meaningful_change
+  // situation: depends only on the metric, the latest storeDaily pair,
+  // and the situation's shop. Used in Phase A where we don't have a
+  // freshly-detected Situation object (current change may be below
+  // threshold but the Workspace must still show the latest numbers).
+  const buildRefreshedDescription = (
+    metric: string,
+    shopName: string,
+  ): string | null => {
+    const latest = storeDaily[storeDaily.length - 1];
+    const previous = storeDaily[storeDaily.length - 2];
+    if (!latest || !previous) return null;
+    return buildMeaningfulChangeDescription(
+      { id: shopId, name: shopName, platform: 'jd', domain: 'ecommerce' },
+      metric,
+      previous.metrics[metric]!,
+      latest.metrics[metric]!,
+    );
+  };
+
+  // Phase A — refresh facts for every open `meaningful_change` situation,
+  // independent of `detectSituations` emit (handles metrics whose daily
+  // change has cooled below threshold — uv at +10.97%, etc.).
+  const existingRefresh = db.prepare(
+    `SELECT situation_id, tags FROM situations
+       WHERE lifecycle = 'open' AND description LIKE '%较昨日%'`,
+  );
+  let refreshedByPhaseA = 0;
+  const phaseA = db.transaction(() => {
+    for (const row of existingRefresh.all() as Array<{ situation_id: string; tags: string }>) {
+      let tagList: string[] = [];
+      try {
+        tagList = JSON.parse(row.tags) as string[];
+      } catch {
+        continue;
+      }
+      const metric = tagList.find((t) => ['gmv', 'orders', 'uv', 'cvr'].includes(t));
+      if (!metric) continue; // cross_signal / ranking_attention: no numeric metric to refresh
+      const facts = computeLatestFacts(metric);
+      if (!facts) continue;
+      const description = buildRefreshedDescription(metric, shopName);
+      if (!description) continue;
+      refresh.run(
+        description,
+        now,
+        facts.currentValue,
+        facts.baselineValue,
+        facts.changePct,
+        facts.evidenceId,
+        facts.acquiredAt,
+        facts.contentHash,
+        row.situation_id,
+      );
+      refreshedByPhaseA++;
+    }
+  });
+  phaseA();
+
+  // Phase B — detectSituations emits NEW candidate situations; persist
+  // (INSERT for new, UPDATE for existing). The fact columns written here
+  // match the same latest evidence Phase A already used, so the
+  // candidate-row UPDATE just overwrites with the same values.
   const persist = db.transaction((rows: readonly Situation[]) => {
     for (const s of rows) {
       const parsed = SituationSchema.safeParse(s);
       if (!parsed.success) continue; // defensive — builders always produce valid Situations
-      const info = insert.run(
-        s.situationId,
-        s.domain,
-        s.type,
-        s.entity.id,
-        s.entity.type,
-        s.entity.name ?? null,
-        s.entity.platform ?? null,
-        s.temporal.observedAt,
-        s.temporal.windowStart ?? null,
-        s.temporal.windowEnd ?? null,
-        s.description,
-        JSON.stringify(s.tags ?? []),
-        now,
-        now,
-      );
-      if (info.changes > 0) { created++; createdIds.push(s.situationId); } else skipped++;
+      // `s.tags` is a `string[]` produced by detectSituations — search it
+      // directly. JSON.parse would throw on an array and the fact-builder
+      // would silently fall through to null-facts (debug trap).
+      const tagList: string[] = Array.isArray(s.tags) ? (s.tags as string[]) : [];
+      const metric = tagList.find((t) => ['gmv', 'orders', 'uv', 'cvr'].includes(t));
+      const facts = metric ? computeLatestFacts(metric) : null;
+      if (exists.get(s.situationId)) {
+        refresh.run(
+          s.description,
+          now,
+          facts?.currentValue ?? null,
+          facts?.baselineValue ?? null,
+          facts?.changePct ?? null,
+          facts?.evidenceId ?? null,
+          facts?.acquiredAt ?? null,
+          facts?.contentHash ?? null,
+          s.situationId,
+        );
+        refreshed++;
+      } else {
+        insert.run(
+          s.situationId,
+          s.domain,
+          s.type,
+          s.entity.id,
+          s.entity.type,
+          s.entity.name ?? null,
+          s.entity.platform ?? null,
+          s.temporal.observedAt,
+          s.temporal.windowStart ?? null,
+          s.temporal.windowEnd ?? null,
+          s.description,
+          JSON.stringify(s.tags ?? []),
+          now,
+          now,
+          facts?.currentValue ?? null,
+          facts?.baselineValue ?? null,
+          facts?.changePct ?? null,
+          facts?.evidenceId ?? null,
+          facts?.acquiredAt ?? null,
+          facts?.contentHash ?? null,
+        );
+        created++;
+        createdIds.push(s.situationId);
+      }
     }
   });
   persist(situations);
 
-  return { created, skipped, createdIds, situations };
+  // `refreshed` counts Phase A only — the Phase B UPDATE branch writes the
+  // same `latest_*` projection for candidates that were already refreshed
+  // by Phase A, so adding them would double-count the same row.
+  return { created, refreshed: refreshedByPhaseA, skipped: 0, createdIds, situations };
 };

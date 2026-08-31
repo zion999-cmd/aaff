@@ -81,6 +81,12 @@ const STATEMENTS = [
     updated_at     TEXT NOT NULL
   )`,
 
+  // P0010.2.11 — `latest_*` projection columns are added in
+  // `applyP0007Schema` via idempotent PRAGMA-table_info-guarded ALTERs
+  // (SQLite has no `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` on the
+  // versions we support). Statements below must remain CREATE-only so
+  // `db.exec(STATEMENTS.join(';\n'))` stays re-runnable.
+
   // ── Learning Contexts (document store — JSON body) ──────
   `CREATE TABLE IF NOT EXISTS learning_contexts (
     context_id    TEXT PRIMARY KEY,
@@ -220,6 +226,24 @@ export const applySituationLifecycleGuard = (db: Database.Database): void => {
 /** Apply P0007 schema tables. Safe to call multiple times (IF NOT EXISTS). */
 export const applyP0007Schema = (db: Database.Database): void => {
   db.exec(STATEMENTS.join(';\n'));
+  // P0010.2.11 — idempotent ALTER for the 6 latest_* projection columns.
+  // ALTER TABLE ADD COLUMN fails on re-run (column already exists) on
+  // older SQLite; we guard with PRAGMA table_info so the migration is
+  // safe to apply to both fresh and pre-existing DBs.
+  const hasColumn = (col: string): boolean => {
+    const rows = db.prepare(`PRAGMA table_info(situations)`).all() as Array<{ name: string }>;
+    return rows.some((r) => r.name === col);
+  };
+  for (const col of [
+    'latest_current_value',
+    'latest_baseline_value',
+    'latest_change_pct',
+    'latest_evidence_id',
+    'latest_evidence_acquired_at',
+    'latest_evidence_content_hash',
+  ]) {
+    if (!hasColumn(col)) db.exec(`ALTER TABLE situations ADD COLUMN ${col} ${col === 'latest_change_pct' ? 'REAL' : col.startsWith('latest_evidence_') ? 'TEXT' : 'REAL'}`);
+  }
   // P0010.1 Final Repair — Area C.2: install the type-allowlist enforcement.
   // Order matters: rewrite legacy rows first (so the trigger does not abort on
   // a pre-existing `action_intent` row that the operator never asked for), then

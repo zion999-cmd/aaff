@@ -336,7 +336,9 @@ describe('runSituationProducer', () => {
     // 8/27 → 8/28: gmv drops, orders drop, uv drops, cvr RISES (diverges).
     // The uv/cvr divergence triggers the cross-signal Situation.
     seedGetSummary('2026-08-27', 1000, 10, 100, 0.05);
-    seedGetSummary('2026-08-28', 500, 4, 40, 0.08);
+    seedGetSummary('2026-08-28', 500, 4, 40, 0.08, {
+      compareValues: { gmv: 1000, orders: 10, shopVisitors: 100, shopConversionRate: 0.05 },
+    });
 
     const result = runSituationProducer(db, { shopId: TEST_SHOP, shopName: '测试店铺', platform: TEST_PLATFORM });
 
@@ -347,16 +349,24 @@ describe('runSituationProducer', () => {
     expect(cross).toBeDefined();
   });
 
-  test('is idempotent — re-running does not duplicate situations', () => {
+  test('is idempotent — re-running refreshes instead of duplicating (P0010.2.11 fact refresh)', () => {
     seedGetSummary('2026-08-27', 1000, 10, 100, 0.05);
-    seedGetSummary('2026-08-28', 500, 4, 40, 0.08);
+    seedGetSummary('2026-08-28', 500, 4, 40, 0.08, {
+      compareValues: { gmv: 1000, orders: 10, shopVisitors: 100, shopConversionRate: 0.05 },
+    });
 
     const first = runSituationProducer(db, { shopId: TEST_SHOP, shopName: '测试店铺', platform: TEST_PLATFORM });
     const second = runSituationProducer(db, { shopId: TEST_SHOP, shopName: '测试店铺', platform: TEST_PLATFORM });
 
     expect(first.created).toBe(5);
+    // Re-run with no new evidence: same situationIds, all refreshed (not
+    // re-inserted). P0010.2.11 fact refresh: Phase A refreshes 4
+    // meaningful_change rows (cross_signal has no numeric metric to refresh);
+    // Phase B re-runs detectSituations → all 5 candidates UPDATE the same
+    // rows but `refreshed` only counts Phase A (Phase B only counts `created`
+    // — otherwise the same row would be double-counted).
     expect(second.created).toBe(0);
-    expect(second.skipped).toBe(5);
+    expect(second.refreshed).toBe(4);
   });
 
   test('produces no situations when there is no evidence', () => {
@@ -379,6 +389,9 @@ describe('runSituationProducer', () => {
     seedGetSummary('2026-08-28', 500, 4, 40, 0.03, {
       acquisitionMethod: 'cdp',
       acquiredAt: '2026-08-28T09:00:00.000Z', // morning acquisition of "today"
+      // Same-time baseline: 8/28's payload bakes yesterday's same-moment
+      // values (the P0010 same-time comparison pair).
+      compareValues: { gmv: 1000, orders: 10, shopVisitors: 100, shopConversionRate: 0.05 },
     });
 
     const result = runSituationProducer(db, { shopId: TEST_SHOP, shopName: '测试店铺', platform: TEST_PLATFORM });
@@ -449,7 +462,9 @@ describe('runSituationProducer', () => {
   // that previously was masked by Signal-based comparisons.
   test('emits 4 meaningful_change for two real getSummary-cdp rows on adjacent days', () => {
     seedGetSummary('2026-08-27', 1000, 10, 100, 0.05);
-    seedGetSummary('2026-08-28', 500, 4, 40, 0.03);
+    seedGetSummary('2026-08-28', 500, 4, 40, 0.03, {
+      compareValues: { gmv: 1000, orders: 10, shopVisitors: 100, shopConversionRate: 0.05 },
+    });
 
     const result = runSituationProducer(db, { shopId: TEST_SHOP, shopName: '测试店铺', platform: TEST_PLATFORM });
     const changes = result.situations.filter((s) => s.tags[0] === 'meaningful_change');
@@ -472,10 +487,14 @@ describe('runSituationProducer', () => {
     seedGetSummary('2026-08-27', 200, 2, 20, 0.02, {
       acquiredAt: '2026-08-27T20:00:00.000Z', // newer — wins
     });
-    seedGetSummary('2026-08-28', 100, 1, 10, 0.01);
+    seedGetSummary('2026-08-28', 100, 1, 10, 0.01, {
+      // Same-time baseline matches the LATEST 8/27 read (200) — the
+      // P0010 same-response pair, not the older 8/27 08:00 read.
+      compareValues: { gmv: 200, orders: 2, shopVisitors: 20, shopConversionRate: 0.02 },
+    });
 
     const result = runSituationProducer(db, { shopId: TEST_SHOP, shopName: '测试店铺', platform: TEST_PLATFORM });
-    // 8/27's gmv=200, 8/28's gmv=100 → -50% drop. One change per metric.
+    // 8/28's gmv=100 vs synthesized baseline 200 → -50% drop. One change per metric.
     const gmv = result.situations.find((s) => s.tags.includes('gmv'))!;
     expect(gmv).toBeDefined();
     expect(gmv.description).toContain('¥200');
@@ -522,20 +541,45 @@ describe('runSituationProducer — C2 compareValue yesterday baseline', () => {
     expect(gmv.description).toContain('¥1000'); // baseline value from compareValue
   });
 
-  test('does NOT synthesize when real previous-day cdp evidence already exists', () => {
-    // Both days are real — compareValue must be ignored, the real pair is used.
-    seedGetSummary('2026-08-28', 1000, 10, 100, 0.05);
+  // P0010 — real previous-day evidence EXISTS, but its acquisition window may
+  // not align with today's (e.g. 8/28 acquired 16:00 vs 8/29 acquired 08:20).
+  // The canonical same-time baseline is the SAME response's ##compareValue
+  // (yesterday same-moment), NOT the previous-day evidence's realtime value.
+  // This is the window-mismatch fix: calendar adjacency ≠ window alignment.
+  test('uses ##compareValue baseline even when real previous-day evidence exists (same-time aligned)', () => {
+    // 8/28 real evidence — acquired 16:00, realtime window [00:00→16:00].
+    seedGetSummary('2026-08-28', 1000, 10, 100, 0.05, {
+      acquiredAt: '2026-08-28T16:00:00.000Z',
+    });
+    // 8/29 acquired 08:20, realtime window [00:00→08:20]; its payload bakes
+    // yesterday's same-moment (08:20) values.
     seedGetSummary('2026-08-29', 6801.02, 125, 928, 0.1336, {
-      compareValues: { gmv: 999999, orders: 999, shopVisitors: 9999, shopConversionRate: 0.5 },
+      compareValues: { gmv: 900, orders: 9, shopVisitors: 90, shopConversionRate: 0.04 },
     });
 
     const result = runSituationProducer(db, { shopId: TEST_SHOP, shopName: '测试店铺', platform: TEST_PLATFORM });
     const changes = result.situations.filter((s) => s.tags[0] === 'meaningful_change');
     expect(changes).toHaveLength(4);
     const gmv = changes.find((s) => s.tags.includes('gmv'))!;
-    // Baseline must be the REAL 8/28 value (1000), not the compareValue 999999.
-    expect(gmv.description).toContain('¥1000');
-    expect(gmv.description).not.toContain('999999');
+    // Baseline MUST be the same-time ##compareValue (900), NOT the
+    // previous-day realtime evidence value (1000) — different windows.
+    expect(gmv.description).toContain('¥900');
+    expect(gmv.description).not.toContain('¥1000');
+  });
+
+  // P0010 — previous-day real evidence exists, but the latest payload has NO
+  // ##compareValue (no aligned baseline available). The previous-day realtime
+  // must NOT be used (its window is unverifiable) → honest silence.
+  test('drops previous-day observation when latest payload lacks ##compareValue (honest silence)', () => {
+    seedGetSummary('2026-08-28', 1000, 10, 100, 0.05, {
+      acquiredAt: '2026-08-28T16:00:00.000Z',
+    });
+    // 8/29 real evidence but payload has NO ##compareValue fields.
+    seedGetSummary('2026-08-29', 6801.02, 125, 928, 0.1336);
+
+    const result = runSituationProducer(db, { shopId: TEST_SHOP, shopName: '测试店铺', platform: TEST_PLATFORM });
+    // No window-aligned comparison exists → no today Situation.
+    expect(result.situations).toHaveLength(0);
   });
 
   test('no synthesis when ##compareValue fields are incomplete', () => {
@@ -544,5 +588,174 @@ describe('runSituationProducer — C2 compareValue yesterday baseline', () => {
 
     const result = runSituationProducer(db, { shopId: TEST_SHOP, shopName: '测试店铺', platform: TEST_PLATFORM });
     expect(result.situations).toHaveLength(0);
+  });
+});
+
+// ---- P0010.2.11 fact refresh: latest_* fields track the most recent evidence ----
+//
+// Hourly cadence: every new `trade.overview` evidence reuses the deterministic
+// situation_id (same metric + window). The producer must REFRESH the latest_*
+// fields (current/baseline/pct/evidence_id/acquired_at/content_hash + description)
+// on every run — not only on first insert.
+describe('runSituationProducer — fact refresh on re-run (hourly cadence)', () => {
+  let db: ReturnType<typeof Database>;
+
+  beforeEach(() => {
+    db = openDb(':memory:');
+    initDatabase(db);
+    try { rmSync(TEST_EVIDENCE_ROOT, { recursive: true, force: true }); } catch { /* ok */ }
+  });
+
+  afterEach(() => {
+    db.close();
+    try { rmSync(TEST_EVIDENCE_ROOT, { recursive: true, force: true }); } catch { /* ok */ }
+  });
+
+  test('refreshes latest_* fields on re-run (description + value tracking)', () => {
+    // Hour 1: 8/30 realtime 1000/4/50/0.05 vs compareValue 800/3/40/0.04
+    seedGetSummary('2026-08-30', 1000, 4, 50, 0.05, {
+      compareValues: { gmv: 800, orders: 3, shopVisitors: 40, shopConversionRate: 0.04 },
+    });
+    const first = runSituationProducer(db, { shopId: TEST_SHOP, shopName: '测试店铺', platform: TEST_PLATFORM });
+    expect(first.created).toBeGreaterThan(0);
+    // First run: 0 existing rows → Phase A refreshes nothing.
+    expect(first.refreshed).toBe(0);
+
+    const gmvSitId = db
+      .prepare("SELECT situation_id FROM situations WHERE description LIKE '%成交金额%'")
+      .get() as { situation_id: string } | undefined;
+    expect(gmvSitId).toBeDefined();
+    const id = gmvSitId!.situation_id;
+    const before = db
+      .prepare(
+        'SELECT description, latest_current_value, latest_baseline_value, latest_change_pct ' +
+          'FROM situations WHERE situation_id = ?',
+      )
+      .get(id) as { description: string; latest_current_value: number; latest_baseline_value: number; latest_change_pct: number };
+    expect(before.description).toContain('¥1000.00');
+    expect(before.description).toContain('¥800.00');
+    expect(before.latest_current_value).toBe(1000);
+    expect(before.latest_baseline_value).toBe(800);
+
+    // Hour 2: re-seed 8/30 evidence with a HIGHER realtime value (simulating the
+    // next hourly bucket). The deterministic situation_id must not change.
+    // To force "latest wins" we give the second seed a later acquired_at.
+    seedGetSummary('2026-08-30', 2500, 8, 75, 0.07, {
+      compareValues: { gmv: 800, orders: 3, shopVisitors: 40, shopConversionRate: 0.04 },
+      acquiredAt: '2026-08-30T15:30:00.000Z',
+    });
+
+    const second = runSituationProducer(db, { shopId: TEST_SHOP, shopName: '测试店铺', platform: TEST_PLATFORM });
+    expect(second.created).toBe(0); // no new — same deterministic id
+    expect(second.refreshed).toBe(second.situations.length);
+
+    const after = db
+      .prepare(
+        'SELECT description, latest_current_value, latest_baseline_value, latest_change_pct ' +
+          'FROM situations WHERE situation_id = ?',
+      )
+      .get(id) as { description: string; latest_current_value: number; latest_baseline_value: number; latest_change_pct: number };
+    expect(after.latest_current_value).toBe(2500);
+    expect(after.latest_baseline_value).toBe(800);
+    // pct = (2500-800)/800 = 2.125 = 212.5
+    expect(after.latest_change_pct).toBeCloseTo(212.5, 1);
+    expect(after.description).toContain('¥2500.00');
+    expect(after.description).toContain('¥800.00');
+  });
+
+  test('UV Situation latest facts populated on first run (regression: uv was NULL)', () => {
+    // UV: current=800, baseline=500 → +60% (>20% threshold so detectSituations emits)
+    seedGetSummary('2026-08-31', 1000, 4, 800, 0.05, {
+      compareValues: { gmv: 800, orders: 3, shopVisitors: 500, shopConversionRate: 0.04 },
+    });
+    runSituationProducer(db, { shopId: TEST_SHOP, shopName: '测试店铺', platform: TEST_PLATFORM });
+    const uv = db
+      .prepare("SELECT * FROM situations WHERE description LIKE '%访客%'")
+      .get() as {
+        situation_id: string; description: string;
+        latest_current_value: number | null; latest_baseline_value: number | null;
+        latest_change_pct: number | null; latest_evidence_acquired_at: string | null;
+      } | undefined;
+    expect(uv).toBeDefined();
+    expect(uv!.latest_current_value).toBe(800);
+    expect(uv!.latest_baseline_value).toBe(500);
+    expect(uv!.latest_change_pct).toBeCloseTo(((800 - 500) / 500) * 100, 1);
+    expect(uv!.description).toContain('800');
+    expect(uv!.description).toContain('500');
+  });
+
+  // Phase A regression: a Situation whose daily delta has cooled below
+  // threshold (uv dropped from +60% to +10.97%) is no longer emitted by
+  // detectSituations, so the candidate loop would never re-visit it.
+  // Phase A must still rewrite its latest_* projection from the freshest
+  // evidence + latest ##compareValue baseline so the Workspace never
+  // shows a stale observation.
+  test('Phase A refreshes an existing UV Situation even when changePct < threshold', () => {
+    // Hour 1: UV +60% (>20%) → detectSituations emits UV Situation.
+    seedGetSummary('2026-08-31', 1000, 4, 800, 0.05, {
+      compareValues: { gmv: 800, orders: 3, shopVisitors: 500, shopConversionRate: 0.04 },
+    });
+    runSituationProducer(db, { shopId: TEST_SHOP, shopName: '测试店铺', platform: TEST_PLATFORM });
+    const id = (db
+      .prepare("SELECT situation_id FROM situations WHERE description LIKE '%访客%'")
+      .get() as { situation_id: string }).situation_id;
+    const uv1 = db
+      .prepare('SELECT description, latest_current_value, latest_baseline_value, latest_change_pct FROM situations WHERE situation_id = ?')
+      .get(id) as { description: string; latest_current_value: number; latest_baseline_value: number; latest_change_pct: number };
+    expect(uv1.latest_current_value).toBe(800);
+    expect(uv1.latest_baseline_value).toBe(500);
+    expect(uv1.latest_change_pct).toBeCloseTo(60, 1);
+
+    // Hour 2: UV cooled to +10.97% (<20%) — detectSituations will NOT emit
+    // a UV candidate this run. Without Phase A, the UV row's facts would
+    // remain at +60% forever. Phase A must refresh them to +10.97% from
+    // the freshest evidence + ##compareValue baseline.
+    seedGetSummary('2026-08-31', 1000, 4, 688, 0.05, {
+      compareValues: { gmv: 800, orders: 3, shopVisitors: 620, shopConversionRate: 0.04 },
+      acquiredAt: '2026-08-31T18:30:00.000Z',
+    });
+    const second = runSituationProducer(db, { shopId: TEST_SHOP, shopName: '测试店铺', platform: TEST_PLATFORM });
+    // GMV/orders/cvr are still above threshold → detectSituations emits 3
+    // candidates which UPDATE the existing rows; UV alone fell below
+    // threshold and is NOT a candidate this run.
+    expect(second.created).toBe(0);
+    expect(second.refreshed).toBe(4); // Phase A refreshes all 4 meaningful_change rows
+    // The point of this test: the UV row's facts are still updated even
+    // though it was not a candidate this tick.
+    const uv2 = db
+      .prepare('SELECT description, latest_current_value, latest_baseline_value, latest_change_pct FROM situations WHERE situation_id = ?')
+      .get(id) as { description: string; latest_current_value: number; latest_baseline_value: number; latest_change_pct: number };
+    expect(uv2.latest_current_value).toBe(688);
+    expect(uv2.latest_baseline_value).toBe(620);
+    expect(uv2.latest_change_pct).toBeCloseTo(((688 - 620) / 620) * 100, 1);
+    expect(uv2.description).toContain('688');
+    expect(uv2.description).toContain('620');
+  });
+
+  test('refresh preserves identity columns (lifecycle, type, window_start, tags)', () => {
+    seedGetSummary('2026-08-30', 1000, 4, 50, 0.05, {
+      compareValues: { gmv: 800, orders: 3, shopVisitors: 40, shopConversionRate: 0.04 },
+    });
+    runSituationProducer(db, { shopId: TEST_SHOP, shopName: '测试店铺', platform: TEST_PLATFORM });
+    const id = (db
+      .prepare("SELECT situation_id FROM situations WHERE description LIKE '%成交金额%'")
+      .get() as { situation_id: string }).situation_id;
+    const first = db.prepare('SELECT lifecycle, type, window_start, tags FROM situations WHERE situation_id = ?').get(id) as {
+      lifecycle: string; type: string; window_start: string; tags: string;
+    };
+
+    // Re-seed with different numbers — refresh should not touch identity.
+    seedGetSummary('2026-08-30', 9999, 99, 999, 0.99, {
+      compareValues: { gmv: 1, orders: 1, shopVisitors: 1, shopConversionRate: 0.01 },
+      acquiredAt: '2026-08-30T18:00:00.000Z',
+    });
+    runSituationProducer(db, { shopId: TEST_SHOP, shopName: '测试店铺', platform: TEST_PLATFORM });
+    const second = db.prepare('SELECT lifecycle, type, window_start, tags FROM situations WHERE situation_id = ?').get(id) as {
+      lifecycle: string; type: string; window_start: string; tags: string;
+    };
+    expect(second.lifecycle).toBe(first.lifecycle);
+    expect(second.type).toBe(first.type);
+    expect(second.window_start).toBe(first.window_start);
+    expect(second.tags).toBe(first.tags);
   });
 });

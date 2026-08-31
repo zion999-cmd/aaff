@@ -61,6 +61,28 @@ const DETECTED_METRICS: readonly string[] = ['gmv', 'orders', 'uv', 'cvr'];
 
 const DIRECTION_WORD: Record<ChangeDirection, string> = { up: '上升', down: '下降' };
 
+/**
+ * Build a "meaningful change" description for a single metric pair — used by
+ * the fact-refresh path to keep Situation descriptions in sync with the
+ * latest evidence, independent of `detectSituations` (which only emits when
+ * the metric change crosses the threshold). Keeps the Workspace current
+ * even for metrics whose daily delta has cooled below threshold.
+ */
+export const buildMeaningfulChangeDescription = (
+  shop: ShopRef,
+  metric: string,
+  prev: number,
+  cur: number,
+): string | null => {
+  const meta = METRIC_META[metric];
+  if (!meta) return null;
+  if (!Number.isFinite(prev) || !Number.isFinite(cur) || prev === 0) return null;
+  const ratio = (cur - prev) / prev;
+  const direction: ChangeDirection = ratio > 0 ? 'up' : 'down';
+  const pct = (Math.abs(ratio) * 100).toFixed(1);
+  return `${shop.name} ${meta.label} 较昨日${DIRECTION_WORD[direction]} ${pct}%，从 ${meta.format(prev)} 变为 ${meta.format(cur)}。`;
+};
+
 // ---- Adjacent-date check (P0010.2.10) ----
 //
 // P0010.2.10: the "today vs yesterday" comparison is only valid when
