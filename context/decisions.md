@@ -2741,3 +2741,120 @@ Hermes
 - ✅ Evidence 永远只写 canonical `jd_shop_001`。
 
 **测试**: `tests/unit/connectors/jd/shop-identity.test.ts`（4 tests）。**验收**: 真实 execute 传 `11855009` → 落盘 evidence `shop_id=jd_shop_001`；`jd_shop_002` → 400 fail-fast。
+
+
+## ADR-077 — Realtime Situation Same-Time Baseline Enforcement (P0010, 2026-08-31)
+
+- **日期**: 2026-08-31
+- **状态**: Accepted（实现 + 真实链路对账通过；ADR-079 patch 后 UV 也通过）
+- **来源**: 老板用例验证。`loadStoreDailyFromEvidence` 旧路径有两条 baseline 来源：(A) 昨日 `business_date` 真实 Evidence 的 realtime 值、(B) 缺失时用同 response `##compareValue` 合成。老板要求：realtime Situation 始终用 latest `getSummary` 的 `current` + 同 response `##compareValue` (yesterday same-moment)，不混用相邻日历史 Evidence — 因为相邻日 historical 采集窗口可能不与今天对齐（今天 08:20 采集 vs 昨天 16:00 采集 = 半天 vs 整天），calendar 相邻 ≠ window 对齐。
+
+**决策**:
+1. **Canonical baseline = `latest getSummary` 的 current + 同 response `##compareValue`**。两者是天然时间对齐的 comparison pair：今天 `00:00 → now`（current snapshot）vs 昨天 `00:00 → same-time`（`##compareValue`）。
+2. **Historical adjacent-date Evidence 不得覆盖该 baseline**。`loadStoreDailyFromEvidence` 在 baseline pass 阶段：若同 `business_date` 已有真实 Evidence（adjacent-date 采集），**丢弃**它，改用 latest payload 的 `##compareValue` 合成。
+3. **Missing required compareValue → honest silence**。当 latest payload 4 个 `*_compare_value` 任一缺失或非 finite 时，TRADE_OVERVIEW_METRICS.every(...) 检查失败 → baseline 不被 push → storeDaily 只有 latest 一条 → `detectSituations` 走"需要至少两条 observation" → 0 situations emitted（不伪造 baseline）。
+4. **不实现 Time Series**。本决策只引入 same-time 单一比较对；不引入逐小时序列、滚动平均、季节性分解等。
+
+**Why**: Evidence 已从 daily snapshot 进化为 hourly observation（ADR-078），但 Situation 仍按 daily cadence 排比时，calendar 相邻 ≠ observation window 对齐 = 失真。Same-time baseline 是 hourly cadence 与 daily semantics 的最小可调和点。
+
+**边界**:
+- ❌ 不改 Investigation policy / threshold / detectSituations 现有逻辑。
+- ❌ 不引入新 capability / 新 schema field（除后续 ADR-079 增的 `latest_*` 投影列）。
+- ❌ 不做 Time Series / 滚动窗口 / 季节性归一。
+
+---
+
+## ADR-078 — Autonomous Acquisition Cadence: per business-hour bucket (P0010.2.11, 2026-08-31)
+
+- **日期**: 2026-08-31
+- **状态**: Accepted（实现 + 单测 + 真实运行验证）
+- **来源**: C1.7 per-day guard `Map<cap, business_date>` 阻止每 60s tick 真实 CDP 采集（防 storm）但副作用严重：早上采集一次后当天全部 `already_acquired_for_business_date` → 零新 Evidence → 零新 Situation → 不 steady-state → 测试只能靠重启进程清空 Map。老板要求：每 Beijing business-hour bucket 一次，下一小时自动重新允许。
+
+**决策**:
+1. **Guard 粒度从 business_date → Beijing business-hour bucket**。`runtime-loop.ts` 内 `Map<string, string>` key 由 `business_date` 变为 `hourBucket`（"YYYY-MM-DDTHH"，如 `2026-08-31T08` = 08:00–08:59 Beijing）。
+2. **`shared/utils/time.ts` 新增 `beijingHourBucket(at)`**：北京 UTC+8 小时 bucket。复用 `beijingDate(at)`（已处理 UTC 跨日）→ `bjHour = (UTC_hour + 8) % 24` → `T${bjHour padded}`。`hourBucket` 在 `runtime-loop.ts#tick` 算（`hour = beijingHourBucket(new Date(startedAt))`），传给 `runCapability(cap, date, hour)`。
+3. **60s RuntimeLoop heartbeat 保留**。每 60s tick 仍跑，但同 hour bucket 内除第一次外全部 skip。
+4. **Failure 不锁 bucket**。同 C1.7 语义：仅 COMPLETED 写 Map；failed tick 不写，下一 tick 重试。
+5. **下一 Beijing hour 自动重新允许**。Map key 变 → 比较 miss → 重新走完整 acquire 路径。
+6. **Manual `/api/fabric/execute` 不受 guard 限制**。该路由直接 build kernel（不经过 `runCapability`），保持"operator 手动跑 = 真跑"语义。
+7. **Process restart 可在同 bucket 重采一次**。Map 是 process-local；restart = 新 Map → 同 hour 第一次仍执行。当前接受（无 persistent scheduler）。
+8. **不引入 cron / persistent scheduler**。仍依赖 60s setInterval 触发。
+
+**Why**: 老板用例"跨小时后 evidence 自动更新 → 下个 tick 自动 fact refresh → Workspace `description` 数字自动跟着变"依赖此 cadence。无 hourly cadence，事实刷新永远不发生。
+
+**边界**:
+- ❌ 不改 Investigation policy / detection / threshold。
+- ❌ 不动 manual `/api/fabric/execute` / CLI 多日 walk。
+- ❌ 不引入 cron / persistent state / Redis / DB-backed scheduler。
+- ❌ 不改 60s heartbeat（只改 guard key）。
+
+---
+
+## ADR-079 — Hourly Evidence → Current Situation Fact Refresh (P0010.2.11, 2026-08-31) + UV Phase-A patch (2026-09-01)
+
+- **日期**: 2026-08-31（主决策 + 6 latest_* 列 + Producer CREATE-or-REFRESH）; 2026-09-01（Phase A 解耦 patch）
+- **状态**: Accepted（实现 + 单测 30/30 + 真实链路验收：4/4 metric latest facts 全填）
+- **来源**: ADR-078 hourly cadence 上线后，Situation 描述（`description` 字段 + `latest_*` 列）由 `runSituationProducer` 用 `INSERT OR IGNORE` 写入（`producer.ts:234`）—— identity 永久保留，但事实字段（current / baseline / change_pct / evidence_*）永远停留在首次 INSERT 时刻。Workspace 出现 `GMV +410%` 而真实 hour bucket 已是 `-55%`（方向反了）—— 数据层失真。
+
+**决策 — 主决策 (2026-08-31)**:
+1. **事实 vs 调查解耦**。Situation Evidence-derived facts（latest 当前观测 + baseline + change_pct + 关联 evidence）与 Investigation judgment（`learning_contexts.body.investigation`）独立更新。Workspace 数字 = latest facts（持续滚动）；Workspace 判断 = completed Investigation（首次完成时锁定）。
+2. **`situations` 表扩 6 个 `latest_*` 投影列**（PRAGMA-guarded ALTER，SQLite pre-3.35 无 `ADD COLUMN IF NOT EXISTS`）：
+   - `latest_current_value REAL`
+   - `latest_baseline_value REAL`
+   - `latest_change_pct REAL`
+   - `latest_evidence_id TEXT`
+   - `latest_evidence_acquired_at TEXT`
+   - `latest_evidence_content_hash TEXT`
+3. **Producer persist 从 `INSERT OR IGNORE` 改为 CREATE-or-REFRESH**。同一 deterministic `situationId`：
+   - 不存在 → INSERT（全字段含 latest_*）
+   - 已存在 → UPDATE `description + latest_* + updated_at`，**不碰** identity 列（`type` / `window_start` / `tags` / `lifecycle`）
+4. **Producer 是 Evidence → Current Situation Projection 唯一路径**。无 second event loop / no separate fact-refresh 进程。
+5. **Description 随 latest facts 刷新**。复用 `rules.ts#buildMeaningfulChange` 模板（`${shop.name} ${label} 较昨日${DIRECTION_WORD[direction]} ${pct}%，从 ${prevStr} 变为 ${curStr}`），输入 `current/previous` 每次重算。
+6. **ADR-077 same-time baseline 复用**。Latest payload 的 `##compareValue` 即 baseline（昨日 same-moment）；`parseJdSummary` 已抽 `*_compare_value` 字段。
+
+**决策 — UV Phase-A patch (2026-09-01)**:
+1. **Fact refresh 与 detectSituations emit 解耦**。原实现只在 detectSituations 产生的 candidates 上跑 fact refresh → UV 跌出 threshold (10.97% < 20%) 时不 emit → 不 refresh → UV 永远停在旧数字。
+2. **`runSituationProducer` 拆两阶段**：
+   - **Phase A** — DB 中所有 `lifecycle='open' AND description LIKE '%较昨日%'`（meaningful_change 标识） → 按 tags 找 metric → `computeLatestFacts(metric)` → UPDATE `latest_*` + description。**独立于** detectSituations 是否 emit。
+   - **Phase B** — detectSituations 跑一次 → INSERT (新) 或 UPDATE (existing)。Phase A 已写过 latest_*，Phase B UPDATE 写相同值（幂等）。
+3. **`refreshed` 计数 = Phase A only**。Phase A + Phase B 同一行会双重刷新，只在 Phase A 计数避免双计。
+4. **UV 暴露出的真实问题不是 tag 缺失**，而是 `<20% threshold → candidate 不 emit → 旧实现不 refresh`。UV 的 tag 自始存在（`["meaningful_change","uv","up"]`）。
+
+**Why**: Evidence 已从 daily snapshot 进化为 continuous observation。Situation 必须随 hourly Evidence 滚动事实。但 identity (deterministic situationId + 调查结论) 不变。
+
+**边界**:
+- ❌ 不动 Investigation policy（`shouldInvestigate` / threshold / meaningful_new_evidence / recovery 扫描）。
+- ❌ 不重跑 completed Investigation（`learning_contexts.body.investigation` 保持）。
+- ❌ 不实现 Re-evaluation Policy（current facts → 是否重调查）—— 待未来 ADR。
+- ❌ 不扩到 cross_signal（cross_signal 不含 numeric metric tag，本任务仅 meaningful_change 投影）。
+- ❌ 不做 Time Series / 历史事实表。
+- ❌ Deterministic situationId 不变（fingerprint 规则不变）。
+
+---
+
+## ADR-P0011 — Knowledge Semantic Domain Navigation (P0011, 2026-08-31)
+
+- **日期**: 2026-08-31
+- **状态**: **Implementation complete / Runtime acceptance pending**
+- **来源**: Investigation 检索是"读根 INDEX 后读大页"。实测（state.db 25 次调查取证）：agent 几乎总读同一个 23687 chars 大页（`reference/京东电商运营隐性经验与故障诊断.md`，23/25 次），无论 situation 类型。这正是因为根 INDEX 是文件目录（cases/operations/platform/reference），不是语义路由。
+
+**决策 — Implementation complete 部分**:
+1. **根 INDEX = 语义路由器**。`shared-knowledge/index.ts#initSharedKnowledgeLayer` + `governance.ts#KNOWLEDGE_INDEX` + `fixtures.ts#SEED_INDEX` 重写：situation type / metric → domain directory + 通用前置判定（真伪异常门、UV<500 阈值、伪异常清单摘要）**内联在根 INDEX**（每次必读，无额外读页）。
+2. **4 个语义域**：`traffic/`（UV 下跌 / 流量侧边缘）、`conversion/`（CVR 下跌 / 广告 ROI）、`product/`（客单价 / SKU / 库存 / 券）、`operations/`（真伪异常 / 大促 / SOP / 平台规则 / 案例）。每域有 `INDEX.md` 列该域页 + 触发条件。
+3. **Three-layer navigation**：
+   - 根 INDEX（路由 + 内联通用前置）→ 域 INDEX → 1 个领域页
+   - `investigation/prompt.ts` 知识指令明确这三层（不再"读 INDEX 然后读 1-2 个相关页"）
+4. **Hermes 侧工具同步**：`~/.hermes/skills/fabric-knowledge-ingest/SKILL.md` File Structure 约定改为语义域目录；Step 6 写页规则 + Step 7 INDEX 生成规则同步。
+5. **Seed 重对齐**：`shared-knowledge/index.ts` seed 路径 platform→operations（076 路径修正）；SEED_PLATFORM_PAGE seed 到 `knowledge/operations/`。
+
+**决策 — Runtime acceptance pending 部分**:
+- **真实 Investigation runtime acceptance 未做**。4 域 INDEX + 1 通用 INDEX + 1 通用 reference 已落盘（18 页 / 2-5.5KB / 12/12 raw provenance 全 covered），但**真实调查跑通新 INDEX** —— 启动 dev server → 触发真实 situation → 看 agent 是否按 3 层导航读根 INDEX + 域 INDEX + 1 个域页（**不**读 23KB 大页）—— pending。
+- 不在本 ADR 中标"Runtime 验收通过"。
+
+**Why**: Context-over-Prompt（路由规则写在 INDEX，非代码 hardcode），符合 Fabric 哲学；让 agent 找最相关知识页（~3-5KB）而非整本大页（23KB）。
+
+**边界**:
+- ❌ 不动 Hermes 0.20.5 全局配置 / .env / proxy / model。
+- ❌ 不引向量数据库 / embedding / 语义检索（用户原话"先验证仅靠结构化 Index 是否足够"）。
+- ❌ 不清 skill/knowledge 重叠（三个 Hermes skill 与 knowledge 内容交叉 ~46KB，留后续）。
+- ❌ 不增新 capability / 新 endpoint / 新 schema 表。

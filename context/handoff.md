@@ -2794,3 +2794,158 @@ AFTER the dedup check (the correct pattern), so no change needed
 - 遗留（不修，只记录）：executor.test.ts mock 污染；business_traces/signal_weights 等采集表已清；investigation 工具面 advisory（ADR-075）。
 
 ---
+
+
+---
+
+# Handoff — P0010.2.11 Realtime Situation Same-Time Baseline (2026-08-31, ADR-077)
+
+## 新增
+
+**ADR-077 实施**：`loadStoreDailyFromEvidence`（`apps/ecommerce/runtime/situation/producer.ts`）在 baseline pass 阶段：
+- 检测 `previousCalendarDay(latest.date)` 真实 Evidence → **丢弃**（避免窗口错配）
+- 改用 latest payload 的 `##compareValue`（yesterday same-moment）合成 baseline
+- TRADE_OVERVIEW_METRICS.every(finite) check → 任一 `*_compare_value` 缺失或非 finite → 不 push → honest silence
+
+**事实**（`producer.ts`）：当前 `getSummary` 返回 current + 同 response `##compareValue`，两者天然时间对齐。`loadStoreDailyFromEvidence` 返回 `{ observations, rawEvidence }`（事实提取复用 rawEvidence）。
+
+## 验证
+
+- `situation-producer.test.ts`：`single cdp day + ##compareValue baseline → today vs synthesized yesterday` PASS（4 changes）。
+- `is idempotent` 测试保持 idempotent。
+- typecheck 无新错误。
+- 真实对账：dev server 3 个 GMV/orders/cvr situation 第一次 emit 时的 latest_evidence_acquired_at = 首次 run 时刻，description 内 baseline 数字与 latest payload 的 `##compareValue` 一致。
+
+## 边界
+
+- ❌ 不动 Investigation policy / threshold。
+- ❌ 不实现 Time Series。
+
+---
+
+# Handoff — P0010.2.11 Autonomous Acquisition: per business-hour bucket (2026-08-31, ADR-078)
+
+## 新增
+
+**ADR-078 实施**：
+- `shared/utils/time.ts` 新增 `beijingHourBucket(at)` → `'YYYY-MM-DDTHH'`（如 `2026-08-31T08` = 08:00–08:59 Beijing）。复用 `beijingDate` 处理 UTC 跨日。
+- `runtime-loop.ts` `Map<cap, business_date>` → `Map<cap, hourBucket>`。`tick()` 算 `hour = beijingHourBucket(new Date(startedAt))` 传给 `runCapability(cap, date, hour)`。`runCapability` guard 检查 `completedBusinessHour.get(cap) === hourBucket`。
+- 60s RuntimeLoop heartbeat 保留。failure 不锁 bucket（仅 completed 写 Map）。manual `/api/fabric/execute` 不经此 guard。
+- `loop-events.ts` `acquisition_skipped` event 加 `hour` 字段。
+
+## 验证
+
+- `time.test.ts` beijingHourBucket 4 用例（mid-morning / 00:00 跨日 / 23:00 / 同 hour vs 跨 hour）。
+- `runtime-loop-perday-guard.test.ts` 改 hour 语义：跨 hour 重新允许 / 同 hour 多次 skip / same 北京日跨 hour 仍走 4 meaningful_change。
+- typecheck 无新错误。
+- 真实运行：dev server 15:10 北京首次 hour bucket 采集 → 15:12 同 hour evidence 不变 → 跨 hour 后自动重新允许（**真实验收需等下一个北京整点**）。
+
+## 边界
+
+- ❌ 不引入 cron / persistent scheduler。
+- ❌ 不动 manual execute。
+- ❌ 不动 60s heartbeat。
+
+---
+
+# Handoff — P0010.2.11 Hourly Evidence → Situation Fact Refresh (2026-08-31, ADR-079)
+
+## 新增
+
+**ADR-079 主决策**：
+- `situations` 表扩 6 个 `latest_*` 列（idempotent PRAGMA table_info guard ALTER）。
+- `producer.ts` persist 从 `INSERT OR IGNORE` 改为 CREATE-or-REFRESH。UPDATE 仅写 `description + latest_* + updated_at`，identity（type / window_start / tags / lifecycle）不动。
+- `rules.ts` 新增 `buildMeaningfulChangeDescription(shop, metric, prev, cur)`（复用 METRIC_META + DIRECTION_WORD）。
+
+**ADR-079 UV patch**（2026-09-01）：
+- `runSituationProducer` 拆两阶段。**Phase A** — DB 中所有 `lifecycle='open' AND description LIKE '%较昨日%'` 的 meaningful_change situation → 按 tags 找 metric → `computeLatestFacts(metric)` → UPDATE latest_* + description。**独立于** detectSituations 是否 emit（修复"UV 跌出 20% threshold → candidate 不 emit → 不 refresh"根因）。
+- **Phase B** — detectSituations 跑一次 → INSERT (新) 或 UPDATE (existing)。fact 由 Phase A 写过，Phase B 幂等。
+- `refreshed` 计数 = Phase A only（避免 Phase A + Phase B 同一行双计）。
+
+## 验证
+
+- `situation-producer.test.ts` 30/30（+3 新用例：UV first-run facts / Phase A refreshes UV even when changePct < threshold / preserves identity columns）。
+- typecheck 无新错误。
+- 真实对账：dev server 4/4 metric latest facts 全填（GMV `¥653.90→¥1068.40` / orders `2→3` / **UV `46→23, -50%`（之前 NULL）** / CVR `4.3%→13.0%`）。
+
+## 边界
+
+- ❌ Investigation policy 不动（completed 不重跑）。
+- ❌ 不实现 Re-evaluation Policy。
+- ❌ cross_signal 不刷 fact（无 numeric metric tag，deferred）。
+- ❌ 不做 Time Series / 不加 history 表。
+
+---
+
+# Handoff — P0011 Knowledge Semantic Domain Navigation (2026-08-31, P0011)
+
+## Implementation complete
+
+**P0011 工具改造**：
+- `governance.ts` `KNOWLEDGE_GOVERNANCE` 加 `## Domain Structure (语义域分层导航)` 章节：4 域目录 + 路由规则 + 通用前置内联约定。
+- `governance.ts` `KNOWLEDGE_INDEX` seed 改为语义路由：通用前置内联（真伪异常判定 / UV 阈值 / 伪异常清单）+ 4 域入口。
+- `fixtures.ts` `SEED_INDEX` 同步语义路由。
+- `investigation/prompt.ts` 知识指令改 3 层导航：根 INDEX 路由 → 域 INDEX → 1 个领域页。通用前置内联（不额外读页）。
+- `shared-knowledge/index.ts` SEED_PLATFORM_PAGE 路径 platform→operations（076 路径修正）。
+- `~/.hermes/skills/fabric-knowledge-ingest/SKILL.md` File Structure + INDEX 生成规则同步语义域。
+
+## 重新生成
+
+清空旧知识页（备份 `data/quarantine/2026-08-31-clean-rerun/knowledge-pre-p0011.tgz`）→ `POST /api/knowledge/ingest` 让 Hermes 用新 skill + 新契约从 12 raw 源重新编译。`GET /api/knowledge/status`：12/12 raw referenced, pending=0, pages=18（4 域 INDEX + 4 域页 + 1 通用 INDEX + 1 agent-execution + 1 few-shot + 1 根 INDEX + 1 平台内容化推广），页 2-5.5KB（原 23KB 大页消失）。
+
+## Runtime acceptance pending
+
+- 真实调查跑通新 INDEX 导航 — pending。dev server 自动 tick 已持续，fact refresh 正常（ADR-079），但**真实 Investigation runtime acceptance** — 即在 P0011 INDEX 结构下，从根 INDEX 路由到域 INDEX 到 1 个域页，**不再读 23KB 大页** — 尚未做实调查取证对账（state.db 路径 25 次调查取证都是 P0011 前的旧 INDEX）。
+- 下次真实调查触发后，验证 agent 读的知识页是否命中 `knowledge/traffic|conversion|product|operations/...` 域页（3-5KB），description + latest_* 与最新 evidence 对齐。
+
+## 边界
+
+- ❌ 不动 Hermes 0.20.5 / .env / proxy / model。
+- ❌ 不引向量数据库 / embedding / 语义检索（user 原话"先验证仅靠结构化 Index 是否足够"）。
+- ❌ 不清 skill/knowledge 重叠（3 Hermes skill 与 knowledge 内容交叉 ~46KB，留后续）。
+- ❌ 不改 Investigation policy / runtime loop / recovery。
+
+---
+
+# Handoff — Current Operating Semantics (post-ADR-079, 2026-09-01)
+
+## 当前运行语义
+
+```
+[RuntimeLoop 60s heartbeat]
+  └─ ADR-078: per Beijing business-hour bucket
+      └─ acquireJdTradeOverviewViaCDP (CDP)
+          └─ write evidence/{date}_getSummary.json + meta.json
+              └─ ADR-077: same-time baseline (current + ##compareValue)
+                  └─ loadStoreDailyFromEvidence → detectSituations
+                      ├─ Phase A (ADR-079): refresh existing open meaningful_change
+                      │     latest_* + description (independent of detect threshold)
+                      └─ Phase B (ADR-079): INSERT or UPDATE candidates
+                            latest_* + description
+```
+
+**关键运行不变量**:
+- `Acquisition` (ADR-078) → 每 Beijing hour bucket 一次 real CDP
+- `Hourly Evidence` 落盘 → `producer` 跑两 phase
+  - **Phase A**: 已存在 open meaningful_change Situation **无条件刷新** facts（不依赖 detection threshold）
+  - **Phase B**: detectSituations 决定 new candidate
+- `Investigation` **不因 fact refresh 自动重跑**（`learning_contexts.body.investigation` 保持 completed 原状）
+- Manual `/api/fabric/execute` 不经 runCapability（不守 hour guard，不参与 fact refresh 路径；保持 operator 显式执行语义）
+
+## 下一未解决问题（NOT YET DESIGNED）
+
+**Re-evaluation Policy** — current facts → 决定是否重调查 → optional new Investigation。
+
+**当前未实现**。设计要求（**未在本任务范围**）：
+
+- **专业运营经验必须能影响判断**（不能写死 time-based / evidence-hash-based 触发）
+- Knowledge / Skill / Professional Operator Feedback 应是 re-evaluation 决策的输入
+- 检测方式、policy 边界、保留什么、丢弃什么 — **待未来 ADR**
+
+**当前 actual 行为**: Phase A fact refresh 后不触发任何 re-investigation。Workspace 数字刷新但调查结论停留在首次完成时。这意味着"假设 uv 跌出 threshold → 调查结论不更新"是设计意图（completed 不重跑）—— 待 Re-evaluation Policy 决定何时刷新调查。
+
+## 风险 / 建议下一步
+
+- 风险：hourly cadence 在 process restart 时会重采一次（Map process-local）。当前接受；如需严格 hourly-only 需 persistent scheduler（不在本任务范围）。
+- 风险：fact refresh 不解决"old completed Investigation 与新 fact 不一致" — Re-evaluation Policy 留待。
+- 下一步候选（用户决定）：P0011 Runtime acceptance / skill-knowledge 重叠清理 / cross_signal fact refresh / Re-evaluation Policy 设计。
