@@ -35,10 +35,12 @@ describe('KNOWLEDGE.md governance contract', () => {
     expect(KNOWLEDGE_GOVERNANCE).not.toContain('流量下降先看访客数');
   });
 
-  it('INDEX is a navigation map, not a page dump', () => {
+  it('INDEX is a semantic router, not a page dump', () => {
     expect(KNOWLEDGE_INDEX).toContain('Knowledge Index');
-    expect(KNOWLEDGE_INDEX).toContain('Platform');
-    expect(KNOWLEDGE_INDEX).toContain('Cases');
+    // P0011: the root INDEX routes by semantic domain, not by content type.
+    expect(KNOWLEDGE_INDEX).toContain('流量问题');
+    expect(KNOWLEDGE_INDEX).toContain('knowledge/traffic/INDEX.md');
+    expect(KNOWLEDGE_INDEX).toContain('knowledge/operations/INDEX.md');
   });
 });
 

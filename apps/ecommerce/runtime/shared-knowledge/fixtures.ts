@@ -51,19 +51,28 @@ tags: [jd, promotion, content]
 `;
 
 /** Seed knowledge index (the initial INDEX.md). */
-export const SEED_INDEX = `# Knowledge Index
+export const SEED_INDEX = `# Knowledge Index — 语义路由
 
-## Platform
-- 京东内容化推广 → \`knowledge/platform/京东内容化推广.md\` — 京东 2026 内容化推广产品与适用场景
+> 先读本节判定真假异常，再按 situation 类型/指标路由到语义域。
 
-## Cases
-（待编译）
+## 通用前置（每次必读，无需额外读页）
+- **判定阈值**：单天波动 ±15% 以内优先观察；连续 2-3 天 >20% 才启动故障排查。
+- **小样本噪声**：访客 <500 / 关键词点击 <30 时指标剧烈跳动属统计噪声，禁止下确定性结论。
+- **对比优先级**：周同比 > 类目大盘 > 日环比。
+- **伪异常清单**：节假日回落 / 平台算法迭代 / 单店小样本大单抖动 / 爬虫 UV 虚高 / 外部引流低匹配 / 大促预热只加购不下单。
 
-## Operations
-（待编译）
+## 语义域路由
+- **uv 变化** → 流量问题 → \`knowledge/traffic/INDEX.md\`
+- **cvr 变化** → 转化问题 → \`knowledge/conversion/INDEX.md\`
+- **客单价 / 商品 / SKU / 库存** → 商品问题 → \`knowledge/product/INDEX.md\`
+- **gmv / orders / uv_cvr（结果指标或背离）** → 经营异常 → \`knowledge/operations/INDEX.md\`（先真伪判定，再按排查树下钻流量/转化/客单价三支）
 
-## Organization
-（待编译）
+## 通用参考（按需）
+- Agent 执行约束 → \`knowledge/agent-execution-constraints.md\`
+- Few-Shot 失败案例库 → \`knowledge/few-shot-cases.md\`
+
+## 已编译领域
+（待 ingest）
 `;
 
 /** Seed maintenance log. */
