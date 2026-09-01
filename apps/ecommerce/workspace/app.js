@@ -2056,25 +2056,23 @@ async function loadSituationDetail(situationId) {
     // loadSituationDetail and the composer gets remounted.
     mountSituationChatComposer(situationId);
 
-    // P0012 Workspace Information Architecture: the feedback chips now
-    // render above the persistent composer (quick-reply; no big card).
-    // We mount them inside the composer host so they scroll with it.
+    // P0012 Workspace Information Architecture: the feedback chips render
+    // above the persistent composer (quick-reply; no big card). Mounted
+    // AFTER the composer exists so insertion targets a real node.
     var composerHost = document.getElementById('situationChatComposer');
     if (composerHost) {
       var chipsHost = document.createElement('div');
       chipsHost.id = 'situationFeedbackChips_' + escHtml(situationId);
-      chipsHost.innerHTML = renderFeedbackChips(situationId, cs);
+      // `cs` was undefined here — the recommendation-presence gate reads the
+      // persisted investigation (raw.learningContext.investigation), which
+      // carries `.recommendation`.
+      var chipInv = (raw.learningContext && raw.learningContext.investigation) || {};
+      chipsHost.innerHTML = renderFeedbackChips(situationId, chipInv);
       // Insert above the inner row (textarea + send button).
       var innerEl = composerHost.querySelector('.situation-chat-composer-inner');
       if (innerEl) composerHost.insertBefore(chipsHost, innerEl);
       else composerHost.appendChild(chipsHost);
     }
-    content.innerHTML = html;
-    // P0012 Workspace Completion: mount the persistent Situation Chat
-    // composer at the viewport bottom (always visible, even on long pages).
-    // Bound to THIS situationId; switching situations re-runs
-    // loadSituationDetail and the composer gets remounted.
-    mountSituationChatComposer(situationId);
 
     // P0010.2.7 — Open the Workspace's right pane via the canonical
     // state helper (see styles.css .decision-panel.open + rail). The
