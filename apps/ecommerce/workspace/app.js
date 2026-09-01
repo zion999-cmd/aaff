@@ -1888,13 +1888,13 @@ async function loadSituationDetail(situationId) {
     // /api/situations/:id/observations (append-only, immutable history per
     // Phase A refresh). Failures here MUST NOT mask the Lifecycle timeline.
     try {
-      var obsResp = await fetch(
-        apiUrl('/api/situations/' + encodeURIComponent(situationId) + '/observations'),
-        { headers: token ? { 'Authorization': 'Bearer ' + token } : {} }
+      const obsResp = await fetch(
+        '/api/situations/' + encodeURIComponent(situationId) + '/observations',
       );
       if (obsResp.ok) {
-        var obsBody = await obsResp.json();
-        var observations = (obsBody && obsBody.observations) || [];
+        const obsBody = await obsResp.json();
+        // API envelope: { success, data: { observations: [...] } }
+        const observations = (obsBody && obsBody.data && obsBody.data.observations) || [];
         if (typeof renderObservationTimeline === 'function' && observations.length > 0) {
           html += renderObservationTimeline(observations);
         }
