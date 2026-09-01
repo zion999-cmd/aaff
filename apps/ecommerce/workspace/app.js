@@ -292,6 +292,11 @@ function switchView(name, filter = 'all') {
       state.detailPollTimer = null;
     }
     state.cachedPresentationRevision = null;
+    // P0012 Workspace Completion: tear down the persistent Situation Chat
+    // composer when the operator leaves the detail view (returns to the
+    // list, opens a different Situation, etc.) so the bound situationId
+    // never lingers in a stale composer.
+    unmountSituationChatComposer();
   }
   // P0010.2.7 — clear the previous view's poller. Each live view owns
   // exactly one setInterval in `state.viewPollTimers[name]`; we clear
@@ -1792,6 +1797,44 @@ async function askSituationAgent(situationId) {
   }
 }
 
+/** Mount the Situation Chat composer fixed at the viewport bottom.
+ *  The composer is OUTSIDE the scrollable detail body so it stays
+ *  visible at every scroll position. The conversation history (above
+ *  the input) is collapsible in the detail body, but the INPUT bar is
+ *  always-on. Idempotent: replaces any prior composer element first.
+ *  Binds to the given situationId — every send writes the message into
+ *  THIS situation's conversation (NOT a global Agent chat). */
+function mountSituationChatComposer(situationId) {
+  unmountSituationChatComposer();
+  var composer = document.createElement('div');
+  composer.id = 'situationChatComposer';
+  composer.setAttribute('data-situation-id', String(situationId));
+  composer.innerHTML =
+    '<div class="situation-chat-composer-inner">' +
+      '<textarea id="situationChatInput_' + escHtml(situationId) + '" ' +
+        'class="input" rows="3" placeholder="追问 Agent 关于当前 Situation… (Enter 发送 · Shift+Enter 换行)" ' +
+        'onkeydown="if (event.key === &quot;Enter&quot; &amp;&amp; !event.shiftKey) { event.preventDefault(); window.askSituationAgent(\'' + escHtml(situationId) + '\'); }"' +
+      '></textarea>' +
+      '<button class="btn primary" onclick="askSituationAgent(\'' + escHtml(situationId) + '\')">发送</button>' +
+    '</div>';
+  document.body.appendChild(composer);
+  // Allow the body to scroll past the composer height.
+  document.body.classList.add('has-situation-chat-composer');
+  // Auto-focus the input when the composer mounts so the operator can
+  // type immediately.
+  var input = composer.querySelector('input');
+  if (input) setTimeout(function () { input.focus(); }, 80);
+}
+
+/** Remove the persistent Situation Chat composer (call when leaving
+ *  the detail view or switching situations). Safe to call when no
+ *  composer is mounted. */
+function unmountSituationChatComposer() {
+  var existing = document.getElementById('situationChatComposer');
+  if (existing && existing.parentNode) existing.parentNode.removeChild(existing);
+  document.body.classList.remove('has-situation-chat-composer');
+}
+
 async function loadSituationDetail(situationId) {
   // switchView passes filter value; ignore non-ID values like 'all', 'open' etc.
   if (!situationId || situationId === 'all' || situationId === 'open' || situationId === 'partial' || situationId === 'agent') {
@@ -1908,9 +1951,39 @@ async function loadSituationDetail(situationId) {
     html += '<div id="situationLifecycleHost_' + escHtml(situationId) + '"></div>';
     html += '<div id="situationCommitmentHost_' + escHtml(situationId) + '"></div>';
 
-    // Layer 1: 发生了什么 — P0010.1 Productization: Business Situation language,
-    // re-populated after the investigation loads so stopReason / status are
-    // reflected (pending → "待调查"; observe → "正常范围"; failed+hasPrior → banner).
+    // P0012 Workspace Information Architecture:
+    //
+    // Main column (left, in the workspace-layout center grid) renders the
+    // 5 business-shape sections in this exact order:
+    //   1. Title                       (raw.entity.name · desc.slice(0,80))
+    //   2. 发生了什么                  (latest per-metric facts — re-populated
+    //                                   after the investigation loads)
+    //   3. Agent 当前理解              (cs.currentUnderstanding, NOT judgment)
+    //   4. 当前判断 (if any)           (cs.judgment — separate sub-block)
+    //   5. Agent 产出 (if any)          (cs.recommendation body, or a calm
+    //                                   "持续观察" line when stopReason is
+    //                                   observe / missing_capability and
+    //                                   there is no recommendation)
+    //
+    // The legacy "生成建议" affordance + the standalone 6-button "你怎么
+    // 处理?" big card are removed. The feedback buttons are now quick-reply
+    // chips above the persistent Chat composer (rendered at the bottom
+    // by P0012). Lifecycle Timeline + Observation Timeline move to the
+    // right sticky trace column (populated by the existing two-pass
+    // renderInvestigationTrack + renderObservationTimeline in this file).
+
+    // 1. Title.
+    html += '<h2 class="situation-detail-title">' +
+      escHtml(entityDisplayName(entity)) + '</h2>';
+    html += '<p class="muted" style="font-size:0.78rem;margin-bottom:20px">' +
+      escHtml(temporal.observedAt || '') + ' · ' + escHtml(entity.platform || '') +
+    '</p>';
+
+    // 2. 发生了什么 — populated after the investigation loads so the
+    // latest per-metric facts (or the latest_* projection) show the real
+    // current / baseline / change% picture, not the static `businessDescribeSituation`
+    // placeholder. The placeholder is still used for the loading state
+    // (initial mount) so the panel isn't empty.
     html += '<div class="situation-layer">';
     html += '<h3 class="situation-layer-title">📊 发生了什么</h3>';
     html += '<div class="situation-layer-body" id="situationWhatHappened_' + escHtml(situationId) + '">';
@@ -1920,10 +1993,14 @@ async function loadSituationDetail(situationId) {
     // P0010.1 Productization: Hero — conclusion first. Populated after the
     // investigation loads. When the latest attempt failed but prior valid
     // cognition is preserved, the stale banner is rendered here (not duplicated
-    // inside Layer 2).
+    // elsewhere). Also: the page is now split into 2 sub-blocks ("Agent 当前
+    // 理解" + optional "当前判断") instead of one combined block.
     html += '<div id="situationHero_' + escHtml(situationId) + '"></div>';
 
-    // Layer 2: 🧠 Agent 当前理解 — the hero business surface.
+    // 3. Agent 当前理解 + 4. 当前判断 (if any) — populated after the
+    // investigation loads. P0012 fix: "Agent 当前理解" must be sourced from
+    // cs.currentUnderstanding, not cs.judgment. The Hero function
+    // (renderHeroSummary) is updated to handle the split.
     html += '<div class="situation-layer">';
     html += '<h3 class="situation-layer-title">🧠 Agent 当前理解</h3>';
     html += '<div class="situation-layer-body" id="situationUnderstanding_' + escHtml(situationId) + '">';
@@ -1932,54 +2009,29 @@ async function loadSituationDetail(situationId) {
     html += '<button class="btn btn-primary" id="startInvestigation_' + escHtml(situationId) + '" data-action="manual-investigate" style="margin-top:8px;font-size:0.78rem" onclick="startInvestigation(\'' + escHtml(situationId) + '\')">🔍 交给 Agent 调查</button>';
     html += '</div>';
 
-    // Layer 4: 你怎么处理？
-    // P0010.2.7-followup: once the operator has already recorded at least
-    // one intervention for this situation, the 6 canonical feedback buttons
-    // collapse to a one-line summary + "修改反馈" affordance. The previous
-    // behavior always showed the full grid, which produced duplicate
-    // records ("认同判断 认同 认同 认同") and made the page look like the
-    // system was asking the same question four times in a row.
-    //
-    // The summary surfaces the most recent record (type + summary + time)
-    // so the operator sees the canonical state without scrolling. The
-    // existing 处理记录 list below stays as the full history.
-    html += '<div class="situation-layer situation-interaction">';
-    html += '<h3 class="situation-layer-title">👤 你怎么处理？</h3>';
-    if (interventions.length === 0 || state.interactionEditing === true) {
-      html += renderInteractionSurface(situationId);
-      if (interventions.length > 0 && state.interactionEditing === true) {
-        // While in edit mode, show a small cancel link so the operator
-        // can back out without leaving another record.
-        html += '<div class="interaction-edit-cancel">' +
-          '<a href="javascript:void(0)" onclick="cancelInteractionEdit(\'' + escHtml(situationId) + '\')" ' +
-          'style="font-size:0.78rem;color:#94a3b8;text-decoration:underline">收起（不修改）</a>' +
-          '</div>';
-      }
-    } else {
-      var last = interventions[interventions.length - 1];
-      var lastTypeLabel = timelineEventLabel(last && last.type, (last && last.content) || {});
-      var lastSummary = (last && last.summary) || '已记录';
-      var lastTime = ((last && (last.timestamp || last.createdAt)) || '').slice(11, 16);
-      html += '<div class="interaction-collapsed" data-collapsed="true">' +
-        '<span class="interaction-collapsed-summary">' +
-          '已记录 ' + interventions.length + ' 条反馈 · ' +
-          '最近: ' + escHtml(lastTypeLabel) + ' · ' + escHtml(lastSummary) +
-          (lastTime ? ' @ ' + escHtml(lastTime) : '') +
-        '</span>' +
-        '<a class="interaction-edit-link" href="javascript:void(0)" ' +
-          'onclick="startInteractionEdit(\'' + escHtml(situationId) + '\')" ' +
-          'style="margin-left:12px;font-size:0.8rem">修改反馈</a>' +
-      '</div>';
-    }
+    // 5. Agent 产出 (if any) — populated after the investigation loads
+    // via renderOutputBody (called from the right pane's secondary pass).
+    // Standalone "生成建议" affordance is REMOVED in P0012 Workspace
+    // Completion (button only surfaced when cs.recommendation is missing AND
+    // a prior judgment exists; that branch is suppressed per the new
+    // product semantics — the Recommendation surface refreshes only on a
+    // NEW successful investigation turn, not from this view).
 
-    // Show existing interventions
+    // InteractionSurface (the 6 feedback buttons) is NO LONGER rendered
+    // inline here. The chips are now mounted on top of the persistent
+    // Chat composer (see the new renderFeedbackChips helper below and the
+    // composer mount in mountSituationChatComposer).
+    //
+    // The existing 人类反馈 processing (handleIntervention →
+    // submitStructuredIntervention → POST /api/situations/:id/interventions)
+    // is reused unchanged. P0010.2.7-followup: after the first
+    // intervention is recorded, the chips collapse to a one-line summary
+    // with a "修改反馈" affordance. We keep that existing behavior.
+
+    // Show existing interventions (full history; unchanged UX)
     if (interventions.length > 0) {
       html += '<div class="situation-interventions-existing">';
       html += '<h4 style="font-size:0.8rem;margin-bottom:8px">处理记录</h4>';
-      // P0010.1 Productization: each intervention record carries a stable
-      // [H{n}] source tag (n = 1-based index). The underlying interventionId
-      // is intentionally NOT shown in business mode; dev mode reveals it via
-      // the title attribute (handled in renderSourceTag).
       interventions.forEach(function(i, idx) {
         // P0010.1 Final Repair — Area C.3: use the typed decision sub-label
         // (accept / reject / defer / override / no_action) instead of the
@@ -1996,26 +2048,33 @@ async function loadSituationDetail(situationId) {
       html += '</div>';
     }
 
-    html += '</div>'; // end interaction layer
-
-    // Layer 5: 追问 Agent — wired to the Hermes situation-chat bridge.
-    html += '<div class="situation-chat" style="margin-top:20px">';
-    html += '<details><summary style="cursor:pointer;font-size:0.85rem;font-weight:600">💬 追问 Agent (关于这个 Situation)</summary>';
-    html += '<div style="margin-top:12px">';
-    html += '<div id="situationChatLog_' + escHtml(situationId) + '" style="margin-bottom:8px;max-height:240px;overflow-y:auto"></div>';
-    html += '<div style="display:flex;gap:6px">';
-    html += '<input id="situationChatInput_' + escHtml(situationId) + '" class="input" style="flex:1;font-size:0.8rem" placeholder="追问 Agent，例如：为什么转化率下降？" />';
-    html += '<button class="btn primary" onclick="askSituationAgent(\'' + escHtml(situationId) + '\')">发送</button>';
-    html += '</div></div>';
-    html += '</details></div>';
-
-    // P0010.1 REPAIR-2: Output/WorkItem is rendered FIRST-CLASS (above
-    // Lifecycle) and synchronously. REPAIR-5: the previous
-    // /mark-delivered side effect is gone — opening this page does
-    // NOT change any WorkItem status.
-
     html += '</div>'; // end detail body
     content.innerHTML = html;
+    // P0012 Workspace Completion: mount the persistent Situation Chat
+    // composer at the viewport bottom (always visible, even on long pages).
+    // Bound to THIS situationId; switching situations re-runs
+    // loadSituationDetail and the composer gets remounted.
+    mountSituationChatComposer(situationId);
+
+    // P0012 Workspace Information Architecture: the feedback chips now
+    // render above the persistent composer (quick-reply; no big card).
+    // We mount them inside the composer host so they scroll with it.
+    var composerHost = document.getElementById('situationChatComposer');
+    if (composerHost) {
+      var chipsHost = document.createElement('div');
+      chipsHost.id = 'situationFeedbackChips_' + escHtml(situationId);
+      chipsHost.innerHTML = renderFeedbackChips(situationId, cs);
+      // Insert above the inner row (textarea + send button).
+      var innerEl = composerHost.querySelector('.situation-chat-composer-inner');
+      if (innerEl) composerHost.insertBefore(chipsHost, innerEl);
+      else composerHost.appendChild(chipsHost);
+    }
+    content.innerHTML = html;
+    // P0012 Workspace Completion: mount the persistent Situation Chat
+    // composer at the viewport bottom (always visible, even on long pages).
+    // Bound to THIS situationId; switching situations re-runs
+    // loadSituationDetail and the composer gets remounted.
+    mountSituationChatComposer(situationId);
 
     // P0010.2.7 — Open the Workspace's right pane via the canonical
     // state helper (see styles.css .decision-panel.open + rail). The
@@ -2678,7 +2737,22 @@ function scrubProse(text) { return scrubCapabilityIdsInProse(text); }
  */
 function renderHeroSummary(inv, interventionCount) {
   if (!inv) return '';
-  var hasCognition = inv.judgment || inv.currentUnderstanding;
+  // P0012 Workspace Information Architecture: split the original "one
+  // combined block" into THREE sequential sub-blocks, each surfaced
+  // only when its source field is non-empty (no fabricated content):
+  //   1. Agent 当前理解      <- cs.currentUnderstanding (was: inv.judgment
+  //                              by mistake — the previous P0010.1 hero misused
+  //                              judgment for this label)
+  //   2. 当前判断 (optional)   <- inv.judgment
+  //   3. Agent 产出 (optional) <- inv.recommendation.recommendation (with
+  //                              rationale / expectedOutcome / risks / prereqs /
+  //                              humanNeeded), OR a single calm "持续观察" line
+  //                              for stopReason ∈ {observe, missing_capability}
+  //                              when no recommendation exists
+  // The hero (this function) is rendered INSIDE Layer 2 ("Agent 当前理解"),
+  // so the same outer block now hosts all three pieces, with the
+  // "调查状态" chip appended at the bottom.
+  var hasCognition = inv.currentUnderstanding || inv.judgment;
   if (!hasCognition) return '';
   var html = '';
   if (inv.status === 'failed') {
@@ -2689,15 +2763,30 @@ function renderHeroSummary(inv, interventionCount) {
       '</div>';
   }
   html += '<div class="hero-block" style="margin:0 0 16px;padding:14px 16px;border:1px solid var(--primary);border-left-width:4px;border-radius:8px;background:var(--primary-light)">';
+  // 1) Agent 当前理解 — sourced from currentUnderstanding (not judgment).
+  if (inv.currentUnderstanding) {
+    var cu = scrubCapabilityIdsInProse(inv.currentUnderstanding);
+    if (cu.length > 200) cu = cu.slice(0, 197) + '…';
+    html += '<div style="font-size:0.85rem;line-height:1.45;margin:0 0 6px"><strong style="color:var(--primary)">Agent 当前理解：</strong> ' + escHtml(cu) + '</div>';
+  }
+  // 2) 当前判断 — shown only if judgment is persisted (was: always shown
+  // even when empty, which the previous P0010.1 hero displayed via the
+  // mis-mapped inv.judgment field).
   if (inv.judgment) {
     var j = scrubCapabilityIdsInProse(inv.judgment);
-    if (j.length > 120) j = j.slice(0, 117) + '…';
-    html += '<div style="font-size:0.92rem;line-height:1.45;margin:0 0 8px"><strong style="color:var(--primary)">当前判断：</strong>' + escHtml(j) + '</div>';
+    if (j.length > 200) j = j.slice(0, 197) + '…';
+    html += '<div style="font-size:0.85rem;line-height:1.45;margin:0 0 6px"><strong style="color:var(--primary)">当前判断：</strong> ' + escHtml(j) + '</div>';
   }
+  // 3) Agent 产出 — recommend body when present; calm single line otherwise.
   if (inv.recommendation && inv.recommendation.recommendation) {
     var r = scrubCapabilityIdsInProse(inv.recommendation.recommendation);
-    if (r.length > 120) r = r.slice(0, 117) + '…';
-    html += '<div style="font-size:0.88rem;line-height:1.45;margin:0 0 6px"><strong style="color:var(--primary)">建议：</strong>' + escHtml(r) + '</div>';
+    if (r.length > 200) r = r.slice(0, 197) + '…';
+    html += '<div style="font-size:0.85rem;line-height:1.45;margin:0 0 6px"><strong style="color:var(--primary)">Agent 产出：</strong> ' + escHtml(r) + '</div>';
+    if (inv.recommendation.rationale) {
+      html += '<div class="muted" style="font-size:0.75rem;margin:0 0 4px">依据: ' + escHtml(scrubCapabilityIdsInProse(inv.recommendation.rationale)) + '</div>';
+    }
+  } else if (inv.stopReason === 'observe' || inv.stopReason === 'missing_capability') {
+    html += '<div class="muted" style="font-size:0.78rem;margin:0 0 4px">持续观察 — 等待下一时间窗口数据以判断下降来源。</div>';
   }
   var stopLabel = STOP_VERDICT_LABEL[inv.stopReason] || '';
   if (stopLabel) {
@@ -2876,11 +2965,16 @@ function renderCurrentUnderstanding(container, inv) {
     if (rec.humanNeeded && rec.humanNeeded.length) recHtml += '<div class="muted" style="font-size:0.75rem;margin-top:2px;color:var(--warning)">需人工:</div>' + list(rec.humanNeeded);
     html += block('建议', recHtml);
   } else {
-    // Completed + no recommendation: legitimate "已完成调查 / 可生成建议".
-    html += block('建议',
-      '<div class="muted" style="font-size:0.75rem;margin-bottom:4px">Agent 已完成调查，可基于当前判断生成处理建议。</div>' +
-      '<button class="btn btn-primary" style="font-size:0.72rem;padding:4px 10px" onclick="generateRecommendation(' + JSON.stringify(inv.situationId) + ')">💡 生成建议</button>'
-    );
+    // Completed + no Recommendation persisted — do NOT render the
+    // "生成建议" affordance. Per the unified product semantics:
+    //   - completed → display current Understanding + Conclusion + already-
+    //     recommended handling (when present)
+    //   - operator feedback via Professional Feedback + Situation Chat
+    // The legacy "Generated / recommend" stage is no longer a user action;
+    // the Recommendation block renders only when persisted content exists.
+    // The legacy route /recommend endpoint and generateRecommendation()
+    // are kept (not removed) for back-compat with any external caller;
+    // we just don't surface the UI entry point.
   }
 
   container.innerHTML = html || '<p class="muted placeholder">Agent 未返回调查内容。</p>';
@@ -3314,6 +3408,49 @@ async function startInvestigation(situationId) {
 // We index into the flat `INTERACTION_OPTIONS` array (not the grouped
 // objects) when calling `handleIntervention` so downstream code keeps
 // using a single canonical lookup.
+/**
+ * P0012 Workspace Information Architecture: render the 6 canonical
+ * feedback buttons as quick-reply chips ABOVE the persistent Chat
+ * composer. Two rows:
+ *   - judgment feedback (always shown when 0 interventions)
+ *   - recommendation feedback (only when cs.recommendation.recommendation
+ *     is persisted)
+ * Persists via the existing handleIntervention path; no new feedback system.
+ */
+function renderFeedbackChips(situationId, cs) {
+  var groups = (window.groupOptionsBySection && window.groupOptionsBySection())
+    || { judgment: [], suggestion: [] };
+  var sections = window.INTERACTION_SECTIONS || {};
+  var options = window.INTERACTION_OPTIONS || [];
+  if (!cs) cs = {};
+  var hasRec = !!(cs.recommendation && cs.recommendation.recommendation);
+  var html = '<div class="feedback-chips" data-situation-id="' + escHtml(situationId) + '">';
+  ['judgment', 'suggestion'].forEach(function(section) {
+    if (section === 'suggestion' && !hasRec) return;
+    var sectionOptions = groups[section] || [];
+    if (sectionOptions.length === 0) return;
+    var meta = sections[section] || { label: section };
+    html += '<div class="feedback-chip-row" data-section="' + escHtml(section) + '">';
+    html += '<span class="feedback-chip-label">' + escHtml(meta.label) + '</span>';
+    html += '<div class="feedback-chip-buttons">';
+    sectionOptions.forEach(function(o) {
+      var idx = options.indexOf(o);
+      if (idx < 0) return;
+      var idxAttr = idx;
+      html += '<button class="feedback-chip" data-section="' + escHtml(section) + '"' +
+        ' data-grammar="' + escHtml(o.grammarType) + '"' +
+        ' data-execution-disabled="' + (o.executionDisabled === true ? 'true' : 'false') + '"' +
+        ' onclick="handleIntervention(\'' + escHtml(situationId) + '\', ' + idxAttr + ')">' +
+        escHtml(o.label) +
+      '</button>';
+    });
+    html += '</div></div>';
+  });
+  html += '</div>';
+  return html;
+}
+
+
 function renderInteractionSurface(situationId) {
   var groups = (window.groupOptionsBySection && window.groupOptionsBySection())
     || { judgment: [], suggestion: [] };

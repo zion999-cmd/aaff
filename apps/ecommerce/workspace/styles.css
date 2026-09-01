@@ -1081,3 +1081,153 @@ ul, ol { list-style: none; }
 .trade-trend-table th, .trade-trend-table td { padding: 6px 8px; text-align: right; border-bottom: 1px solid var(--border, #f0f1f3); white-space: nowrap; }
 .trade-trend-table th:first-child, .trade-trend-table td:first-child { text-align: left; color: var(--muted, #6b7280); font-weight: normal; }
 .trade-trend-table thead th { color: var(--muted, #6b7280); font-weight: 500; }
+
+/* ── P0010.1 Workspace Completion: persistent Situation Chat
+   composer (P0012) fixed to the center column at the viewport bottom —
+   always visible regardless of scroll position. Mounted/destroyed by
+   mountSituationChatComposer / unmountSituationChatComposer in app.js.
+   Bound to a specific situationId via data-attribute; the askSituationAgent
+   call wires it into THIS situation's conversation (NOT a global Agent
+   chat). The view-scroll (which contains the Situation detail body)
+   gets extra bottom padding while the composer is present so the last
+   content can be scrolled fully into view above the composer. */
+#situationChatComposer {
+  /* Workspace layout: grid `sidebar | center | decision-panel`. We pin
+     to the center column by offsetting both edges with the layout vars.
+     On mobile (single-column) the vars collapse and the composer spans
+     the viewport. */
+  position: fixed;
+  left: var(--sidebar-width, 240px);
+  right: var(--decision-width, 340px);
+  bottom: 0;
+  z-index: 1000;
+  background: var(--panel);
+  border-top: 1px solid var(--border);
+  box-shadow: 0 -2px 6px rgba(0, 0, 0, 0.06);
+  padding: 12px 20px;
+  display: flex;
+  align-items: flex-end;
+  gap: 10px;
+}
+#situationChatComposer .situation-chat-composer-inner {
+  display: flex;
+  width: 100%;
+  gap: 10px;
+  align-items: flex-end;
+}
+/* Three-row textarea input (HTML rows="3"); flexible vertical resize
+   up to 8 rows; Send button aligns to the bottom-right (where the
+   Enter-to-send shortcut indicator sits too). */
+#situationChatComposer textarea.input {
+  flex: 1;
+  font-size: 0.85rem;
+  font-family: var(--font-body);
+  line-height: 1.5;
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface, #fff);
+  color: var(--text);
+  resize: vertical;
+  min-height: 64px;
+  max-height: 240px;
+  outline: none;
+  transition: border-color 0.12s, box-shadow 0.12s;
+  resize: vertical;
+}
+#situationChatComposer textarea.input:focus {
+  border-color: var(--primary);
+  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.18);
+}
+#situationChatComposer textarea.input::placeholder {
+  color: var(--muted, #94a3b8);
+  line-height: 1.5;
+}
+#situationChatComposer button.btn.primary {
+  flex: 0 0 auto;
+  font-size: 0.82rem;
+  font-weight: 600;
+  padding: 8px 18px;
+  border-radius: 8px;
+  /* Aligns with the bottom of the textarea so multi-row doesn't push
+     the button down. */
+  margin-bottom: 1px;
+}
+body.has-situation-chat-composer .view-scroll {
+  /* Reserve room for the fixed composer so the last block can scroll
+     fully into view above it. ~96px = composer + textarea max height
+     visible + a margin. */
+  padding-bottom: 96px;
+}
+/* Mobile (single-column): composer spans viewport edge-to-edge. */
+@media (max-width: 600px) {
+  #situationChatComposer { left: 0; right: 0; padding: 10px 12px; }
+  #situationChatComposer textarea.input { font-size: 0.8rem; }
+  body.has-situation-chat-composer .view-scroll { padding-bottom: 80px; }
+}
+
+/* ── P0012 Workspace IA: quick-reply feedback chips + sticky right panel ──
+   The 6 canonical feedback buttons (judgment + recommendation) now render
+   as chips mounted above the persistent Chat composer (renderFeedbackChips
+   in app.js). The recommendation row is hidden when no recommendation is
+   persisted on the situation. The right decision-panel column is
+   sticky-top so the operator can see the most-recent Observation no
+   matter where they scroll in the main column. */
+.feedback-chips {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 0 0 4px 0;
+}
+.feedback-chip-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.feedback-chip-label {
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: var(--muted);
+  min-width: 56px;
+}
+.feedback-chip-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.feedback-chip {
+  font-size: 0.76rem;
+  font-weight: 500;
+  padding: 4px 10px;
+  border-radius: 14px;
+  border: 1px solid var(--border);
+  background: var(--panel);
+  color: var(--text);
+  cursor: pointer;
+  transition: background 0.12s, border-color 0.12s, color 0.12s;
+}
+.feedback-chip:hover {
+  background: var(--primary);
+  color: #fff;
+  border-color: var(--primary);
+}
+.feedback-chip:active { transform: translateY(1px); }
+
+/* Sticky right trace column: the .decision-panel that already hosts
+   Lifecycle + Observation Timeline is allowed to scroll independently
+   while the main column scrolls under it. The top offset matches the
+   workspace header. The rail (.decision-content) scrolls within the
+   panel. */
+#decisionPanel.open .decision-rail {
+  position: sticky;
+  top: 56px;
+  max-height: calc(100vh - 56px);
+  overflow-y: auto;
+  padding-right: 6px;
+}
+/* When the composer is mounted the right rail must not be obscured by
+   the fixed composer at the bottom. */
+body.has-situation-chat-composer #decisionPanel.open .decision-rail {
+  padding-bottom: 96px;
+}
