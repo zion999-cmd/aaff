@@ -467,6 +467,51 @@ export interface TradeOverviewAcquireResult {
 }
 
 /** Shape resolved by the in-page direct-fetch script ({@link buildTradeOverviewDirectFetchExpr}). */
+// ---- Cross-day freshness guard helpers (P0010.2.11 follow-up) ----
+
+/** Beijing (UTC+8) today as 'YYYY-MM-DD'. Independent of `beijingDate` in
+ *  shared/utils/time to avoid a circular dependency from cdp-client → time. */
+export const beijingTodayISO = (now: Date = new Date()): string =>
+  new Date(now.getTime() + 8 * 60 * 60 * 1000).toISOString().slice(0, 10);
+
+/** The 'yesterday' value the tradeSummary date picker SHOULD currently
+ *  resolve to (Beijing today - 1 day, as YYYY-MM-DD). Page freezes this at
+ *  SPA boot, so a long-running tab crossing Beijing midnight keeps the
+ *  stale value and the getTrend 7-day categories shift by 1 day. */
+export const expectedPageYesterday = (now: Date = new Date()): string => {
+  const today = beijingTodayISO(now);
+  const y = new Date(`${today}T00:00:00Z`);
+  y.setUTCDate(y.getUTCDate() - 1);
+  return y.toISOString().slice(0, 10);
+};
+
+/** In-page probe: walk the React fiber from the date picker's echo span
+ *  to the picker component, read the 'yesterday' quick item's resolved
+ *  value, and return it as YYYY-MM-DD. Returns `{ ok: false, error }` on any
+ *  failure (component not found, item not found, value not a date). */
+export const buildReadPageYesterdayExpr = (): string => `
+  (function(){
+    var spans = document.querySelectorAll('span.jmt-combo-date-picker-echo-item');
+    if (!spans.length) return { ok: false, error: 'date picker echo not found' };
+    var echo = spans[0];
+    var fk = Object.keys(echo).find(function(k){return k.indexOf('__reactFiber')===0;});
+    if (!fk) return { ok: false, error: 'react fiber key not found' };
+    var f = echo[fk];
+    var picker = null;
+    for (var i=0;i<20 && f;i++,f = f.return) {
+      if (f.memoizedProps && f.memoizedProps.data) { picker = f.memoizedProps; break; }
+    }
+    if (!picker) return { ok: false, error: 'picker component not found' };
+    var items = picker.data.dimVals || picker.data;
+    var y = null;
+    for (var j=0;j<items.length;j++) if (items[j] && items[j].key === 'yesterday') { y = items[j]; break; }
+    if (!y) return { ok: false, error: 'yesterday quick item not found' };
+    var v = typeof y.value === 'function' ? y.value(y) : y.value;
+    if (typeof v !== 'string' || !/^\\d{4}-\\d{2}-\\d{2}$/.test(v)) return { ok: false, error: 'yesterday value not YYYY-MM-DD' };
+    return { ok: true, yesterday: v };
+  })()
+`;
+
 interface TradeOverviewDirectFetchResult {
   ok: boolean;
   errors?: string[];
@@ -775,6 +820,74 @@ export const acquireJdTradeOverviewViaCDP = async (
       return empty(true, [
         `Trade summary SPA did not render its date picker within ${maxWaitMs}ms (not logged in or page changed?)`,
       ]);
+    }
+
+    // 5.5. Cross-day freshness guard for getTrend. The tradeSummary date
+    // picker's 'yesterday' quick item is a SPA-boot value in dimVals and
+    // freezes for the tab's lifetime — a long-running tab crossing Beijing
+    // midnight keeps the stale value, shifting getTrend's 7-day categories
+    // by 1 day. The realtime 'today' for getSummary is unaffected (realtime
+    // injects 'now' on every call). The guard reads the page's current
+    // 'yesterday' and reloads the tab once if stale; if still stale after
+    // reload, the whole acquisition fails closed and no Evidence is written
+    // (caller throws on `!result.success`, see historical-acquire.ts:182).
+    const expectedYesterday = expectedPageYesterday();
+    let pageYesterday: string | null = null;
+    let pageYesterdayError: string | null = null;
+    try {
+      const read = await targetPage.evaluate<{ ok: boolean; yesterday?: string; error?: string }>(
+        buildReadPageYesterdayExpr(),
+      );
+      if (read.ok && read.yesterday) pageYesterday = read.yesterday;
+      else pageYesterdayError = read.error ?? 'unknown';
+    } catch (err) {
+      pageYesterdayError = err instanceof Error ? err.message : String(err);
+    }
+
+    if (pageYesterday !== expectedYesterday) {
+      // One reload attempt. The page's webpack modules (99859/4461/22886)
+      // and dimVals are reconstructed on document reload.
+      try {
+        await targetPage.reload({ waitUntil: 'domcontentloaded' });
+        await targetPage.waitForSelector('span.jmt-combo-date-picker-echo-item', {
+          timeout: maxWaitMs,
+        });
+      } catch (err) {
+        return empty(true, [
+          `getTrend cross-day staleness: pageYesterday=${pageYesterday ?? 'null'} (read error: ${pageYesterdayError}), expected=${expectedYesterday}; reload failed: ${err instanceof Error ? err.message : String(err)}`,
+        ]);
+      }
+      // Re-hijack webpack — the reload tears down window.__wr.
+      try {
+        await targetPage.evaluate<void>(
+          `(function(){
+            if (typeof window.__wr !== 'function') {
+              window.webpackChunksz_2024.push(
+                [[Math.floor(Math.random() * 1e9)], {}, (r) => { window.__wr = r; }],
+              );
+            }
+            return undefined;
+          })()`,
+        );
+      } catch {
+        // webpack hijack failure surfaces from the direct-fetch evaluate
+        // below; we don't double-report.
+      }
+      // Re-read yesterday.
+      try {
+        const read = await targetPage.evaluate<{ ok: boolean; yesterday?: string; error?: string }>(
+          buildReadPageYesterdayExpr(),
+        );
+        if (read.ok && read.yesterday) pageYesterday = read.yesterday;
+        else pageYesterdayError = read.error ?? 'unknown';
+      } catch (err) {
+        pageYesterdayError = err instanceof Error ? err.message : String(err);
+      }
+      if (pageYesterday !== expectedYesterday) {
+        return empty(true, [
+          `getTrend cross-day staleness: pageYesterday=${pageYesterday ?? 'null'} (read error: ${pageYesterdayError}), expected=${expectedYesterday}; reload did not refresh dimVals.yesterday — acquisition refused, no Evidence written`,
+        ]);
+      }
     }
 
     // 6. Direct fetch through the page's own signed ajax transport — no UI
