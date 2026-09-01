@@ -842,6 +842,84 @@ export function renderSituationTimeline(detail) {
   );
 }
 
+// ---- P0012 Continuous Observation timeline ----
+//
+// Renders a per-metric time series of Business Time observations
+// (one row per Phase A refresh tick — same hour bucket → no-op dedup).
+// Lifecycle timeline stays unchanged; this section is appended after it
+// and only renders when at least one observation exists. Per-row fields:
+// time (Beijing local via formatLocalTimeTz), baseline → current
+// (both via the metric format in metricFormat), change % with direction
+// arrow, business_time_bucket stamp for cross-day visibility.
+
+function metricFormat(metric) {
+  if (metric === 'gmv') return function (v) { return '¥' + v.toFixed(2); };
+  if (metric === 'orders') return function (v) { return String(Math.round(v)); };
+  if (metric === 'uv') return function (v) { return String(Math.round(v)); };
+  if (metric === 'cvr') return function (v) { return (v * 100).toFixed(1) + '%'; };
+  return function (v) { return String(v); };
+}
+
+function directionArrow(pct) {
+  if (pct > 0) return '↑';
+  if (pct < 0) return '↓';
+  return '·';
+}
+
+export function renderObservationTimeline(observations) {
+  if (!observations || !observations.length) return '';
+  // Group by metric for readability.
+  var byMetric = {};
+  for (var i = 0; i < observations.length; i++) {
+    var o = observations[i];
+    (byMetric[o.metric] = byMetric[o.metric] || []).push(o);
+  }
+  var metricOrder = ['gmv', 'orders', 'uv', 'cvr'];
+  var keys = Object.keys(byMetric).sort(function (a, b) {
+    var ai = metricOrder.indexOf(a); ai = ai < 0 ? 999 : ai;
+    var bi = metricOrder.indexOf(b); bi = bi < 0 ? 999 : bi;
+    return ai - bi;
+  });
+  var sections = '';
+  for (var k = 0; k < keys.length; k++) {
+    var metric = keys[k];
+    var fmt = metricFormat(metric);
+    var rows = byMetric[metric];
+    var items = '';
+    for (var j = 0; j < rows.length; j++) {
+      var o = rows[j];
+      var pct = o.change_pct;
+      var arrow = directionArrow(pct);
+      var pctText = (pct >= 0 ? '+' : '') + pct.toFixed(1) + '%';
+      items +=
+        '<li class="observation-item" data-bucket="' + escHtml(o.business_time_bucket) + '">' +
+        '<time class="timeline-time" datetime="' + escHtml(o.observed_at) + '">' +
+        escHtml(formatLocalTimeTz(o.observed_at)) +
+        '</time>' +
+        '<span class="observation-arrow">' + arrow + '</span>' +
+        '<span class="observation-values">' +
+        escHtml(fmt(o.baseline_value)) + ' → ' + escHtml(fmt(o.current_value)) +
+        '</span>' +
+        '<span class="observation-pct ' + (pct >= 0 ? 'up' : 'down') + '">' +
+        escHtml(pctText) +
+        '</span>' +
+        '</li>';
+    }
+    sections +=
+      '<div class="observation-metric-block" data-metric="' + escHtml(metric) + '">' +
+      '<h4 class="observation-metric-title">' + escHtml(metric) + ' <span class="muted">(' + rows.length + ')</span></h4>' +
+      '<ol class="observation-list">' + items + '</ol>' +
+      '</div>';
+  }
+  return (
+    '<div class="observation-timeline-section">' +
+    '<h3 class="situation-layer-title">📈 持续观察 / Observation Timeline</h3>' +
+    '<p class="muted" style="font-size:0.74rem;margin:0 0 8px 0">P0012 — 每个 hour bucket 由 producer 投影一次。事实持续滚动；判断不自动重跑。</p>' +
+    sections +
+    '</div>'
+  );
+}
+
 // ---- P0010.1 Final Repair — Area C.4 helpers ----
 //
 // Pure functions that pin the behavior of:

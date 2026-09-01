@@ -8,8 +8,28 @@ import { createHash } from 'node:crypto';
 import { EvidenceMetadataSchema, EvidenceRecordSchema } from './types.js';
 import type { EvidenceMetadata, EvidenceRecord, EvidenceListOptions } from './types.js';
 import { uuid } from '#shared/utils/crypto.js';
+import { beijingHourBucketFromISO, nowIso } from '#shared/utils/time.js';
+import type { Database as Db } from 'better-sqlite3';
 
 const EVIDENCE_ROOT = resolve(process.cwd(), 'data', 'evidence');
+
+/**
+ * P0012: optional Database handle for evidence_observations history inserts.
+ * Lazy-injected via setDb so existing callers (no Db) keep working.
+ */
+let _db: Db | undefined;
+export const setEvidenceHistoryDb = (db: Db | undefined): void => {
+  _db = db;
+};
+
+/** Map an evidence `dataType` to its parent capability. Trade.overview
+ *  groups 3 dataTypes (summary/trend/productTop) under one capability. */
+const capabilityForDataType = (dataType: string): string => {
+  if (dataType === 'summary' || dataType === 'trend' || dataType === 'productTop') {
+    return 'trade.overview';
+  }
+  return dataType;
+};
 
 /** Build the evidence file path for a given platform, date, and data type. */
 const evidencePath = (
@@ -34,15 +54,21 @@ const hashPayload = (payload: unknown): string => {
 /**
  * Save raw evidence to the file system.
  * Returns the EvidenceRecord for the saved evidence.
+ *
+ * P0012: also appends an immutable row to `evidence_observations` so the
+ * acquisition history is queryable independent of the (overwritable)
+ * filesystem file. Best-effort: a missing/failed DB does NOT roll back
+ * the filesystem write — Evidence persistence is the source of truth,
+ * the history table is a derived projection.
  */
-export const saveEvidence = (
+export const saveEvidence = async (
   platform: string,
   shopId: string,
   dateStr: string,
   dataType: string,
   payload: unknown,
   overrides: Partial<EvidenceMetadata> = {},
-): EvidenceRecord => {
+): Promise<EvidenceRecord> => {
   const evidenceId = uuid();
   const contentHash = hashPayload(payload);
 
@@ -103,6 +129,33 @@ export const saveEvidence = (
   writeFileSync(metaPath, JSON.stringify(metadata, null, 2), 'utf-8');
 
   const fileSize = Buffer.byteLength(JSON.stringify(payload), 'utf-8');
+
+  // P0012: append immutable history row (best-effort, no rollback on failure)
+  if (_db) {
+    const acquiredAt = metadata.acquired_at;
+    try {
+      _db.prepare(
+        `INSERT OR IGNORE INTO evidence_observations (
+           shop_id, capability, data_type, business_date,
+           business_time_bucket, acquired_at, content_hash,
+           evidence_file_path, content_size, created_at
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ).run(
+        shopId,
+        capabilityForDataType(dataType),
+        dataType,
+        metadata.business_date,
+        beijingHourBucketFromISO(acquiredAt),
+        acquiredAt,
+        contentHash,
+        dataPath,
+        fileSize,
+        nowIso(),
+      );
+    } catch {
+      // best-effort: never fail the acquisition because the history append errored
+    }
+  }
 
   return EvidenceRecordSchema.parse({
     evidence_id: evidenceId,

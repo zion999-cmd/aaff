@@ -155,7 +155,7 @@ export const executeRuntimePipeline = async (
 
     // Step 6: Capture evidence, driven by blueprint evidence_strategy
     const acqMethod = (acquisitionMethod ?? (mock ? 'mock' : 'cdp')) as 'cdp' | 'mock' | 'import-agentcms' | 'unknown';
-    const evidenceResults = captureEvidence(
+    const evidenceResults = await captureEvidence(
       blueprint.platform,
       shopId,
       executionDate,
@@ -341,7 +341,7 @@ export const executeLiveCDPPipeline = async (
       });
 
       // Blueprint-driven evidence capture
-      const evidenceResults = captureEvidence(
+      const evidenceResults = await captureEvidence(
         'jd',
         shopId,
         date,
@@ -519,19 +519,19 @@ export const executeImportPipeline = async (
   for (const r of records) {
     // Save evidence — wrap data in JD API envelope format for compatibility
     // with existing evidence consumers (parseJdPayload expects this shape).
-    saveEvidence('jd', shopId, r.date, 'summary', {
+    await saveEvidence('jd', shopId, r.date, 'summary', {
       header: { code: 0 },
       body: { data: [r.summary] },
     }, { method: 'import-agentcms' });
     totalEvidence++;
 
-    saveEvidence('jd', shopId, r.date, 'trend', {
+    await saveEvidence('jd', shopId, r.date, 'trend', {
       header: { code: 0 },
       body: { data: r.hourly_gmv.map((h) => ({ dt: h.hour, gmv: h.gmv })) },
     }, { method: 'import-agentcms' });
     totalEvidence++;
 
-    saveEvidence('jd', shopId, r.date, 'productTop', {
+    await saveEvidence('jd', shopId, r.date, 'productTop', {
       header: { code: 0 },
       body: {
         data: r.top_products.map((p) => ({

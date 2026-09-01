@@ -27,7 +27,7 @@ describe('JD Pipeline (integration)', () => {
     expect(parsed.top_products.length).toBeGreaterThan(0);
 
     // 3. Evidence
-    const evidenceRecord = saveEvidence('jd', shopId, date, 'summary', result.rawPayload!['summary'] ?? {}, {
+    const evidenceRecord = await saveEvidence('jd', shopId, date, 'summary', result.rawPayload!['summary'] ?? {}, {
       method: result.method,
     });
     expect(evidenceRecord.evidence_id).toBeDefined();

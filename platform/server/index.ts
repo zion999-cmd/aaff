@@ -17,6 +17,7 @@ import { scheduleRouter } from './routes/schedule.js';
 import { outputsRouter } from './routes/outputs.js';
 import { openDb } from '#platform/storage/connection.js';
 import { initDatabase } from '#platform/storage/init.js';
+import { setEvidenceHistoryDb } from '#app/connectors/evidence/store.js';
 import { createScheduledAcquisitionRunner } from '#app/runtime/scheduling/index.js';
 import type { ScheduledAcquisition } from '#app/runtime/scheduling/index.js';
 import { createRuntimeLoop } from '#app/runtime/loop/index.js';
@@ -308,6 +309,9 @@ const main = async (): Promise<void> => {
   // CREATE TABLE IF NOT EXISTS), so the duplicate call inside startServer
   // is a no-op.
   initDatabase(db);
+  // P0012: wire the Evidence Store to the DB so saveEvidence() appends an
+  // immutable row to evidence_observations (observation history).
+  setEvidenceHistoryDb(db);
   try {
     const { bootstrapProductCatalog } = await import(
       '#app/connectors/jd/product-catalog-bootstrap.js'

@@ -43,7 +43,7 @@ const endpointToDataType = (endpoint: string): string => {
  * Falls back to legacy behavior (summary/trend/productTop) if no capture rules
  * match the available payload data — backward compatibility with existing evidence files.
  */
-export const captureEvidence = (
+export const captureEvidence = async (
   platform: string,
   shopId: string,
   date: string,
@@ -51,7 +51,7 @@ export const captureEvidence = (
   captureRules: readonly EvidenceCapture[],
   acquisitionMethod: 'cdp' | 'mock' | 'import-agentcms' | 'unknown',
   processingMethod: 'runtime' | 'replay' | 'import' | 'none',
-): EvidenceCaptureResult[] => {
+): Promise<EvidenceCaptureResult[]> => {
   const results: EvidenceCaptureResult[] = [];
   const processedAt = new Date().toISOString();
 
@@ -67,7 +67,7 @@ export const captureEvidence = (
       if (payload === undefined) continue;
 
       const dataType = endpointToDataType(rule.endpoint);
-      const record = saveEvidence(platform, shopId, date, dataType, payload, {
+      const record = await saveEvidence(platform, shopId, date, dataType, payload, {
         acquisition_method: acquisitionMethod as 'cdp' | 'mock' | 'import-agentcms' | 'unknown',
         processing_method: processingMethod as 'runtime' | 'replay' | 'import' | 'none',
         processed_at: processedAt,
@@ -85,7 +85,7 @@ export const captureEvidence = (
     for (const dataType of legacyTypes) {
       const payload = rawPayloads[dataType];
       if (payload !== undefined) {
-        const record = saveEvidence(platform, shopId, date, dataType, payload, {
+        const record = await saveEvidence(platform, shopId, date, dataType, payload, {
           acquisition_method: acquisitionMethod,
           processing_method: processingMethod,
           processed_at: processedAt,

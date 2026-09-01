@@ -70,3 +70,7 @@ export const beijingHourBucket = (at: Date = new Date()): string => {
   const bjHour = (at.getUTCHours() + 8) % 24;
   return `${beijingDate(at)}T${String(bjHour).padStart(2, '0')}`;
 };
+
+/** Convenience: compute the Beijing hour bucket from an ISO string. */
+export const beijingHourBucketFromISO = (iso: string): string =>
+  beijingHourBucket(new Date(iso));

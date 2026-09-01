@@ -410,7 +410,7 @@ export const createRuntimeLoop = (options: RuntimeLoopOptions): RuntimeLoop => {
     }
 
     // 2. Situation producer — idempotent, deterministic on `situationId`.
-    let situationResult: SituationRunResult = { created: 0, skipped: 0, createdIds: [], situations: [] };
+    let situationResult: SituationRunResult = { created: 0, refreshed: 0, skipped: 0, createdIds: [], situations: [] };
     try {
       situationResult = runSituationProducer(db, { shopId, shopName });
     } catch (err) {

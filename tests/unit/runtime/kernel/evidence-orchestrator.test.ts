@@ -28,14 +28,14 @@ describe('captureEvidence', () => {
   beforeEach(cleanup);
   afterEach(cleanup);
 
-  test('captures evidence for endpoints with capture_raw_response:true and available data', () => {
+  test('captures evidence for endpoints with capture_raw_response:true and available data', async () => {
     const rawPayloads: Record<string, unknown> = {
       'summary.ajax': { gmv: 10000, orders: 50 },
       'trend.ajax': [{ hour: '10:00', gmv: 500 }],
       'getProductList': { products: [] },
     };
 
-    const results = captureEvidence(
+    const results = await captureEvidence(
       'jd', 'jd_shop_001', TEST_DATE, rawPayloads,
       makeCaptureRules(), 'mock', 'runtime',
     );
@@ -51,12 +51,12 @@ describe('captureEvidence', () => {
     expect(endpoints).not.toContain('getProductList');
   });
 
-  test('skips endpoints without data in rawPayloads', () => {
+  test('skips endpoints without data in rawPayloads', async () => {
     const rawPayloads: Record<string, unknown> = {
       'summary.ajax': { gmv: 10000 },
     };
 
-    const results = captureEvidence(
+    const results = await captureEvidence(
       'jd', 'jd_shop_001', TEST_DATE, rawPayloads,
       makeCaptureRules(), 'mock', 'runtime',
     );
@@ -66,12 +66,12 @@ describe('captureEvidence', () => {
     expect(results[0]!.endpoint).toBe('summary.ajax');
   });
 
-  test('converts endpoint names to human-readable data types', () => {
+  test('converts endpoint names to human-readable data types', async () => {
     const rawPayloads: Record<string, unknown> = {
       'summary.ajax': { gmv: 10000 },
     };
 
-    const results = captureEvidence(
+    const results = await captureEvidence(
       'jd', 'jd_shop_001', TEST_DATE, rawPayloads,
       makeCaptureRules(), 'mock', 'runtime',
     );
@@ -79,7 +79,7 @@ describe('captureEvidence', () => {
     expect(results[0]!.dataType).toBe('summary'); // .ajax stripped
   });
 
-  test('falls back to legacy types when no blueprint rules match', () => {
+  test('falls back to legacy types when no blueprint rules match', async () => {
     const rawPayloads: Record<string, unknown> = {
       'summary': { gmv: 10000 },
       'trend': [{ hour: '10:00', gmv: 500 }],
@@ -87,7 +87,7 @@ describe('captureEvidence', () => {
     };
 
     // Empty capture rules — no blueprint match
-    const results = captureEvidence(
+    const results = await captureEvidence(
       'jd', 'jd_shop_001', TEST_DATE, rawPayloads,
       [], 'cdp', 'replay',
     );
@@ -100,12 +100,12 @@ describe('captureEvidence', () => {
     expect(dataTypes).toContain('productTop');
   });
 
-  test('persists evidence files to disk with provenance metadata', () => {
+  test('persists evidence files to disk with provenance metadata', async () => {
     const rawPayloads: Record<string, unknown> = {
       'summary.ajax': { gmv: 10000, orders: 50 },
     };
 
-    captureEvidence(
+    await captureEvidence(
       'jd', 'jd_shop_001', TEST_DATE, rawPayloads,
       makeCaptureRules(), 'cdp', 'runtime',
     );

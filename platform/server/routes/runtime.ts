@@ -618,7 +618,7 @@ export const runtimeRouter = (db: Db): Router => {
           let evidenceCount = 0;
           for (const [dtype, data] of [['summary', r.payload.summary], ['trend', r.payload.trend], ['productTop', r.payload.productTop]] as const) {
             if (data && Array.isArray(data) && data.length > 0) {
-              saveEvidence('jd', 'jd_shop_001', date, `${r.page.id}_${dtype}`, data, {
+              await saveEvidence('jd', 'jd_shop_001', date, `${r.page.id}_${dtype}`, data, {
                 acquisition_method: 'cdp', processing_method: 'runtime', processed_at: now,
                 tags: [`page:${r.page.id}`],
               });

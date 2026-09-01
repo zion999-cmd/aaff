@@ -22,7 +22,7 @@ import { SituationSchema } from '#shared/schemas/learning-context.js';
 import type { RankingProfileName } from '#shared/schemas/ranking.js';
 import { RankingFacade } from '#app/analysis/decision/facade.js';
 import { listProducts } from '#platform/storage/product-repository.js';
-import { nowIso } from '#shared/utils/time.js';
+import { beijingHourBucket, nowIso } from '#shared/utils/time.js';
 import { readFileSync } from 'node:fs';
 import { listEvidence } from '#app/connectors/evidence/store.js';
 import { parseJdSummary } from '#app/connectors/jd/parsers/index.js';
@@ -359,10 +359,45 @@ export const runSituationProducer = (db: Db, options: SituationProducerOptions):
   // Phase A — refresh facts for every open `meaningful_change` situation,
   // independent of `detectSituations` emit (handles metrics whose daily
   // change has cooled below threshold — uv at +10.97%, etc.).
+  //
+  // P0012: also append an immutable observation row to
+  // `situation_observations` (one per (situation, metric, business_time_bucket)).
+  // The UNIQUE INDEX on (situation_id, metric, business_time_bucket) makes
+  // a re-run in the same hour bucket a no-op, so repeated Phase A ticks
+  // don't grow the timeline. Time semantics follow ADR-077: current
+  // (today realtime) vs baseline (yesterday same-time), not previous-day
+  // full-day.
   const existingRefresh = db.prepare(
     `SELECT situation_id, tags FROM situations
        WHERE lifecycle = 'open' AND description LIKE '%较昨日%'`,
   );
+  // Look up the evidence_observations row id for a given metric's
+  // underlying getSummary observation. Read once per Phase A tick —
+  // the evidence list is the same (just one getSummary row per hour).
+  const obsByAcquiredAt = db.prepare(
+    `SELECT id, acquired_at FROM evidence_observations
+     WHERE shop_id = ? AND data_type = 'getSummary'
+     ORDER BY acquired_at DESC`,
+  );
+  const insertObservation = db.prepare(
+    `INSERT OR IGNORE INTO situation_observations (
+       situation_id, metric, business_time_bucket, observed_at,
+       current_value, baseline_value, change_pct,
+       evidence_observation_id, created_at
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  );
+  // Cache evidence id lookups by acquired_at to avoid N table scans.
+  const evidenceIdByAcquiredAt = new Map<string, number>();
+  const resolveEvidenceId = (acquiredAt: string): number | null => {
+    const hit = evidenceIdByAcquiredAt.get(acquiredAt);
+    if (hit !== undefined) return hit;
+    const row = obsByAcquiredAt.get(shopId) as { id: number; acquired_at: string } | undefined;
+    if (row && row.acquired_at === acquiredAt) {
+      evidenceIdByAcquiredAt.set(acquiredAt, row.id);
+      return row.id;
+    }
+    return null;
+  };
   let refreshedByPhaseA = 0;
   const phaseA = db.transaction(() => {
     for (const row of existingRefresh.all() as Array<{ situation_id: string; tags: string }>) {
@@ -388,6 +423,21 @@ export const runSituationProducer = (db: Db, options: SituationProducerOptions):
         facts.acquiredAt,
         facts.contentHash,
         row.situation_id,
+      );
+      // P0012: append observation row in the same transaction as the
+      // latest_* refresh. UNIQUE (situation_id, metric, business_time_bucket)
+      // means a re-run within the same hour bucket is a no-op.
+      const bucket = beijingHourBucket(new Date(facts.acquiredAt));
+      insertObservation.run(
+        row.situation_id,
+        metric,
+        bucket,
+        facts.acquiredAt,
+        facts.currentValue,
+        facts.baselineValue,
+        facts.changePct,
+        resolveEvidenceId(facts.acquiredAt),
+        now,
       );
       refreshedByPhaseA++;
     }
@@ -444,6 +494,21 @@ export const runSituationProducer = (db: Db, options: SituationProducerOptions):
           facts?.acquiredAt ?? null,
           facts?.contentHash ?? null,
         );
+        // P0012: append first observation for a newly detected Situation
+        // (Phase B INSERT branch) — history starts at tick 1, not tick 2.
+        if (facts) {
+          insertObservation.run(
+            s.situationId,
+            metric,
+            beijingHourBucket(new Date(facts.acquiredAt)),
+            facts.acquiredAt,
+            facts.currentValue,
+            facts.baselineValue,
+            facts.changePct,
+            resolveEvidenceId(facts.acquiredAt),
+            now,
+          );
+        }
         created++;
         createdIds.push(s.situationId);
       }

@@ -454,5 +454,26 @@ export const p0007Router = (db: Db): Router => {
     }
   });
 
+  // GET /api/situations/:id/observations — P0012 Continuous Observation timeline.
+  // Returns the situation metric observations sorted by observed_at ASC
+  // (Business Time order). One row per (situation_id, metric, business_time_bucket)
+  // per Phase A refresh tick.
+  router.get('/situations/:id/observations', (req, res) => {
+    try {
+      const situationId = req.params['id'];
+      if (!situationId) { fail(res, 400, 'Missing situation ID'); return; }
+      const rows = db.prepare(
+        `SELECT metric, business_time_bucket, observed_at,
+                current_value, baseline_value, change_pct
+           FROM situation_observations
+           WHERE situation_id = ?
+           ORDER BY observed_at ASC`,
+      ).all(situationId);
+      ok(res, { observations: rows });
+    } catch (err) {
+      fail(res, 500, err instanceof Error ? err.message : 'Failed to load observations');
+    }
+  });
+
   return router;
 };

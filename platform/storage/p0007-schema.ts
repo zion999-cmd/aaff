@@ -87,6 +87,53 @@ const STATEMENTS = [
   // versions we support). Statements below must remain CREATE-only so
   // `db.exec(STATEMENTS.join(';\n'))` stays re-runnable.
 
+  // ── Evidence Observation History (P0012) ────────────────
+  // Immutable. One row per successful saveEvidence call. The
+  // (shop_id, data_type, business_date, acquired_at, content_hash) tuple
+  // is the natural key — retries within the same millisecond that save
+  // the same payload produce no observable observation (UNIQUE INDEX +
+  // INSERT OR IGNORE in store.ts).
+  `CREATE TABLE IF NOT EXISTS evidence_observations (
+    id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+    shop_id               TEXT NOT NULL,
+    capability            TEXT NOT NULL,
+    data_type             TEXT NOT NULL,
+    business_date         TEXT NOT NULL,
+    business_time_bucket  TEXT NOT NULL,
+    acquired_at           TEXT NOT NULL,
+    content_hash          TEXT NOT NULL,
+    evidence_file_path    TEXT NOT NULL,
+    content_size          INTEGER NOT NULL,
+    created_at            TEXT NOT NULL
+  )`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS idx_evidence_observations_natural_key
+    ON evidence_observations(shop_id, data_type, business_date, acquired_at, content_hash)`,
+  `CREATE INDEX IF NOT EXISTS idx_evidence_observations_lookup
+    ON evidence_observations(shop_id, data_type, business_date, acquired_at)`,
+
+  // ── Situation Metric Observation Timeline (P0012) ─────
+  // Append-only. One row per (situation, metric, bucket) per Phase A
+  // refresh. UNIQUE (situation_id, metric, business_time_bucket) prevents
+  // double-insert if the producer re-runs for the same hour. Fact Refresh
+  // and Detection Threshold are decoupled — even after the daily delta
+  // drops below 20%, the existing Situation keeps recording observations.
+  `CREATE TABLE IF NOT EXISTS situation_observations (
+    id                       INTEGER PRIMARY KEY AUTOINCREMENT,
+    situation_id             TEXT NOT NULL,
+    metric                   TEXT NOT NULL,
+    business_time_bucket     TEXT NOT NULL,
+    observed_at              TEXT NOT NULL,
+    current_value            REAL NOT NULL,
+    baseline_value           REAL NOT NULL,
+    change_pct               REAL NOT NULL,
+    evidence_observation_id  INTEGER REFERENCES evidence_observations(id),
+    created_at               TEXT NOT NULL
+  )`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS idx_situation_observations_natural_key
+    ON situation_observations(situation_id, metric, business_time_bucket)`,
+  `CREATE INDEX IF NOT EXISTS idx_situation_observations_lookup
+    ON situation_observations(situation_id, observed_at)`,
+
   // ── Learning Contexts (document store — JSON body) ──────
   `CREATE TABLE IF NOT EXISTS learning_contexts (
     context_id    TEXT PRIMARY KEY,

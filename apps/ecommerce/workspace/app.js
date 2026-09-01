@@ -41,6 +41,7 @@ import {
   renderSourcePopoverHtml,
   // P0010.1 Final Repair — Area B: vertical timeline renderer.
   renderSituationTimeline,
+  renderObservationTimeline,
   timelineEventLabel,
   // P0010.1 Final Repair — Area C.4: intervention-link helpers.
   deriveLatestAgentActivityId,
@@ -1881,6 +1882,25 @@ async function loadSituationDetail(situationId) {
     // which is the correct "no timeline yet" state for a fresh situation.
     if (typeof renderSituationTimeline === 'function') {
       html += renderSituationTimeline(raw);
+    }
+
+    // P0012: Business Time Observation Timeline. Independent fetch from
+    // /api/situations/:id/observations (append-only, immutable history per
+    // Phase A refresh). Failures here MUST NOT mask the Lifecycle timeline.
+    try {
+      var obsResp = await fetch(
+        apiUrl('/api/situations/' + encodeURIComponent(situationId) + '/observations'),
+        { headers: token ? { 'Authorization': 'Bearer ' + token } : {} }
+      );
+      if (obsResp.ok) {
+        var obsBody = await obsResp.json();
+        var observations = (obsBody && obsBody.observations) || [];
+        if (typeof renderObservationTimeline === 'function' && observations.length > 0) {
+          html += renderObservationTimeline(observations);
+        }
+      }
+    } catch {
+      // best-effort; absence of timeline must not block detail render
     }
 
     // P0010.1 REPAIR: 5-state Lifecycle + Observation Commitment hosts.
