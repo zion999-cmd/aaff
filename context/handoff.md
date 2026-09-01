@@ -2949,3 +2949,57 @@ AFTER the dedup check (the correct pattern), so no change needed
 - 风险：hourly cadence 在 process restart 时会重采一次（Map process-local）。当前接受；如需严格 hourly-only 需 persistent scheduler（不在本任务范围）。
 - 风险：fact refresh 不解决"old completed Investigation 与新 fact 不一致" — Re-evaluation Policy 留待。
 - 下一步候选（用户决定）：P0011 Runtime acceptance / skill-knowledge 重叠清理 / cross_signal fact refresh / Re-evaluation Policy 设计。
+
+---
+
+# Handoff — P0012 Continuous Observation / Business Time (2026-09-01, ADR-080)
+
+## 本会话成果
+
+P0012 完成。**把 hourly acquisition 从"保留 latest"升级为"保留 immutable observation history + 持续投影到 Situation observation timeline"**。一次完成 schema + store + producer + workspace API + UI + 8 个新单测 + 真实验收。
+
+## 实现
+
+- **Schema**（`platform/storage/p0007-schema.ts`）— `evidence_observations` + `situation_observations` 两表，PRAGMA-guarded 幂等迁移。UNIQUE 索引分别按 `(shop_id, data_type, business_date, acquired_at, content_hash)` 和 `(situation_id, metric, business_time_bucket)`。
+
+- **Evidence Store**（`apps/ecommerce/connectors/evidence/store.ts`）— `saveEvidence` 改 `async`，写文件后 `INSERT OR IGNORE` 到 `evidence_observations`。`setEvidenceHistoryDb(db)` 注入 DB handle（不注入时降级为纯文件写入，best-effort 失败不阻塞 evidence 持久化）。`captureEvidence` 在 orchestrator 内部亦改 async。
+
+- **Producer**（`apps/ecommerce/runtime/situation/producer.ts`）— Phase A refresh `latest_*` 之后，Phase B INSERT 新 situation 之后，**同 transaction** 各自 INSERT 一行 `situation_observations`。`refreshed` 计数仅含 Phase A（避免 Phase A + Phase B 同一行双计）。`evidence_observation_id` 通过 lookup map 解析，不在 Phase A loop 内做 N+1 查询。
+
+- **Workspace API**（`p0007.ts`）— `GET /api/situations/:id/observations` 按 `observed_at ASC` 返回。
+
+- **Workspace UI**（`presentation.js` + `app.js`）— `renderObservationTimeline(observations)`：按 metric 分组的 per-bucket 列表（`baseline → current + change% + direction arrow`）。不引入新 chart framework。独立 fetch `/observations`（失败不阻塞 detail render）。
+
+- **Server wiring**（`index.ts`）— `initDatabase(db)` 之后立即 `setEvidenceHistoryDb(db)`，让所有 saveEvidence 走 history append。
+
+- **Test 修复**（`evidence-store.test.ts` + `evidence-orchestrator.test.ts`）— `saveEvidence`/`captureEvidence` 改 async 后，老测试需要 `await` + `async` callback（已自动 patch）。
+
+## 真实运行对账
+
+dev server 自动 hourly tick 后：
+
+- `evidence_observations`: 16 行（4 evidence × 4 acquisition + latest）
+- `situation_observations`: 8 行（4 metrics × 2 distinct situations，cross_signal 无 metric tag 故 0 行）
+- `GET /api/situations/sit_bd03a50006e97ecb80da/observations` → `{metric: "gmv", business_time_bucket: "2026-09-01T17", current_value: 7939.19, baseline_value: 3905.27, change_pct: 103.3}` — 与 latest evidence 数字精确匹配
+- 8/9 situation 有 observation（cross_signal 一个 0 行符合 spec 边界）
+
+## 边界守住
+
+- ❌ Investigation policy / threshold / lifecycle / deterministic ID 不动
+- ❌ Evidence 文件层不重写
+- ❌ latest_* column 语义不变
+- ❌ 不引入新 chart framework
+- ❌ 不扩 cross_signal（无 metric tag 显式 skip）
+- ❌ 不顺手 refactor / cleanup
+
+## 测试
+
+- 全量 `npm test` 1277 passed / 1 pre-existing chat contract 30s 超时 flaky / 0 new regression
+- typecheck 0 new error（pre-existing cdp-client.ts:1065 `apiName` unused 无关）
+- 3 个新单测文件：p0012-history（schema 5 cases）、evidence-store-history（3 cases）、situation-observations（4 cases）— 全部 PASS
+
+## 风险 / 建议下一步
+
+- 风险：observation 表按 bucket + metric 索引；`observed_at` 上有 lookup 索引（`idx_situation_observations_lookup`）。一小时 1 行 × 4 metric × 4 situation ≈ 16/天，1 月 ~500 行，可控。
+- 不补：cross_signal 投影、evidence_history TTL、observation 重建回放、Workspace chart。
+- 下一阶段（按用户 9/1 决定方向）：Re-evaluation Policy 设计、当前 hour-bucket 锁 + 跨 day 调研。

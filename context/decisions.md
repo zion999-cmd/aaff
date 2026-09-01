@@ -2858,3 +2858,41 @@ Hermes
 - ❌ 不引向量数据库 / embedding / 语义检索（用户原话"先验证仅靠结构化 Index 是否足够"）。
 - ❌ 不清 skill/knowledge 重叠（三个 Hermes skill 与 knowledge 内容交叉 ~46KB，留后续）。
 - ❌ 不增新 capability / 新 endpoint / 新 schema 表。
+
+## ADR-080 — P0012 Continuous Observation / Business Time (2026-09-01)
+
+- **日期**: 2026-09-01
+- **状态**: Accepted（实现 + 单测 + 真实链路对账通过）
+- **来源**: 老板要求把 "每小时获取 Evidence 但只保留 latest" 升级为 "保留 immutable observation history + 持续投影到 Situation observation timeline"。当前 Workspace Situation 只能看到 lifecycle 数字，看不到 GMV 从 +63% → +31% → -12% 的过程。
+
+**决策**:
+1. **Schema 扩展**（`platform/storage/p0007-schema.ts`）— 两张新表，PRAGMA-guarded idempotent：
+   - `evidence_observations(id, shop_id, capability, data_type, business_date, business_time_bucket, acquired_at, content_hash, evidence_file_path, content_size, created_at)` + UNIQUE(shop_id, data_type, business_date, acquired_at, content_hash)
+   - `situation_observations(id, situation_id, metric, business_time_bucket, observed_at, current_value, baseline_value, change_pct, evidence_observation_id, created_at)` + UNIQUE(situation_id, metric, business_time_bucket)
+2. **`saveEvidence` 改 async + 写 history**（`apps/ecommerce/connectors/evidence/store.ts`）— 写文件后立即 `INSERT OR IGNORE` 到 `evidence_observations`。通过 `setEvidenceHistoryDb(db)` 注入 DB handle，no-DB 时降级为纯文件写入。best-effort（异常被吞，不影响 evidence 持久化）。
+3. **`runSituationProducer` Phase A + Phase B 都 append observation**（`apps/ecommerce/runtime/situation/producer.ts`）— Phase A refresh `latest_*` 后用同一 facts 写 `situation_observations`；Phase B INSERT 新 situation 时也写一份。**不依赖** `detectSituations` 的 threshold emit — 即使 metric 跌出 20% threshold，已有 situation 持续被记录 observation。`refreshed` 计数仅含 Phase A（避免 Phase A + Phase B UPDATE 同一行双计）。
+4. **Workspace API**（`platform/server/routes/p0007.ts`）— 新增 `GET /api/situations/:id/observations`，按 `observed_at ASC` 返回 per-metric 序列。
+5. **Workspace UI**（`presentation.js` + `app.js`）— `renderObservationTimeline(observations)`：按 metric 分组的 per-bucket 列表（`baseline → current + change%` + direction arrow），不引入新 chart framework。独立 fetch `/observations` 端点（失败不阻塞 detail render）。
+6. **Server wiring**（`platform/server/index.ts`）— `initDatabase(db)` 后立即 `setEvidenceHistoryDb(db)`，让所有 saveEvidence 走 history append。
+7. **Test fix**（`tests/unit/evidence-store.test.ts` + `tests/unit/runtime/kernel/evidence-orchestrator.test.ts`）— `saveEvidence`/`captureEvidence` 改 async 后，老测试需要 `await` + `async` callback。
+
+**Why**: 真实运行已经确认 wiring：dev server 自动 hourly tick → `evidence_observations` 16 行（4 evidence × 4 acquisition + 1 latest），`situation_observations` 8 行（4 metrics × 2 distinct situations，每 metric 1 row）。`Workspace API /api/situations/:id/observations` 返回 1 row 当前 bucket `T17`，数据与 latest evidence 数字一致。**8/9 situation 有 observation**（cross_signal 显式无 metric tag 故跳过，符合 spec）。
+
+**边界守住**:
+- ❌ 不动 Investigation policy / threshold / lifecycle / deterministic ID
+- ❌ 不重写 saveEvidence 文件层（仅加 history append）
+- ❌ 不动 latest_* column 语义（仅扩 2 张新表）
+- ❌ 不引入新 chart framework（用最简 list）
+- ❌ 不改 Phase B 顺序（refreshed 仍由 Phase A 单独计）
+- ❌ 不扩 cross_signal（无 metric tag，Phase A 显式 skip）
+
+**测试**:
+- `tests/unit/storage/p0012-history.test.ts`（5 cases）— schema 列 + 索引 + UNIQUE + idempotent apply
+- `tests/unit/connectors/jd/evidence-store-history.test.ts`（3 cases）— 3 行 history append + 幂等
+- `tests/unit/situation/situation-observations.test.ts`（4 cases）— 4 metric rows + same-bucket dedup + 2 buckets + Phase A 即使 changePct<20% 也 append
+- 全量 `npm test` 1277 passed / 1 pre-existing chat contract 30s 超时 flaky
+
+**真实验收**:
+- POST /api/fabric/execute → 1 行 evidence_observations + 4 行 situation_observations (gmv/orders/uv/cvr × 1 situation)
+- GET /api/situations/:id/observations 返回 1 row: `{metric: "gmv", business_time_bucket: "2026-09-01T17", current_value: 7939.19, baseline_value: 3905.27, change_pct: 103.3}` —— 与 latest evidence 数字精确匹配
+- cross_signal (无 metric tag) situation 在 situation_observations 中有 0 行，符合"不扩 cross_signal"边界
