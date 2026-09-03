@@ -242,15 +242,27 @@
     })();
 
     // ── exec (连续回放 / 暂停 / 继续) — single slot, label rotates ──
-    // G2.5-fix: both RUNNING_ACTIVE and RUNNING_IDLE expose "⏸ 暂停"
-    // because the run as a whole is still active in both. The kernel
-    // being mid-flight vs idle is irrelevant to whether the operator
-    // can pause the run.
+    // P0013 P1-1/P1-2-fix (2026-09-04): the canonical signal for
+    // "continuous replay is playing" is `state.playTimer` (UI autoplay
+    // state), NOT `run.status` (server lifecycle). The three orthogonal
+    // concepts are:
+    //   1. run.status         — server lifecycle (READY/RUNNING/PAUSED/...)
+    //   2. execution cursor   — run.currentBusinessDate
+    //   3. viewed date        — state.viewedDate (pure UI)
+    //   4. continuous play    — state.playTimer !== null (NEW, separate)
+    // Mapping (canonical semantics):
+    //   playTimer active                            → "⏸ 暂停", mode=pause
+    //   run.status==='PAUSED' && !playTimer         → "▶ 继续", mode=resume
+    //   uiState ∈ {READY, RUNNING_IDLE} && !playTimer → "▶ 连续回放", mode=play
+    //   otherwise                                    → disabled
+    // P1-2: this also fixes the "READY + isPlaying=true → 连续回放
+    // disabled for 5s" window — the moment playTimer is set, exec
+    // re-derives to "⏸ 暂停" enabled, so the operator can stop the
+    // first scheduled advance.
     const exec = (() => {
-      if (uiState === 'READY') {
-        return { enabled: !isAdvancing && !isPlaying, label: '▶ 连续回放', mode: 'play' };
-      }
-      if (uiState === 'RUNNING_ACTIVE' || uiState === 'RUNNING_IDLE') {
+      if (isPlaying) {
+        // Continuous play is active. Always offer to pause it, no
+        // matter what run.status is.
         return { enabled: !isAdvancing, label: '⏸ 暂停', mode: 'pause' };
       }
       if (uiState === 'PAUSED') {
@@ -262,7 +274,15 @@
       if (uiState === 'COMPLETED') {
         return { enabled: false, label: '已完成', reason: '回放已完成' };
       }
-      return { enabled: false, label: '连续回放' };
+      if (uiState === 'RUNNING_ACTIVE') {
+        // Kernel mid-flight. Don't start a parallel autoplay; the
+        // kernel is the driver. Once it returns, uiState becomes
+        // RUNNING_IDLE and play becomes available.
+        return { enabled: false, label: '▶ 连续回放', reason: '当前 step 正在执行' };
+      }
+      // READY, RUNNING_IDLE — run can accept more execution and
+      // playTimer is not active, so the operator can start autoplay.
+      return { enabled: !isAdvancing, label: '▶ 连续回放', mode: 'play' };
     })();
 
     // ── retry (重试这一天) — current execution day re-run ──
@@ -426,10 +446,15 @@
     // operator confusion about which run the view is showing.
     // P0013 G1.6-fix: PAUSED is allowed (the operator explicitly paused
     // the run — usually to start fresh). Only RUNNING blocks restart.
+    // P0013 P1-3-fix (2026-09-04): confirm before creating a new Run.
+    // The old Run is preserved in DB; only the view's pointer changes.
     // eslint-disable-next-line no-console
     console.log('[replay] control clicked: restart', 'currentRunId=', state.runId, 'status=', state.run && state.run.status);
     if (state.run && state.run.status === 'RUNNING') {
       alert('当前 run 还在 RUNNING，请先点「⏸ 暂停」再开始新一次。');
+      return;
+    }
+    if (!confirm('将创建一次新的历史回放，现有回放记录不会删除。')) {
       return;
     }
     const btn = document.getElementById('replayRestartBtn');
@@ -448,12 +473,17 @@
         console.log('[replay] restart created new runId=', result.body.data.runId);
         state.runId = result.body.data.runId;
         await refreshRunState();
-        // Re-render the start panel header to the new run (in case the
-        // operator wants to see the start panel state too — the start
-        // panel stays hidden once a run exists, but the controls are
-        // already visible because we don't hide them).
-        // The new run starts at READY with currentStep=0; showControls
-        // is already wired so timeline / status / controls render.
+        // P0013 P0-2-fix (2026-09-04): the new Run's executionCursor
+        // is its startBusinessDate (2026-08-04). The OLD viewedDate
+        // (e.g. 2026-09-02 if the operator was browsing the end of
+        // the previous Run) is now invalid — pointing past the new
+        // Run's startBusinessDate disables Next and orphans the
+        // timeline. Reset viewedDate to the new Run's cursor before
+        // applyControls / renderTimeline, so 下一天 is enabled and
+        // the timeline starts on 08-04.
+        if (state.run) {
+          state.viewedDate = state.run.currentBusinessDate || state.run.startBusinessDate;
+        }
         showControls();
         // The new run starts at step 0, so the timeline is all ○ except
         // the ◀ Current on 08-04. The user clicks [▶ 下一天] to begin.
@@ -471,42 +501,54 @@
     }
   };
 
+  // The 6 stable buttons are bound to their handlers EXACTLY ONCE
+  // (P0013 P0-1-fix, 2026-09-04). Previous implementation called
+  // addEventListener inside showControls() every time it ran, which
+  // caused:
+  //   - duplicate advance requests on every click after the first
+  //     re-entry (start / restart / view-switch)
+  //   - duplicate restart Run creation
+  //   - multiple play timers (setInterval) that the stopPlay path
+  //     could not drain
+  // We use `btn.onclick = ...` (which overwrites any prior binding)
+  // and gate the entire binding block behind a one-time guard. The
+  // guard lives at module scope so it survives re-entries of
+  // loadReplay / onRestartClick / view-leave-handler churn.
+  let controlsBound = false;
+  const bindControlHandlers = () => {
+    if (controlsBound) return;
+    const prevBtn = document.getElementById('replayPrevBtn');
+    const nextBtn = document.getElementById('replayNextBtn');
+    const execBtn = document.getElementById('replayExecBtn');
+    const retryBtn = document.getElementById('replayRetryBtn');
+    const skipBtn = document.getElementById('replaySkipBtn');
+    const restartBtn = document.getElementById('replayRestartBtn');
+    if (prevBtn) prevBtn.onclick = onPrevClick;
+    if (nextBtn) nextBtn.onclick = onNextClick;
+    if (execBtn) execBtn.onclick = onExecClick;
+    if (retryBtn) retryBtn.onclick = onRetryClick;
+    if (skipBtn) skipBtn.onclick = onSkipClick;
+    if (restartBtn) restartBtn.onclick = onRestartClick;
+    controlsBound = true;
+    // eslint-disable-next-line no-console
+    console.log('[replay] controls bound: prev/next/exec/retry/skip/restart (6 stable, one-time)');
+  };
+
   const showControls = () => {
     const el = document.getElementById('replayControls');
     if (el) el.style.display = '';
     const start = document.getElementById('replayStartPanel');
     if (start) start.style.display = 'none';
-    // addEventListener (not onclick) so any subsequent code that does
-    // .onclick = null cannot silently kill the handler. Click any
-    // control after Start — if no advance happens, open DevTools
-    // console; you'll see "[replay] control clicked: next" if the
-    // listener is wired.
-    document.getElementById('replayPrevBtn').addEventListener('click', onPrevClick);
-    document.getElementById('replayNextBtn').addEventListener('click', onNextClick);
-    // P0013 G2.4-fix (2026-09-04): play/pause/resume are ONE button
-    // (#replayExecBtn). Label rotates via deriveReplayControls
-    // (▶ 连续回放 / ⏸ 暂停 / ▶ 继续). Click handler dispatches by
-    // the current control's `mode`.
-    document.getElementById('replayExecBtn').addEventListener('click', onExecClick);
-    // P0013 G2.4-fix: retry + skip are STABLE buttons. Always in
-    // the DOM, just disabled when not applicable. State changes
-    // flow through deriveReplayControls (applyControls after every
-    // action).
-    const retryBtn = document.getElementById('replayRetryBtn');
-    if (retryBtn) retryBtn.addEventListener('click', onRetryClick);
-    const skipBtn = document.getElementById('replaySkipBtn');
-    if (skipBtn) skipBtn.addEventListener('click', onSkipClick);
-    // P0013 G-fix: "↻ 开始新一次回放" handler. Always bound; gated at
-    // handler entry by the run.status check (refuses while RUNNING/PAUSED).
-    const restartBtn = document.getElementById('replayRestartBtn');
-    if (restartBtn) restartBtn.addEventListener('click', onRestartClick);
+    // Bind handlers EXACTLY ONCE per page-load. The guard inside
+    // bindControlHandlers ensures subsequent showControls() calls
+    // (from onStartClick, onRestartClick, refreshRunState) only
+    // toggle visibility and re-apply the state-machine output.
+    bindControlHandlers();
     // P0013 G2.4: apply controls immediately so the buttons reflect
     // the current state on first render. Critical for orphan RUNNING
     // runs: the pause label must be "⏸ 暂停" (not the default "▶ 连
     // 续回放") on page load, BEFORE the operator clicks anything.
     applyControls();
-    // eslint-disable-next-line no-console
-    console.log('[replay] controls bound: prev/next/exec/retry/skip/restart (6 stable)');
   };
 
   // P0013 G2.4-fix: pure navigation. Moves state.viewedDate to the
@@ -762,16 +804,30 @@
   // (the step row exists with status=SKIPPED_NO_DATA), and the
   // operator can re-try it later (via a future "revisit skipped
   // days" feature; P0013+ follow-up).
+  //
+  // P0013 P1-4-fix (2026-09-04): skip mutates replay execution state
+  // (the server's runReplayRunStep advances the cursor), so it MUST
+  // follow the same single-flight discipline as Next/Retry:
+  //   1. Refuse if isAdvancing (no double-tap, no parallel advance).
+  //   2. Wrap the API call in setIsAdvancing(true/false).
+  //   3. Restore control state in finally (applyControls) so the
+  //      button reflects the post-API state even on error.
+  // Do not rely only on btn.disabled — the state machine (isAdvancing)
+  // is the source of truth.
   const onSkipClick = async () => {
     // eslint-disable-next-line no-console
     console.log('[replay] control clicked: skip', 'runId=', state.runId, 'status=', state.run && state.run.status);
     if (!state.runId) return;
+    if (state.isAdvancing) {
+      // eslint-disable-next-line no-console
+      console.log('[replay] skip skipped: previous advance still in flight (', elapsedSeconds(), 's)');
+      return;
+    }
     if (!confirm('确定要跳过当前 step 吗？这一步的数据会被标记为 SKIPPED_NO_DATA，可后续重新访问。')) {
       return;
     }
     stopPlay();
-    const btn = document.getElementById('replaySkipBtn');
-    if (btn) btn.disabled = true;
+    setIsAdvancing(true);
     try {
       const result = await apiPost('/api/replay/runs/' + state.runId + '/advance', { mode: 'skip' });
       // eslint-disable-next-line no-console
@@ -797,7 +853,11 @@
       console.error('[replay] skip threw:', err);
       alert('跳过这一步异常: ' + (err instanceof Error ? err.message : String(err)));
     } finally {
-      if (btn) btn.disabled = false;
+      setIsAdvancing(false);
+      // P1-4: restore the control bar from the state machine, not
+      // from a button.disabled flag (which was the prior P0-1 root
+      // cause — it desyncs from the state machine on error).
+      applyControls();
     }
   };
 
