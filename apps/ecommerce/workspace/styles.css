@@ -1104,22 +1104,50 @@ ul, ol { list-style: none; }
   background: var(--panel);
   border-top: 1px solid var(--border);
   box-shadow: 0 -2px 6px rgba(0, 0, 0, 0.06);
-  padding: 12px 20px;
-  display: flex;
-  align-items: flex-end;
-  gap: 10px;
+  padding: 10px 20px 12px;
 }
+/* P0012 IA Finalization — vertical 3-layer composer:
+   Layer 1  quick replies (chips)  →  Layer 2  textarea  →  Layer 3  send. */
+#situationChatComposer .situation-chat-composer-body {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+/* Layer 1 — Quick Reply chips (text templates, not actions). */
+.situation-quick-replies {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.situation-quick-replies-label {
+  font-size: 0.7rem;
+  font-weight: 600;
+  color: var(--muted);
+}
+.situation-quick-reply {
+  font-size: 0.76rem;
+  font-weight: 500;
+  padding: 3px 12px;
+  border-radius: 14px;
+  border: 1px solid var(--border);
+  background: var(--panel);
+  color: var(--text);
+  cursor: pointer;
+  transition: background 0.12s, border-color 0.12s, color 0.12s;
+}
+.situation-quick-reply:hover {
+  background: var(--primary);
+  color: #fff;
+  border-color: var(--primary);
+}
+/* Layer 2 — three-row textarea; flexible vertical resize. */
 #situationChatComposer .situation-chat-composer-inner {
   display: flex;
   width: 100%;
-  gap: 10px;
-  align-items: flex-end;
 }
-/* Three-row textarea input (HTML rows="3"); flexible vertical resize
-   up to 8 rows; Send button aligns to the bottom-right (where the
-   Enter-to-send shortcut indicator sits too). */
 #situationChatComposer textarea.input {
-  flex: 1;
+  width: 100%;
   font-size: 0.85rem;
   font-family: var(--font-body);
   line-height: 1.5;
@@ -1133,7 +1161,6 @@ ul, ol { list-style: none; }
   max-height: 240px;
   outline: none;
   transition: border-color 0.12s, box-shadow 0.12s;
-  resize: vertical;
 }
 #situationChatComposer textarea.input:focus {
   border-color: var(--primary);
@@ -1143,76 +1170,34 @@ ul, ol { list-style: none; }
   color: var(--muted, #94a3b8);
   line-height: 1.5;
 }
+/* Layer 3 — send button, right-aligned below the textarea. */
+#situationChatComposer .situation-chat-composer-actions {
+  display: flex;
+  justify-content: flex-end;
+}
 #situationChatComposer button.btn.primary {
-  flex: 0 0 auto;
   font-size: 0.82rem;
   font-weight: 600;
   padding: 8px 18px;
   border-radius: 8px;
-  /* Aligns with the bottom of the textarea so multi-row doesn't push
-     the button down. */
-  margin-bottom: 1px;
 }
 body.has-situation-chat-composer .view-scroll {
   /* Reserve room for the fixed composer so the last block can scroll
-     fully into view above it. ~96px = composer + textarea max height
-     visible + a margin. */
-  padding-bottom: 96px;
+     fully into view above it. ~140px = composer + 3-layer height + margin. */
+  padding-bottom: 140px;
 }
 /* Mobile (single-column): composer spans viewport edge-to-edge. */
 @media (max-width: 600px) {
   #situationChatComposer { left: 0; right: 0; padding: 10px 12px; }
   #situationChatComposer textarea.input { font-size: 0.8rem; }
-  body.has-situation-chat-composer .view-scroll { padding-bottom: 80px; }
+  body.has-situation-chat-composer .view-scroll { padding-bottom: 120px; }
 }
 
-/* ── P0012 Workspace IA: quick-reply feedback chips + sticky right panel ──
-   The 6 canonical feedback buttons (judgment + recommendation) now render
-   as chips mounted above the persistent Chat composer (renderFeedbackChips
-   in app.js). The recommendation row is hidden when no recommendation is
-   persisted on the situation. The right decision-panel column is
-   sticky-top so the operator can see the most-recent Observation no
-   matter where they scroll in the main column. */
-.feedback-chips {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  padding: 0 0 4px 0;
-}
-.feedback-chip-row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
-}
-.feedback-chip-label {
-  font-size: 0.72rem;
-  font-weight: 600;
-  color: var(--muted);
-  min-width: 56px;
-}
-.feedback-chip-buttons {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-}
-.feedback-chip {
-  font-size: 0.76rem;
-  font-weight: 500;
-  padding: 4px 10px;
-  border-radius: 14px;
-  border: 1px solid var(--border);
-  background: var(--panel);
-  color: var(--text);
-  cursor: pointer;
-  transition: background 0.12s, border-color 0.12s, color 0.12s;
-}
-.feedback-chip:hover {
-  background: var(--primary);
-  color: #fff;
-  border-color: var(--primary);
-}
-.feedback-chip:active { transform: translateY(1px); }
+/* ── P0012 Workspace IA: sticky right trace column ──
+   The right decision-panel column is sticky-top so the operator can see
+   the most-recent Observation no matter where they scroll in the main
+   column. The old .feedback-chips styles (6-button quick-reply cards) are
+   REMOVED — quick replies are now inline text templates in the composer. */
 
 /* Sticky right trace column: the .decision-panel that already hosts
    Lifecycle + Observation Timeline is allowed to scroll independently
@@ -1230,4 +1215,204 @@ body.has-situation-chat-composer .view-scroll {
    the fixed composer at the bottom. */
 body.has-situation-chat-composer #decisionPanel.open .decision-rail {
   padding-bottom: 96px;
+}
+
+/* ═══ P0013 Historical Cognitive Replay — Workspace view ═══════════════
+   Sidebar section "历史经营" + view #view-replay with 5 sub-regions.
+   IA mirrors Situation Detail (Understanding / Judgment / Recommendation /
+   Unknowns / Evidence Gaps / Source references / Execution Status). The
+   .replay-cell is a small clickable date marker; .replay-section is a
+   card-shaped block in the daily view; .replay-execution is the §14
+   boundary banner (literal "Replay Recommendation — Not Executed"). */
+
+/* P0013 G2.4-fix (2026-09-04): visual group separators between the
+   3 control groups (Navigation / Execution / Recovery+Reset). The
+   6 buttons themselves are NEVER removed from the DOM (only enabled
+   /disabled/label/loading rotate); the separators are stable too. */
+.replay-ctrl-sep {
+  display: inline-block;
+  width: 1px;
+  height: 20px;
+  background: var(--border, #e5e7eb);
+  margin: 0 4px;
+  vertical-align: middle;
+}
+#replayControls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 0;
+}
+.replay-start-panel {
+  padding: 24px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  max-width: 720px;
+}
+.replay-start-panel .replay-dataset-check {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 0.84rem;
+  color: var(--text);
+  padding: 12px 14px;
+  background: var(--bg-strong);
+  border-radius: var(--radius-sm);
+}
+.replay-start-panel .replay-dataset-check .replay-info { color: var(--muted); font-size: 0.74rem; }
+.replay-start-panel .replay-dataset-check .replay-info.ok { color: var(--success); }
+
+.replay-controls {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  padding: 12px 14px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  flex-wrap: wrap;
+}
+.replay-controls .replay-status-text {
+  font-size: 0.78rem;
+  color: var(--muted);
+  font-family: var(--font-mono);
+  margin-left: auto;
+}
+
+.replay-timeline {
+  padding: 14px 16px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+}
+.replay-timeline-title {
+  font-size: 0.85rem;
+  font-weight: 600;
+  margin-bottom: 10px;
+}
+.replay-timeline-cells {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(56px, 1fr));
+  gap: 6px;
+}
+.replay-cell {
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  padding: 6px 4px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  text-align: center;
+  transition: background 0.12s, border-color 0.12s, color 0.12s;
+  color: var(--text);
+}
+.replay-cell:hover {
+  border-color: var(--primary);
+  color: var(--primary);
+}
+.replay-cell:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+
+.replay-daily {
+  padding: 16px 18px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.replay-daily-date {
+  font-family: var(--font-display);
+  font-size: 1.05rem;
+  font-weight: 600;
+}
+/* P0013 G2.3-fix (2026-09-04): the daily content area (which carries
+   the 7 §29 sections + observed_facts + evidence_refs list) grows
+   without bound as evidence and judgment text accumulate. Cap the
+   height at 60vh and let the inner content scroll, so the daily
+   view never overflows the page. The date header stays sticky
+   inside the scrollable area so the operator always knows which
+   day they're inspecting. */
+.replay-daily-content {
+  max-height: 60vh;
+  overflow-y: auto;
+  padding-right: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+/* P0013 G2.3-fix: same scroll treatment for the monthly review body
+   (10 §19 sections, each a list). Without this the August review
+   takes over the page. */
+.replay-monthly-review .replay-monthly-content {
+  max-height: 60vh;
+  overflow-y: auto;
+  padding-right: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.replay-section {
+  padding: 10px 12px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  font-size: 0.84rem;
+  line-height: 1.5;
+}
+.replay-section h5 {
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin-bottom: 6px;
+}
+.replay-section p,
+.replay-section ul {
+  color: var(--text);
+}
+.replay-section ul {
+  list-style: disc;
+  padding-left: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+/* §14 boundary banner — always literal, never green. */
+.replay-execution {
+  background: #fffbeb;
+  border-color: #fcd34d;
+}
+.replay-badge {
+  display: inline-block;
+  font-size: 0.7rem;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 4px;
+  background: #fef3c7;
+  color: #b45309;
+  margin-right: 6px;
+  vertical-align: middle;
+}
+.replay-badge[data-coverage="COMPLETE"] { background: #dcfce7; color: #166534; }
+.replay-badge[data-coverage="PARTIAL"] { background: #fffbeb; color: #b45309; }
+
+.replay-monthly-review {
+  padding: 16px 18px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
 }

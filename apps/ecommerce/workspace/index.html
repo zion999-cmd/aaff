@@ -57,6 +57,12 @@
           <a href="#" class="sidebar-item disabled" aria-disabled="true" title="等待 Situation lifecycle 终态协议落地（closed_at / Resolution Engine）"><span class="sidebar-icon">📦</span><span>Situation 归档</span><span class="unimplemented-badge">待 Lifecycle 终态</span></a>
         </div>
         <div class="sidebar-divider"></div>
+        <!-- P0013 — 历史经营 (Historical Cognitive Replay) -->
+        <div class="sidebar-section">
+          <div class="sidebar-section-label">历史经营</div>
+          <a href="#" class="sidebar-item" data-view="replay"><span class="sidebar-icon">⏮</span><span>历史回放</span></a>
+        </div>
+        <div class="sidebar-divider"></div>
         <!-- 系统/高级 — downgraded -->
         <div class="sidebar-section">
           <div class="sidebar-section-label">系统 / Advanced</div>
@@ -195,6 +201,58 @@
           </div>
 
           <div class="runtime-executions" style="max-height:50vh;overflow-y:auto"><h3 style="font-size:0.85rem;margin-bottom:8px;position:sticky;top:0;background:var(--bg);z-index:1;padding:4px 0">执行历史 <span id="runtimeExecCount" class="muted" style="font-size:0.72rem"></span></h3><div id="runtimeExecutionsList" class="muted placeholder">加载中...</div></div><div id="runtimeDetail" style="display:none;margin-top:16px"><h3 style="font-size:0.85rem;margin-bottom:8px">执行详情</h3><div id="runtimeDetailContent"></div></div></div>
+
+        <!-- P0013 — Historical Cognitive Replay view -->
+        <div id="view-replay" class="view-container">
+          <div class="view-title-row">
+            <h2 class="view-title">⏮ 历史回放</h2>
+            <span class="muted">在严格的历史时间边界下，重放 Agent 对每天的认知形成</span>
+          </div>
+          <div id="replayStartPanel">
+            <h3>开始一次回放</h3>
+            <div class="replay-info">
+              <div>店铺: <strong>祁门红茶官方旗舰店</strong></div>
+              <div>数据: <span class="replay-dataset-check">✓ 交易概况</span> / <span class="replay-dataset-check">✓ 订单明细</span></div>
+              <div>数据范围: <strong>2026-08-04 → 2026-09-02</strong> (30 天)</div>
+              <div>数据完整性: <strong id="replayCoverageText">30 天 (完整)</strong></div>
+              <div>步长: 每日</div>
+            </div>
+            <button id="replayStartBtn" class="btn btn-primary">开始历史回放</button>
+          </div>
+          <div id="replayControls" style="display:none">
+            <!-- P0013 G2.4-fix (2026-09-04): 6 STABLE buttons in fixed order.
+                 Once a run exists, ALL 6 are always present in the DOM.
+                 State changes only affect enabled/disabled/label/loading/click
+                 behavior — NEVER removes a button. Order is fixed:
+                   Navigation : 上一天   下一天
+                   Execution  : 连续回放 / 暂停 / 继续  (single slot, label rotates)
+                   Recovery   : 重试这一天   跳过这一天
+                   Reset      : 重新回放
+                 The 3 separators are CSS-only and stay in DOM too. -->
+            <button id="replayPrevBtn" class="btn" disabled>◀ 上一天</button>
+            <button id="replayNextBtn" class="btn btn-primary" disabled>▶ 下一天</button>
+            <span class="replay-ctrl-sep" aria-hidden="true"></span>
+            <button id="replayExecBtn" class="btn" disabled>▶ 连续回放</button>
+            <span class="replay-ctrl-sep" aria-hidden="true"></span>
+            <button id="replayRetryBtn" class="btn" disabled title="重新执行当前失败的 step">🔄 重试这一天</button>
+            <button id="replaySkipBtn" class="btn" disabled title="明确放弃当前 step 并标记 SKIPPED_NO_DATA">⏭ 跳过这一天</button>
+            <span class="replay-ctrl-sep" aria-hidden="true"></span>
+            <button id="replayRestartBtn" class="btn" disabled title="创建一次新的历史回放 Run (旧 Run 保留)">↻ 重新回放</button>
+            <span id="replayStatusText" class="muted"></span>
+          </div>
+          <div id="replayTimeline" style="display:none">
+            <h4>时间轴</h4>
+            <div id="replayTimelineCells" class="replay-timeline-cells"></div>
+          </div>
+          <div id="replayDailyView" style="display:none">
+            <h4 id="replayDailyDate"></h4>
+            <div id="replayDailyContent" class="replay-daily-content"></div>
+          </div>
+          <div id="replayMonthlyReview" style="display:none">
+            <h4>月度总结</h4>
+            <div id="replayMonthlyContent"></div>
+          </div>
+        </div>
 
         <!-- v0.2 Phase 2: Agent Session — primary workspace view -->
         <div id="view-agentSession" class="view-container active">
@@ -372,6 +430,7 @@
     <section class="toast-wrap"><div id="toast" class="toast"></div></section>
     <script src="./interaction-grammar.js"></script>
     <script src="./output-labels.js"></script>
+    <script src="./views/replay-view.js"></script>
     <script type="module" src="./app.js"></script>
   </body>
 </html>
