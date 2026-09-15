@@ -1,0 +1,93 @@
+2026-09-07
+STEP 状态
+
+COMPLETED step 1 / 2
+
+发生了什么 (OBSERVED FACTS)
+
+从 Hermes 实际读取的证据（snapshot.observed_facts，evidenceAcquired）：
+
+09-07 本店GMV=13116.27，同行业GMV≈36343.16（id=5505）
+09-07 订单46、金额13116.27、AOV≈285.14（id=5517/5529）
+09-07 价带：0-50=1、50-100=13、100-300=20、300-1000=9、1000+=3；¥1=0
+09-07 top父单¥1390/¥1344/¥1190.69；ex-top1 AOV≈260.58；ex-all-1000+ AOV≈213.76
+09-07 父单SKU顶部为金奖纪念款/福合/1915等礼盒，托盘非主导
+09-02..09-06 订单结构依次呈现多单低客单、托量+脉冲、中间态、高客单
+
+本 step 可见的 evidence_observations（按 visibleEvidenceFor SQL 过滤，business_date ≤ 2026-09-07）：
+
+evidence_observations.id=5500 | business_date=2026-09-02
+evidence_observations.id=5501 | business_date=2026-09-03
+evidence_observations.id=5502 | business_date=2026-09-04
+evidence_observations.id=5503 | business_date=2026-09-05
+evidence_observations.id=5504 | business_date=2026-09-06
+evidence_observations.id=5505 | business_date=2026-09-07
+evidence_observations.id=5512 | business_date=2026-09-02
+evidence_observations.id=5513 | business_date=2026-09-03
+evidence_observations.id=5514 | business_date=2026-09-04
+evidence_observations.id=5515 | business_date=2026-09-05
+evidence_observations.id=5516 | business_date=2026-09-06
+evidence_observations.id=5517 | business_date=2026-09-07
+evidence_observations.id=5524 | business_date=2026-09-02
+evidence_observations.id=5525 | business_date=2026-09-03
+evidence_observations.id=5526 | business_date=2026-09-04
+evidence_observations.id=5527 | business_date=2026-09-05
+evidence_observations.id=5528 | business_date=2026-09-06
+evidence_observations.id=5529 | business_date=2026-09-07
+AGENT 当前理解 (UNDERSTANDING)
+
+截至2026-09-07，店铺成交已从窗口前段的多单低客单/中间态切换到以礼盒与中高价口粮为主的高客单结构，并在今日叠加多笔千元礼盒大单。当日GMV抬升主要来自订单结构（客单维持高位 + 千元脉冲层），剔除全部千元单后剩余客单仍落在高客单带，说明并非只靠极端大单堆峰值。流量来源、转化漏斗与运营动作记录仍不可见，但商品+订单结构已足以解释当日业务状态；不宜把峰值GMV当作可复制增长锚点，也不宜据此加投或深折。
+
+AGENT 判断 (JUDGMENT)
+
+09-07业务状态健康解读应落在订单/商品结构，而非曲线本身：店铺处于严格高客单结构，并叠加礼盒千元脉冲层抬高当日GMV；剔除脉冲后剩余客单仍高，说明高客单底座仍在。窗口内已从多单低客单/中间态切到高客单主导，结构切换本身是主叙事。流量、转化、运营动作 evidenceless，但不阻断「结构已足以解释成交形态、且无需按异常去加投/深折」的判断；峰值GMV不可作KPI锚。
+
+AGENT 建议 (RECOMMENDATION)
+
+observe: 维持观察：按订单结构门禁阅读下一业务日（高客单续存/软化/中间态/多单回摆 + 是否再发千元脉冲），不要把09-07峰值GMV设为追赶锚，也不要因GMV上行而加投或加码折扣。
+
+仍待确认 (UNKNOWNS)
+UV/PV及流量来源（自然/付费/活动/外部）拆分
+CVR及访客→下单漏斗、加购数据
+是否有大促报名、优惠券/定价、投放或页面变更等运营动作
+千元单是否企业礼赠/老客集中采购（买家身份不可得）
+退款/取消/售后是否改写净成交（冻结行无该字段）
+缺少的 EVIDENCE (EVIDENCE GAPS)
+UV/PV及流量来源拆分（自然/付费/活动/外部）
+CVR与访客→下单/加购漏斗
+运营动作记录（活动报名、券与定价、投放、库存、页面变更）
+买家身份（是否企业礼赠/老客）
+退款/取消/售后对净GMV的调整
+EVIDENCE (SOURCE REFERENCES)
+evidence_observations.id=5500 | business_date=2026-09-02
+evidence_observations.id=5501 | business_date=2026-09-03
+evidence_observations.id=5502 | business_date=2026-09-04
+evidence_observations.id=5503 | business_date=2026-09-05
+evidence_observations.id=5504 | business_date=2026-09-06
+evidence_observations.id=5505 | business_date=2026-09-07
+evidence_observations.id=5512 | business_date=2026-09-02
+evidence_observations.id=5513 | business_date=2026-09-03
+evidence_observations.id=5514 | business_date=2026-09-04
+evidence_observations.id=5515 | business_date=2026-09-05
+evidence_observations.id=5516 | business_date=2026-09-06
+evidence_observations.id=5517 | business_date=2026-09-07
+evidence_observations.id=5524 | business_date=2026-09-02
+evidence_observations.id=5525 | business_date=2026-09-03
+evidence_observations.id=5526 | business_date=2026-09-04
+evidence_observations.id=5527 | business_date=2026-09-05
+evidence_observations.id=5528 | business_date=2026-09-06
+evidence_observations.id=5529 | business_date=2026-09-07
+执行状态
+
+Replay Recommendation — Not Executed (P0013 §14)
+
+Reason: P0013 Replay 不执行 Replay Recommendation。仅记录为 proposal。
+
+补充这一天当时发生的情况 Business Date: 2026-09-07 · 录入时间仅次要 · 只追加不改原始 Evidence
+已 replay（补充将把本日及以后标 stale）
+该业务日暂无补充（追加保存，不覆盖历史）。
+fact — 客观事实
+action — 运营动作
+operator_feedback — 人的判断（非客观 Evidence）
+保存补充
+保存并重放这一天

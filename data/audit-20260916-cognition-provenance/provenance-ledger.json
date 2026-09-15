@@ -1,0 +1,1889 @@
+{
+ "audited_at": "2026-09-16",
+ "method": "Field-level equality between persisted cognition (Fabric SQLite) and JSON objects emitted by the model, read from Hermes own ~/.hermes/state.db messages table. Step->turn correlation is by timestamp (|delta| <= 150s, local=UTC+8) plus the replay prompt marker in the turn log; see step-to-hermes-turn-correlation.json. stub_literal matches the retired httpStubKernel placeholder text.",
+ "runs": [
+  {
+   "run_id": "105e6f5e-ac3d-4429-9cf8-27b597fd5944",
+   "status": "COMPLETED",
+   "window": "2026-08-04..2026-09-02",
+   "created_at": "2026-09-03T13:49:51.225Z",
+   "manifest_hash": "placeholder-hash",
+   "hermes_sessions": [],
+   "models": [],
+   "snapshots": 30,
+   "verdict": "PROVEN_STUB_NOT_HERMES",
+   "per_snapshot": [
+    {
+     "business_date": "2026-08-04",
+     "stub_literal": true,
+     "judgment_matches_hermes": false,
+     "understanding_matches_hermes": false
+    },
+    {
+     "business_date": "2026-08-05",
+     "stub_literal": true,
+     "judgment_matches_hermes": false,
+     "understanding_matches_hermes": false
+    },
+    {
+     "business_date": "2026-08-06",
+     "stub_literal": true,
+     "judgment_matches_hermes": false,
+     "understanding_matches_hermes": false
+    },
+    {
+     "business_date": "2026-08-07",
+     "stub_literal": true,
+     "judgment_matches_hermes": false,
+     "understanding_matches_hermes": false
+    },
+    {
+     "business_date": "2026-08-08",
+     "stub_literal": true,
+     "judgment_matches_hermes": false,
+     "understanding_matches_hermes": false
+    },
+    {
+     "business_date": "2026-08-09",
+     "stub_literal": true,
+     "judgment_matches_hermes": false,
+     "understanding_matches_hermes": false
+    },
+    {
+     "business_date": "2026-08-10",
+     "stub_literal": true,
+     "judgment_matches_hermes": false,
+     "understanding_matches_hermes": false
+    },
+    {
+     "business_date": "2026-08-11",
+     "stub_literal": true,
+     "judgment_matches_hermes": false,
+     "understanding_matches_hermes": false
+    },
+    {
+     "business_date": "2026-08-12",
+     "stub_literal": true,
+     "judgment_matches_hermes": false,
+     "understanding_matches_hermes": false
+    },
+    {
+     "business_date": "2026-08-13",
+     "stub_literal": true,
+     "judgment_matches_hermes": false,
+     "understanding_matches_hermes": false
+    },
+    {
+     "business_date": "2026-08-14",
+     "stub_literal": true,
+     "judgment_matches_hermes": false,
+     "understanding_matches_hermes": false
+    },
+    {
+     "business_date": "2026-08-15",
+     "stub_literal": true,
+     "judgment_matches_hermes": false,
+     "understanding_matches_hermes": false
+    },
+    {
+     "business_date": "2026-08-16",
+     "stub_literal": true,
+     "judgment_matches_hermes": false,
+     "understanding_matches_hermes": false
+    },
+    {
+     "business_date": "2026-08-17",
+     "stub_literal": true,
+     "judgment_matches_hermes": false,
+     "understanding_matches_hermes": false
+    },
+    {
+     "business_date": "2026-08-18",
+     "stub_literal": true,
+     "judgment_matches_hermes": false,
+     "understanding_matches_hermes": false
+    },
+    {
+     "business_date": "2026-08-19",
+     "stub_literal": true,
+     "judgment_matches_hermes": false,
+     "understanding_matches_hermes": false
+    },
+    {
+     "business_date": "2026-08-20",
+     "stub_literal": true,
+     "judgment_matches_hermes": false,
+     "understanding_matches_hermes": false
+    },
+    {
+     "business_date": "2026-08-21",
+     "stub_literal": true,
+     "judgment_matches_hermes": false,
+     "understanding_matches_hermes": false
+    },
+    {
+     "business_date": "2026-08-22",
+     "stub_literal": true,
+     "judgment_matches_hermes": false,
+     "understanding_matches_hermes": false
+    },
+    {
+     "business_date": "2026-08-23",
+     "stub_literal": true,
+     "judgment_matches_hermes": false,
+     "understanding_matches_hermes": false
+    },
+    {
+     "business_date": "2026-08-24",
+     "stub_literal": true,
+     "judgment_matches_hermes": false,
+     "understanding_matches_hermes": false
+    },
+    {
+     "business_date": "2026-08-25",
+     "stub_literal": true,
+     "judgment_matches_hermes": false,
+     "understanding_matches_hermes": false
+    },
+    {
+     "business_date": "2026-08-26",
+     "stub_literal": true,
+     "judgment_matches_hermes": false,
+     "understanding_matches_hermes": false
+    },
+    {
+     "business_date": "2026-08-27",
+     "stub_literal": true,
+     "judgment_matches_hermes": false,
+     "understanding_matches_hermes": false
+    },
+    {
+     "business_date": "2026-08-28",
+     "stub_literal": true,
+     "judgment_matches_hermes": false,
+     "understanding_matches_hermes": false
+    },
+    {
+     "business_date": "2026-08-29",
+     "stub_literal": true,
+     "judgment_matches_hermes": false,
+     "understanding_matches_hermes": false
+    },
+    {
+     "business_date": "2026-08-30",
+     "stub_literal": true,
+     "judgment_matches_hermes": false,
+     "understanding_matches_hermes": false
+    },
+    {
+     "business_date": "2026-08-31",
+     "stub_literal": true,
+     "judgment_matches_hermes": false,
+     "understanding_matches_hermes": false
+    },
+    {
+     "business_date": "2026-09-01",
+     "stub_literal": true,
+     "judgment_matches_hermes": false,
+     "understanding_matches_hermes": false
+    },
+    {
+     "business_date": "2026-09-02",
+     "stub_literal": true,
+     "judgment_matches_hermes": false,
+     "understanding_matches_hermes": false
+    }
+   ]
+  },
+  {
+   "run_id": "990c258b-cb22-439d-be52-faa0cf53fd80",
+   "status": "COMPLETED",
+   "window": "2026-08-04..2026-09-02",
+   "created_at": "2026-09-03T16:46:59.719Z",
+   "manifest_hash": "placeholder-hash",
+   "hermes_sessions": [
+    "20260904_004702_e21ba6",
+    "20260904_005238_b7ed88",
+    "20260904_014125_776db9",
+    "20260904_014527_809873"
+   ],
+   "models": [
+    "ark-code-latest"
+   ],
+   "snapshots": 25,
+   "verdict": "PROVEN_HERMES",
+   "per_snapshot": [
+    {
+     "business_date": "2026-08-04",
+     "stub_literal": false,
+     "judgment_matches_hermes": true,
+     "understanding_matches_hermes": true
+    },
+    {
+     "business_date": "2026-08-05",
+     "stub_literal": false,
+     "judgment_matches_hermes": true,
+     "understanding_matches_hermes": true
+    },
+    {
+     "business_date": "2026-08-06",
+     "stub_literal": false,
+     "judgment_matches_hermes": true,
+     "understanding_matches_hermes": true
+    },
+    {
+     "business_date": "2026-08-07",
+     "stub_literal": false,
+     "judgment_matches_hermes": true,
+     "understanding_matches_hermes": true
+    },
+    {
+     "business_date": "2026-08-08",
+     "stub_literal": false,
+     "judgment_matches_hermes": true,
+     "understanding_matches_hermes": true
+    },
+    {
+     "business_date": "2026-08-09",
+     "stub_literal": false,
+     "judgment_matches_hermes": true,
+     "understanding_matches_hermes": true
+    },
+    {
+     "business_date": "2026-08-10",
+     "stub_literal": false,
+     "judgment_matches_hermes": true,
+     "understanding_matches_hermes": true
+    },
+    {
+     "business_date": "2026-08-11",
+     "stub_literal": false,
+     "judgment_matches_hermes": true,
+     "understanding_matches_hermes": true
+    },
+    {
+     "business_date": "2026-08-12",
+     "stub_literal": false,
+     "judgment_matches_hermes": true,
+     "understanding_matches_hermes": true
+    },
+    {
+     "business_date": "2026-08-13",
+     "stub_literal": false,
+     "judgment_matches_hermes": true,
+     "understanding_matches_hermes": true
+    },
+    {
+     "business_date": "2026-08-14",
+     "stub_literal": false,
+     "judgment_matches_hermes": true,
+     "understanding_matches_hermes": true
+    },
+    {
+     "business_date": "2026-08-15",
+     "stub_literal": false,
+     "judgment_matches_hermes": true,
+     "understanding_matches_hermes": true
+    },
+    {
+     "business_date": "2026-08-16",
+     "stub_literal": false,
+     "judgment_matches_hermes": true,
+     "understanding_matches_hermes": true
+    },
+    {
+     "business_date": "2026-08-17",
+     "stub_literal": false,
+     "judgment_matches_hermes": true,
+     "understanding_matches_hermes": true
+    },
+    {
+     "business_date": "2026-08-18",
+     "stub_literal": false,
+     "judgment_matches_hermes": true,
+     "understanding_matches_hermes": true
+    },
+    {
+     "business_date": "2026-08-19",
+     "stub_literal": false,
+     "judgment_matches_hermes": true,
+     "understanding_matches_hermes": true
+    },
+    {
+     "business_date": "2026-08-20",
+     "stub_literal": false,
+     "judgment_matches_hermes": true,
+     "understanding_matches_hermes": true
+    },
+    {
+     "business_date": "2026-08-21",
+     "stub_literal": false,
+     "judgment_matches_hermes": true,
+     "understanding_matches_hermes": true
+    },
+    {
+     "business_date": "2026-08-22",
+     "stub_literal": false,
+     "judgment_matches_hermes": true,
+     "understanding_matches_hermes": true
+    },
+    {
+     "business_date": "2026-08-23",
+     "stub_literal": false,
+     "judgment_matches_hermes": true,
+     "understanding_matches_hermes": true
+    },
+    {
+     "business_date": "2026-08-24",
+     "stub_literal": false,
+     "judgment_matches_hermes": true,
+     "understanding_matches_hermes": true
+    },
+    {
+     "business_date": "2026-08-25",
+     "stub_literal": false,
+     "judgment_matches_hermes": true,
+     "understanding_matches_hermes": true
+    },
+    {
+     "business_date": "2026-08-26",
+     "stub_literal": false,
+     "judgment_matches_hermes": true,
+     "understanding_matches_hermes": true
+    },
+    {
+     "business_date": "2026-08-27",
+     "stub_literal": false,
+     "judgment_matches_hermes": true,
+     "understanding_matches_hermes": true
+    },
+    {
+     "business_date": "2026-09-02",
+     "stub_literal": false,
+     "judgment_matches_hermes": true,
+     "understanding_matches_hermes": true
+    }
+   ]
+  },
+  {
+   "run_id": "98fb54e0-dd29-4d4e-81b5-78076909015c",
+   "status": "COMPLETED",
+   "window": "2026-08-04..2026-09-02",
+   "created_at": "2026-09-03T20:20:14.331Z",
+   "manifest_hash": "placeholder-hash",
+   "hermes_sessions": [
+    "20260904_042017_34036a",
+    "20260904_044119_cb2a21"
+   ],
+   "models": [
+    "ark-code-latest"
+   ],
+   "snapshots": 30,
+   "verdict": "PROVEN_HERMES",
+   "per_snapshot": [
+    {
+     "business_date": "2026-08-04",
+     "stub_literal": false,
+     "judgment_matches_hermes": true,
+     "understanding_matches_hermes": true
+    },
+    {
+     "business_date": "2026-08-05",
+     "stub_literal": false,
+     "judgment_matches_hermes": true,
+     "understanding_matches_hermes": true
+    },
+    {
+     "business_date": "2026-08-06",
+     "stub_literal": false,
+     "judgment_matches_hermes": true,
+     "understanding_matches_hermes": true
+    },
+    {
+     "business_date": "2026-08-07",
+     "stub_literal": false,
+     "judgment_matches_hermes": true,
+     "understanding_matches_hermes": true
+    },
+    {
+     "business_date": "2026-08-08",
+     "stub_literal": false,
+     "judgment_matches_hermes": true,
+     "understanding_matches_hermes": true
+    },
+    {
+     "business_date": "2026-08-09",
+     "stub_literal": false,
+     "judgment_matches_hermes": true,
+     "understanding_matches_hermes": true
+    },
+    {
+     "business_date": "2026-08-10",
+     "stub_literal": false,
+     "judgment_matches_hermes": true,
+     "understanding_matches_hermes": true
+    },
+    {
+     "business_date": "2026-08-11",
+     "stub_literal": false,
+     "judgment_matches_hermes": true,
+     "understanding_matches_hermes": true
+    },
+    {
+     "business_date": "2026-08-12",
+     "stub_literal": false,
+     "judgment_matches_hermes": true,
+     "understanding_matches_hermes": true
+    },
+    {
+     "business_date": "2026-08-13",
+     "stub_literal": false,
+     "judgment_matches_hermes": true,
+     "understanding_matches_hermes": true
+    },
+    {
+     "business_date": "2026-08-14",
+     "stub_literal": false,
+     "judgment_matches_hermes": true,
+     "understanding_matches_hermes": true
+    },
+    {
+     "business_date": "2026-08-15",
+     "stub_literal": false,
+     "judgment_matches_hermes": true,
+     "understanding_matches_hermes": true
+    },
+    {
+     "business_date": "2026-08-16",
+     "stub_literal": false,
+     "judgment_matches_hermes": true,
+     "understanding_matches_hermes": true
+    },
+    {
+     "business_date": "2026-08-17",
+     "stub_literal": false,
+     "judgment_matches_hermes": true,
+     "understanding_matches_hermes": true
+    },
+    {
+     "business_date": "2026-08-18",
+     "stub_literal": false,
+     "judgment_matches_hermes": true,
+     "understanding_matches_hermes": true
+    },
+    {
+     "business_date": "2026-08-19",
+     "stub_literal": false,
+     "judgment_matches_hermes": true,
+     "understanding_matches_hermes": true
+    },
+    {
+     "business_date": "2026-08-20",
+     "stub_literal": false,
+     "judgment_matches_hermes": true,
+     "understanding_matches_hermes": true
+    },
+    {
+     "business_date": "2026-08-21",
+     "stub_literal": false,
+     "judgment_matches_hermes": true,
+     "understanding_matches_hermes": true
+    },
+    {
+     "business_date": "2026-08-22",
+     "stub_literal": false,
+     "judgment_matches_hermes": true,
+     "understanding_matches_hermes": true
+    },
+    {
+     "business_date": "2026-08-23",
+     "stub_literal": false,
+     "judgment_matches_hermes": true,
+     "understanding_matches_hermes": true
+    },
+    {
+     "business_date": "2026-08-24",
+     "stub_literal": false,
+     "judgment_matches_hermes": true,
+     "understanding_matches_hermes": true
+    },
+    {
+     "business_date": "2026-08-25",
+     "stub_literal": false,
+     "judgment_matches_hermes": true,
+     "understanding_matches_hermes": true
+    },
+    {
+     "business_date": "2026-08-26",
+     "stub_literal": false,
+     "judgment_matches_hermes": true,
+     "understanding_matches_hermes": true
+    },
+    {
+     "business_date": "2026-08-27",
+     "stub_literal": false,
+     "judgment_matches_hermes": true,
+     "understanding_matches_hermes": true
+    },
+    {
+     "business_date": "2026-08-28",
+     "stub_literal": false,
+     "judgment_matches_hermes": true,
+     "understanding_matches_hermes": true
+    },
+    {
+     "business_date": "2026-08-29",
+     "stub_literal": false,
+     "judgment_matches_hermes": true,
+     "understanding_matches_hermes": true
+    },
+    {
+     "business_date": "2026-08-30",
+     "stub_literal": false,
+     "judgment_matches_hermes": true,
+     "understanding_matches_hermes": true
+    },
+    {
+     "business_date": "2026-08-31",
+     "stub_literal": false,
+     "judgment_matches_hermes": true,
+     "understanding_matches_hermes": true
+    },
+    {
+     "business_date": "2026-09-01",
+     "stub_literal": false,
+     "judgment_matches_hermes": true,
+     "understanding_matches_hermes": true
+    },
+    {
+     "business_date": "2026-09-02",
+     "stub_literal": false,
+     "judgment_matches_hermes": true,
+     "understanding_matches_hermes": true
+    }
+   ]
+  },
+  {
+   "run_id": "9bc882e7-4616-4a38-8d67-26a2cac6c6c7",
+   "status": "COMPLETED",
+   "window": "2026-08-04..2026-09-02",
+   "created_at": "2026-09-06T15:51:37.113Z",
+   "manifest_hash": "placeholder-hash",
+   "hermes_sessions": [
+    "20260907_040851_f42a43"
+   ],
+   "models": [
+    "ark-code-latest"
+   ],
+   "snapshots": 30,
+   "verdict": "PROVEN_HERMES",
+   "per_snapshot": [
+    {
+     "business_date": "2026-08-04",
+     "stub_literal": false,
+     "judgment_matches_hermes": true,
+     "understanding_matches_hermes": true
+    },
+    {
+     "business_date": "2026-08-05",
+     "stub_literal": false,
+     "judgment_matches_hermes": true,
+     "understanding_matches_hermes": true
+    },
+    {
+     "business_date": "2026-08-06",
+     "stub_literal": false,
+     "judgment_matches_hermes": true,
+     "understanding_matches_hermes": true
+    },
+    {
+     "business_date": "2026-08-07",
+     "stub_literal": false,
+     "judgment_matches_hermes": true,
+     "understanding_matches_hermes": true
+    },
+    {
+     "business_date": "2026-08-08",
+     "stub_literal": false,
+     "judgment_matches_hermes": true,
+     "understanding_matches_hermes": true
+    },
+    {
+     "business_date": "2026-08-09",
+     "stub_literal": false,
+     "judgment_matches_hermes": true,
+     "understanding_matches_hermes": true
+    },
+    {
+     "business_date": "2026-08-10",
+     "stub_literal": false,
+     "judgment_matches_hermes": true,
+     "understanding_matches_hermes": true
+    },
+    {
+     "business_date": "2026-08-11",
+     "stub_literal": false,
+     "judgment_matches_hermes": true,
+     "understanding_matches_hermes": true
+    },
+    {
+     "business_date": "2026-08-12",
+     "stub_literal": false,
+     "judgment_matches_hermes": true,
+     "understanding_matches_hermes": true
+    },
+    {
+     "business_date": "2026-08-13",
+     "stub_literal": false,
+     "judgment_matches_hermes": true,
+     "understanding_matches_hermes": true
+    },
+    {
+     "business_date": "2026-08-14",
+     "stub_literal": false,
+     "judgment_matches_hermes": true,
+     "understanding_matches_hermes": true
+    },
+    {
+     "business_date": "2026-08-15",
+     "stub_literal": false,
+     "judgment_matches_hermes": true,
+     "understanding_matches_hermes": true
+    },
+    {
+     "business_date": "2026-08-16",
+     "stub_literal": false,
+     "judgment_matches_hermes": true,
+     "understanding_matches_hermes": true
+    },
+    {
+     "business_date": "2026-08-17",
+     "stub_literal": false,
+     "judgment_matches_hermes": true,
+     "understanding_matches_hermes": true
+    },
+    {
+     "business_date": "2026-08-18",
+     "stub_literal": false,
+     "judgment_matches_hermes": true,
+     "understanding_matches_hermes": true
+    },
+    {
+     "business_date": "2026-08-19",
+     "stub_literal": false,
+     "judgment_matches_hermes": true,
+     "understanding_matches_hermes": true
+    },
+    {
+     "business_date": "2026-08-20",
+     "stub_literal": false,
+     "judgment_matches_hermes": true,
+     "understanding_matches_hermes": true
+    },
+    {
+     "business_date": "2026-08-21",
+     "stub_literal": false,
+     "judgment_matches_hermes": true,
+     "understanding_matches_hermes": true
+    },
+    {
+     "business_date": "2026-08-22",
+     "stub_literal": false,
+     "judgment_matches_hermes": true,
+     "understanding_matches_hermes": true
+    },
+    {
+     "business_date": "2026-08-23",
+     "stub_literal": false,
+     "judgment_matches_hermes": true,
+     "understanding_matches_hermes": true
+    },
+    {
+     "business_date": "2026-08-24",
+     "stub_literal": false,
+     "judgment_matches_hermes": true,
+     "understanding_matches_hermes": true
+    },
+    {
+     "business_date": "2026-08-25",
+     "stub_literal": false,
+     "judgment_matches_hermes": true,
+     "understanding_matches_hermes": true
+    },
+    {
+     "business_date": "2026-08-26",
+     "stub_literal": false,
+     "judgment_matches_hermes": true,
+     "understanding_matches_hermes": true
+    },
+    {
+     "business_date": "2026-08-27",
+     "stub_literal": false,
+     "judgment_matches_hermes": true,
+     "understanding_matches_hermes": true
+    },
+    {
+     "business_date": "2026-08-28",
+     "stub_literal": false,
+     "judgment_matches_hermes": true,
+     "understanding_matches_hermes": true
+    },
+    {
+     "business_date": "2026-08-29",
+     "stub_literal": false,
+     "judgment_matches_hermes": true,
+     "understanding_matches_hermes": true
+    },
+    {
+     "business_date": "2026-08-30",
+     "stub_literal": false,
+     "judgment_matches_hermes": true,
+     "understanding_matches_hermes": true
+    },
+    {
+     "business_date": "2026-08-31",
+     "stub_literal": false,
+     "judgment_matches_hermes": true,
+     "understanding_matches_hermes": true
+    },
+    {
+     "business_date": "2026-09-01",
+     "stub_literal": false,
+     "judgment_matches_hermes": true,
+     "understanding_matches_hermes": true
+    },
+    {
+     "business_date": "2026-09-02",
+     "stub_literal": false,
+     "judgment_matches_hermes": true,
+     "understanding_matches_hermes": true
+    }
+   ]
+  },
+  {
+   "run_id": "16468bd3-61a6-404a-abbc-c26416f03c0b",
+   "status": "COMPLETED",
+   "window": "2026-08-04..2026-09-02",
+   "created_at": "2026-09-12T09:05:03.485Z",
+   "manifest_hash": "df8783a72fa21d9f98bf743ed95413f4de781c96ccc3fd569c7ffb7b0dd0499a",
+   "hermes_sessions": [
+    "20260912_170503_e58ddd",
+    "20260912_180606_32e7b9",
+    "20260912_184410_d3b15f",
+    "20260912_191643_a6b3d2",
+    "20260912_194507_cf0ca4",
+    "20260912_200845_fd3805"
+   ],
+   "models": [
+    "ark-code-latest"
+   ],
+   "snapshots": 30,
+   "verdict": "PROVEN_HERMES",
+   "per_snapshot": [
+    {
+     "business_date": "2026-08-04",
+     "stub_literal": false,
+     "judgment_matches_hermes": true,
+     "understanding_matches_hermes": true
+    },
+    {
+     "business_date": "2026-08-05",
+     "stub_literal": false,
+     "judgment_matches_hermes": true,
+     "understanding_matches_hermes": true
+    },
+    {
+     "business_date": "2026-08-06",
+     "stub_literal": false,
+     "judgment_matches_hermes": true,
+     "understanding_matches_hermes": true
+    },
+    {
+     "business_date": "2026-08-07",
+     "stub_literal": false,
+     "judgment_matches_hermes": true,
+     "understanding_matches_hermes": true
+    },
+    {
+     "business_date": "2026-08-08",
+     "stub_literal": false,
+     "judgment_matches_hermes": true,
+     "understanding_matches_hermes": true
+    },
+    {
+     "business_date": "2026-08-09",
+     "stub_literal": false,
+     "judgment_matches_hermes": true,
+     "understanding_matches_hermes": true
+    },
+    {
+     "business_date": "2026-08-10",
+     "stub_literal": false,
+     "judgment_matches_hermes": true,
+     "understanding_matches_hermes": true
+    },
+    {
+     "business_date": "2026-08-11",
+     "stub_literal": false,
+     "judgment_matches_hermes": true,
+     "understanding_matches_hermes": true
+    },
+    {
+     "business_date": "2026-08-12",
+     "stub_literal": false,
+     "judgment_matches_hermes": true,
+     "understanding_matches_hermes": true
+    },
+    {
+     "business_date": "2026-08-13",
+     "stub_literal": false,
+     "judgment_matches_hermes": true,
+     "understanding_matches_hermes": true
+    },
+    {
+     "business_date": "2026-08-14",
+     "stub_literal": false,
+     "judgment_matches_hermes": true,
+     "understanding_matches_hermes": true
+    },
+    {
+     "business_date": "2026-08-15",
+     "stub_literal": false,
+     "judgment_matches_hermes": true,
+     "understanding_matches_hermes": true
+    },
+    {
+     "business_date": "2026-08-16",
+     "stub_literal": false,
+     "judgment_matches_hermes": true,
+     "understanding_matches_hermes": true
+    },
+    {
+     "business_date": "2026-08-17",
+     "stub_literal": false,
+     "judgment_matches_hermes": true,
+     "understanding_matches_hermes": true
+    },
+    {
+     "business_date": "2026-08-18",
+     "stub_literal": false,
+     "judgment_matches_hermes": true,
+     "understanding_matches_hermes": true
+    },
+    {
+     "business_date": "2026-08-19",
+     "stub_literal": false,
+     "judgment_matches_hermes": true,
+     "understanding_matches_hermes": true
+    },
+    {
+     "business_date": "2026-08-20",
+     "stub_literal": false,
+     "judgment_matches_hermes": true,
+     "understanding_matches_hermes": true
+    },
+    {
+     "business_date": "2026-08-21",
+     "stub_literal": false,
+     "judgment_matches_hermes": true,
+     "understanding_matches_hermes": true
+    },
+    {
+     "business_date": "2026-08-22",
+     "stub_literal": false,
+     "judgment_matches_hermes": true,
+     "understanding_matches_hermes": true
+    },
+    {
+     "business_date": "2026-08-23",
+     "stub_literal": false,
+     "judgment_matches_hermes": true,
+     "understanding_matches_hermes": true
+    },
+    {
+     "business_date": "2026-08-24",
+     "stub_literal": false,
+     "judgment_matches_hermes": true,
+     "understanding_matches_hermes": true
+    },
+    {
+     "business_date": "2026-08-25",
+     "stub_literal": false,
+     "judgment_matches_hermes": true,
+     "understanding_matches_hermes": true
+    },
+    {
+     "business_date": "2026-08-26",
+     "stub_literal": false,
+     "judgment_matches_hermes": true,
+     "understanding_matches_hermes": true
+    },
+    {
+     "business_date": "2026-08-27",
+     "stub_literal": false,
+     "judgment_matches_hermes": true,
+     "understanding_matches_hermes": true
+    },
+    {
+     "business_date": "2026-08-28",
+     "stub_literal": false,
+     "judgment_matches_hermes": true,
+     "understanding_matches_hermes": true
+    },
+    {
+     "business_date": "2026-08-29",
+     "stub_literal": false,
+     "judgment_matches_hermes": true,
+     "understanding_matches_hermes": true
+    },
+    {
+     "business_date": "2026-08-30",
+     "stub_literal": false,
+     "judgment_matches_hermes": true,
+     "understanding_matches_hermes": true
+    },
+    {
+     "business_date": "2026-08-31",
+     "stub_literal": false,
+     "judgment_matches_hermes": true,
+     "understanding_matches_hermes": true
+    },
+    {
+     "business_date": "2026-09-01",
+     "stub_literal": false,
+     "judgment_matches_hermes": true,
+     "understanding_matches_hermes": true
+    },
+    {
+     "business_date": "2026-09-02",
+     "stub_literal": false,
+     "judgment_matches_hermes": true,
+     "understanding_matches_hermes": true
+    }
+   ]
+  },
+  {
+   "run_id": "bd669163-3a63-47de-b78a-6118ac19922a",
+   "status": "COMPLETED",
+   "window": "2026-09-02..2026-09-13",
+   "created_at": "2026-09-13T22:07:05.814Z",
+   "manifest_hash": "87613e010d44493b2ed58c500ed47dd847c15cbae9136cacd2390d6a71e77fec",
+   "hermes_sessions": [
+    "20260914_060714_e31092"
+   ],
+   "models": [
+    "grok-4.5"
+   ],
+   "snapshots": 12,
+   "verdict": "PROVEN_HERMES",
+   "per_snapshot": [
+    {
+     "business_date": "2026-09-02",
+     "stub_literal": false,
+     "judgment_matches_hermes": true,
+     "understanding_matches_hermes": true
+    },
+    {
+     "business_date": "2026-09-03",
+     "stub_literal": false,
+     "judgment_matches_hermes": true,
+     "understanding_matches_hermes": true
+    },
+    {
+     "business_date": "2026-09-04",
+     "stub_literal": false,
+     "judgment_matches_hermes": true,
+     "understanding_matches_hermes": true
+    },
+    {
+     "business_date": "2026-09-05",
+     "stub_literal": false,
+     "judgment_matches_hermes": true,
+     "understanding_matches_hermes": true
+    },
+    {
+     "business_date": "2026-09-06",
+     "stub_literal": false,
+     "judgment_matches_hermes": true,
+     "understanding_matches_hermes": true
+    },
+    {
+     "business_date": "2026-09-07",
+     "stub_literal": false,
+     "judgment_matches_hermes": true,
+     "understanding_matches_hermes": true
+    },
+    {
+     "business_date": "2026-09-08",
+     "stub_literal": false,
+     "judgment_matches_hermes": true,
+     "understanding_matches_hermes": true
+    },
+    {
+     "business_date": "2026-09-09",
+     "stub_literal": false,
+     "judgment_matches_hermes": true,
+     "understanding_matches_hermes": true
+    },
+    {
+     "business_date": "2026-09-10",
+     "stub_literal": false,
+     "judgment_matches_hermes": true,
+     "understanding_matches_hermes": true
+    },
+    {
+     "business_date": "2026-09-11",
+     "stub_literal": false,
+     "judgment_matches_hermes": true,
+     "understanding_matches_hermes": true
+    },
+    {
+     "business_date": "2026-09-12",
+     "stub_literal": false,
+     "judgment_matches_hermes": true,
+     "understanding_matches_hermes": true
+    },
+    {
+     "business_date": "2026-09-13",
+     "stub_literal": false,
+     "judgment_matches_hermes": true,
+     "understanding_matches_hermes": true
+    }
+   ]
+  },
+  {
+   "run_id": "bd4edf24-86f5-4aee-a2ac-f2acdc1ac0ae",
+   "status": "PAUSED",
+   "window": "2026-09-08..2026-09-12",
+   "created_at": "2026-09-14T12:04:22.942Z",
+   "manifest_hash": "87613e010d44493b2ed58c500ed47dd847c15cbae9136cacd2390d6a71e77fec",
+   "hermes_sessions": [
+    "20260914_200445_c60db0",
+    "20260914_202500_deb3dc"
+   ],
+   "models": [
+    "grok-4.5"
+   ],
+   "snapshots": 2,
+   "verdict": "PROVEN_HERMES",
+   "per_snapshot": [
+    {
+     "business_date": "2026-09-08",
+     "stub_literal": false,
+     "judgment_matches_hermes": true,
+     "understanding_matches_hermes": true
+    },
+    {
+     "business_date": "2026-09-09",
+     "stub_literal": false,
+     "judgment_matches_hermes": true,
+     "understanding_matches_hermes": true
+    }
+   ]
+  },
+  {
+   "run_id": "cb110066-929c-4672-8210-6026682d40be",
+   "status": "COMPLETED",
+   "window": "2026-09-02..2026-09-12",
+   "created_at": "2026-09-14T13:28:16.219Z",
+   "manifest_hash": "87613e010d44493b2ed58c500ed47dd847c15cbae9136cacd2390d6a71e77fec",
+   "hermes_sessions": [
+    "20260914_212824_b82a4e"
+   ],
+   "models": [
+    "grok-4.5"
+   ],
+   "snapshots": 11,
+   "verdict": "PROVEN_HERMES",
+   "per_snapshot": [
+    {
+     "business_date": "2026-09-02",
+     "stub_literal": false,
+     "judgment_matches_hermes": true,
+     "understanding_matches_hermes": true
+    },
+    {
+     "business_date": "2026-09-03",
+     "stub_literal": false,
+     "judgment_matches_hermes": true,
+     "understanding_matches_hermes": true
+    },
+    {
+     "business_date": "2026-09-04",
+     "stub_literal": false,
+     "judgment_matches_hermes": true,
+     "understanding_matches_hermes": true
+    },
+    {
+     "business_date": "2026-09-05",
+     "stub_literal": false,
+     "judgment_matches_hermes": true,
+     "understanding_matches_hermes": true
+    },
+    {
+     "business_date": "2026-09-06",
+     "stub_literal": false,
+     "judgment_matches_hermes": true,
+     "understanding_matches_hermes": true
+    },
+    {
+     "business_date": "2026-09-07",
+     "stub_literal": false,
+     "judgment_matches_hermes": true,
+     "understanding_matches_hermes": true
+    },
+    {
+     "business_date": "2026-09-08",
+     "stub_literal": false,
+     "judgment_matches_hermes": true,
+     "understanding_matches_hermes": true
+    },
+    {
+     "business_date": "2026-09-09",
+     "stub_literal": false,
+     "judgment_matches_hermes": true,
+     "understanding_matches_hermes": true
+    },
+    {
+     "business_date": "2026-09-10",
+     "stub_literal": false,
+     "judgment_matches_hermes": true,
+     "understanding_matches_hermes": true
+    },
+    {
+     "business_date": "2026-09-11",
+     "stub_literal": false,
+     "judgment_matches_hermes": true,
+     "understanding_matches_hermes": true
+    },
+    {
+     "business_date": "2026-09-12",
+     "stub_literal": false,
+     "judgment_matches_hermes": true,
+     "understanding_matches_hermes": true
+    }
+   ]
+  },
+  {
+   "run_id": "37e3fbd3-bccb-493d-bd62-ebeaf515e5e1",
+   "status": "COMPLETED",
+   "window": "2026-09-04..2026-09-12",
+   "created_at": "2026-09-14T16:50:25.332Z",
+   "manifest_hash": "87613e010d44493b2ed58c500ed47dd847c15cbae9136cacd2390d6a71e77fec",
+   "hermes_sessions": [
+    "20260915_015814_f2d977",
+    "20260915_023233_a9c717",
+    "20260915_071908_08f5ec"
+   ],
+   "models": [
+    "grok-4.5"
+   ],
+   "snapshots": 9,
+   "verdict": "PROVEN_HERMES",
+   "per_snapshot": [
+    {
+     "business_date": "2026-09-04",
+     "stub_literal": false,
+     "judgment_matches_hermes": true,
+     "understanding_matches_hermes": true
+    },
+    {
+     "business_date": "2026-09-05",
+     "stub_literal": false,
+     "judgment_matches_hermes": true,
+     "understanding_matches_hermes": true
+    },
+    {
+     "business_date": "2026-09-06",
+     "stub_literal": false,
+     "judgment_matches_hermes": true,
+     "understanding_matches_hermes": true
+    },
+    {
+     "business_date": "2026-09-07",
+     "stub_literal": false,
+     "judgment_matches_hermes": true,
+     "understanding_matches_hermes": true
+    },
+    {
+     "business_date": "2026-09-08",
+     "stub_literal": false,
+     "judgment_matches_hermes": true,
+     "understanding_matches_hermes": true
+    },
+    {
+     "business_date": "2026-09-09",
+     "stub_literal": false,
+     "judgment_matches_hermes": true,
+     "understanding_matches_hermes": true
+    },
+    {
+     "business_date": "2026-09-10",
+     "stub_literal": false,
+     "judgment_matches_hermes": true,
+     "understanding_matches_hermes": true
+    },
+    {
+     "business_date": "2026-09-11",
+     "stub_literal": false,
+     "judgment_matches_hermes": true,
+     "understanding_matches_hermes": true
+    },
+    {
+     "business_date": "2026-09-12",
+     "stub_literal": false,
+     "judgment_matches_hermes": true,
+     "understanding_matches_hermes": true
+    }
+   ]
+  },
+  {
+   "run_id": "4dd84996-d4a8-492e-9906-23967f09a553",
+   "status": "COMPLETED",
+   "window": "2026-09-02..2026-09-12",
+   "created_at": "2026-09-14T21:20:58.098Z",
+   "manifest_hash": "87613e010d44493b2ed58c500ed47dd847c15cbae9136cacd2390d6a71e77fec",
+   "hermes_sessions": [
+    "20260915_052109_8072bf"
+   ],
+   "models": [
+    "grok-4.5"
+   ],
+   "snapshots": 11,
+   "verdict": "PROVEN_HERMES",
+   "per_snapshot": [
+    {
+     "business_date": "2026-09-02",
+     "stub_literal": false,
+     "judgment_matches_hermes": true,
+     "understanding_matches_hermes": true
+    },
+    {
+     "business_date": "2026-09-03",
+     "stub_literal": false,
+     "judgment_matches_hermes": true,
+     "understanding_matches_hermes": true
+    },
+    {
+     "business_date": "2026-09-04",
+     "stub_literal": false,
+     "judgment_matches_hermes": true,
+     "understanding_matches_hermes": true
+    },
+    {
+     "business_date": "2026-09-05",
+     "stub_literal": false,
+     "judgment_matches_hermes": true,
+     "understanding_matches_hermes": true
+    },
+    {
+     "business_date": "2026-09-06",
+     "stub_literal": false,
+     "judgment_matches_hermes": true,
+     "understanding_matches_hermes": true
+    },
+    {
+     "business_date": "2026-09-07",
+     "stub_literal": false,
+     "judgment_matches_hermes": true,
+     "understanding_matches_hermes": true
+    },
+    {
+     "business_date": "2026-09-08",
+     "stub_literal": false,
+     "judgment_matches_hermes": true,
+     "understanding_matches_hermes": true
+    },
+    {
+     "business_date": "2026-09-09",
+     "stub_literal": false,
+     "judgment_matches_hermes": true,
+     "understanding_matches_hermes": true
+    },
+    {
+     "business_date": "2026-09-10",
+     "stub_literal": false,
+     "judgment_matches_hermes": true,
+     "understanding_matches_hermes": true
+    },
+    {
+     "business_date": "2026-09-11",
+     "stub_literal": false,
+     "judgment_matches_hermes": true,
+     "understanding_matches_hermes": true
+    },
+    {
+     "business_date": "2026-09-12",
+     "stub_literal": false,
+     "judgment_matches_hermes": true,
+     "understanding_matches_hermes": true
+    }
+   ]
+  },
+  {
+   "run_id": "0177cbe0-91e3-4fce-8461-560207f7ae18",
+   "status": "RUNNING",
+   "window": "2026-09-04..2026-09-12",
+   "created_at": "2026-09-15T00:04:08.029Z",
+   "manifest_hash": "87613e010d44493b2ed58c500ed47dd847c15cbae9136cacd2390d6a71e77fec",
+   "hermes_sessions": [
+    "20260915_080612_e4db36"
+   ],
+   "models": [
+    "grok-4.5"
+   ],
+   "snapshots": 2,
+   "verdict": "PROVEN_HERMES",
+   "per_snapshot": [
+    {
+     "business_date": "2026-09-04",
+     "stub_literal": false,
+     "judgment_matches_hermes": true,
+     "understanding_matches_hermes": true
+    },
+    {
+     "business_date": "2026-09-05",
+     "stub_literal": false,
+     "judgment_matches_hermes": true,
+     "understanding_matches_hermes": true
+    }
+   ]
+  },
+  {
+   "run_id": "bf740b90-59b6-44de-b30e-fffc307f0c6b",
+   "status": "COMPLETED",
+   "window": "2026-09-04..2026-09-08",
+   "created_at": "2026-09-15T01:10:17.325Z",
+   "manifest_hash": "87613e010d44493b2ed58c500ed47dd847c15cbae9136cacd2390d6a71e77fec",
+   "hermes_sessions": [
+    "20260915_091045_6b5a96"
+   ],
+   "models": [
+    "grok-4.5"
+   ],
+   "snapshots": 5,
+   "verdict": "PROVEN_HERMES",
+   "per_snapshot": [
+    {
+     "business_date": "2026-09-04",
+     "stub_literal": false,
+     "judgment_matches_hermes": true,
+     "understanding_matches_hermes": true
+    },
+    {
+     "business_date": "2026-09-05",
+     "stub_literal": false,
+     "judgment_matches_hermes": true,
+     "understanding_matches_hermes": true
+    },
+    {
+     "business_date": "2026-09-06",
+     "stub_literal": false,
+     "judgment_matches_hermes": true,
+     "understanding_matches_hermes": true
+    },
+    {
+     "business_date": "2026-09-07",
+     "stub_literal": false,
+     "judgment_matches_hermes": true,
+     "understanding_matches_hermes": true
+    },
+    {
+     "business_date": "2026-09-08",
+     "stub_literal": false,
+     "judgment_matches_hermes": true,
+     "understanding_matches_hermes": true
+    }
+   ]
+  },
+  {
+   "run_id": "5da354de-3eeb-47b8-95bd-9bdc496336fc",
+   "status": "READY",
+   "window": "2026-09-04..2026-09-10",
+   "created_at": "2026-09-15T05:03:50.969Z",
+   "manifest_hash": "87613e010d44493b2ed58c500ed47dd847c15cbae9136cacd2390d6a71e77fec",
+   "hermes_sessions": [],
+   "models": [],
+   "snapshots": 0,
+   "verdict": "NO_COGNITION",
+   "per_snapshot": []
+  },
+  {
+   "run_id": "9dfa09fe-81ca-46a1-b214-db91401937f2",
+   "status": "READY",
+   "window": "2026-09-04..2026-09-13",
+   "created_at": "2026-09-15T05:05:12.695Z",
+   "manifest_hash": "87613e010d44493b2ed58c500ed47dd847c15cbae9136cacd2390d6a71e77fec",
+   "hermes_sessions": [],
+   "models": [],
+   "snapshots": 0,
+   "verdict": "NO_COGNITION",
+   "per_snapshot": []
+  },
+  {
+   "run_id": "e4340d96-ae08-471d-9f47-4c9d4452794b",
+   "status": "READY",
+   "window": "2026-09-04..2026-09-13",
+   "created_at": "2026-09-15T05:05:58.878Z",
+   "manifest_hash": "87613e010d44493b2ed58c500ed47dd847c15cbae9136cacd2390d6a71e77fec",
+   "hermes_sessions": [],
+   "models": [],
+   "snapshots": 0,
+   "verdict": "NO_COGNITION",
+   "per_snapshot": []
+  },
+  {
+   "run_id": "5babef67-b8d4-4150-a13c-1033c333787d",
+   "status": "COMPLETED",
+   "window": "2026-09-04..2026-09-13",
+   "created_at": "2026-09-15T05:06:25.266Z",
+   "manifest_hash": "87613e010d44493b2ed58c500ed47dd847c15cbae9136cacd2390d6a71e77fec",
+   "hermes_sessions": [
+    "20260915_130632_79b07c"
+   ],
+   "models": [
+    "grok-4.5"
+   ],
+   "snapshots": 10,
+   "verdict": "PROVEN_HERMES",
+   "per_snapshot": [
+    {
+     "business_date": "2026-09-04",
+     "stub_literal": false,
+     "judgment_matches_hermes": true,
+     "understanding_matches_hermes": true
+    },
+    {
+     "business_date": "2026-09-05",
+     "stub_literal": false,
+     "judgment_matches_hermes": true,
+     "understanding_matches_hermes": true
+    },
+    {
+     "business_date": "2026-09-06",
+     "stub_literal": false,
+     "judgment_matches_hermes": true,
+     "understanding_matches_hermes": true
+    },
+    {
+     "business_date": "2026-09-07",
+     "stub_literal": false,
+     "judgment_matches_hermes": true,
+     "understanding_matches_hermes": true
+    },
+    {
+     "business_date": "2026-09-08",
+     "stub_literal": false,
+     "judgment_matches_hermes": true,
+     "understanding_matches_hermes": true
+    },
+    {
+     "business_date": "2026-09-09",
+     "stub_literal": false,
+     "judgment_matches_hermes": true,
+     "understanding_matches_hermes": true
+    },
+    {
+     "business_date": "2026-09-10",
+     "stub_literal": false,
+     "judgment_matches_hermes": true,
+     "understanding_matches_hermes": true
+    },
+    {
+     "business_date": "2026-09-11",
+     "stub_literal": false,
+     "judgment_matches_hermes": true,
+     "understanding_matches_hermes": true
+    },
+    {
+     "business_date": "2026-09-12",
+     "stub_literal": false,
+     "judgment_matches_hermes": true,
+     "understanding_matches_hermes": true
+    },
+    {
+     "business_date": "2026-09-13",
+     "stub_literal": false,
+     "judgment_matches_hermes": true,
+     "understanding_matches_hermes": true
+    }
+   ]
+  },
+  {
+   "run_id": "7d321cc2-fba2-4121-9cf7-240785e876c6",
+   "status": "PAUSED",
+   "window": "2026-09-04..2026-09-12",
+   "created_at": "2026-09-15T07:00:55.324Z",
+   "manifest_hash": "87613e010d44493b2ed58c500ed47dd847c15cbae9136cacd2390d6a71e77fec",
+   "hermes_sessions": [
+    "20260915_163354_a9ff3e"
+   ],
+   "models": [
+    "grok-4.5"
+   ],
+   "snapshots": 5,
+   "verdict": "PROVEN_HERMES",
+   "per_snapshot": [
+    {
+     "business_date": "2026-09-04",
+     "stub_literal": false,
+     "judgment_matches_hermes": true,
+     "understanding_matches_hermes": true
+    },
+    {
+     "business_date": "2026-09-05",
+     "stub_literal": false,
+     "judgment_matches_hermes": true,
+     "understanding_matches_hermes": true
+    },
+    {
+     "business_date": "2026-09-06",
+     "stub_literal": false,
+     "judgment_matches_hermes": true,
+     "understanding_matches_hermes": true
+    },
+    {
+     "business_date": "2026-09-07",
+     "stub_literal": false,
+     "judgment_matches_hermes": true,
+     "understanding_matches_hermes": true
+    },
+    {
+     "business_date": "2026-09-08",
+     "stub_literal": false,
+     "judgment_matches_hermes": true,
+     "understanding_matches_hermes": true
+    }
+   ]
+  },
+  {
+   "run_id": "794c1803-367f-42b6-99b4-8a9816b739e1",
+   "status": "READY",
+   "window": "2026-09-04..2026-09-12",
+   "created_at": "2026-09-15T08:53:13.273Z",
+   "manifest_hash": "87613e010d44493b2ed58c500ed47dd847c15cbae9136cacd2390d6a71e77fec",
+   "hermes_sessions": [],
+   "models": [],
+   "snapshots": 0,
+   "verdict": "NO_COGNITION",
+   "per_snapshot": []
+  },
+  {
+   "run_id": "9cdb7077-bb00-4a80-97f5-7c8074005af4",
+   "status": "COMPLETED",
+   "window": "2026-09-04..2026-09-12",
+   "created_at": "2026-09-15T08:58:32.905Z",
+   "manifest_hash": "87613e010d44493b2ed58c500ed47dd847c15cbae9136cacd2390d6a71e77fec",
+   "hermes_sessions": [
+    "20260915_165950_e2bff8",
+    "20260916_041659_f14090"
+   ],
+   "models": [
+    "grok-4.5"
+   ],
+   "snapshots": 9,
+   "verdict": "PROVEN_HERMES",
+   "per_snapshot": [
+    {
+     "business_date": "2026-09-04",
+     "stub_literal": false,
+     "judgment_matches_hermes": true,
+     "understanding_matches_hermes": true
+    },
+    {
+     "business_date": "2026-09-05",
+     "stub_literal": false,
+     "judgment_matches_hermes": true,
+     "understanding_matches_hermes": true
+    },
+    {
+     "business_date": "2026-09-06",
+     "stub_literal": false,
+     "judgment_matches_hermes": true,
+     "understanding_matches_hermes": true
+    },
+    {
+     "business_date": "2026-09-07",
+     "stub_literal": false,
+     "judgment_matches_hermes": true,
+     "understanding_matches_hermes": true
+    },
+    {
+     "business_date": "2026-09-08",
+     "stub_literal": false,
+     "judgment_matches_hermes": true,
+     "understanding_matches_hermes": true
+    },
+    {
+     "business_date": "2026-09-09",
+     "stub_literal": false,
+     "judgment_matches_hermes": true,
+     "understanding_matches_hermes": true
+    },
+    {
+     "business_date": "2026-09-10",
+     "stub_literal": false,
+     "judgment_matches_hermes": true,
+     "understanding_matches_hermes": true
+    },
+    {
+     "business_date": "2026-09-11",
+     "stub_literal": false,
+     "judgment_matches_hermes": true,
+     "understanding_matches_hermes": true
+    },
+    {
+     "business_date": "2026-09-12",
+     "stub_literal": false,
+     "judgment_matches_hermes": true,
+     "understanding_matches_hermes": true
+    }
+   ]
+  },
+  {
+   "run_id": "af78534d-51f3-4b9b-b52c-fdb7fa17b083",
+   "status": "READY",
+   "window": "2026-09-04..2026-09-12",
+   "created_at": "2026-09-15T17:05:47.312Z",
+   "manifest_hash": "87613e010d44493b2ed58c500ed47dd847c15cbae9136cacd2390d6a71e77fec",
+   "hermes_sessions": [],
+   "models": [],
+   "snapshots": 0,
+   "verdict": "NO_COGNITION",
+   "per_snapshot": []
+  },
+  {
+   "run_id": "c7c37f5b-22dc-4f9a-8323-63994e487f53",
+   "status": "COMPLETED",
+   "window": "2026-09-11..2026-09-12",
+   "created_at": "2026-09-15T20:07:19.191Z",
+   "manifest_hash": "87613e010d44493b2ed58c500ed47dd847c15cbae9136cacd2390d6a71e77fec",
+   "hermes_sessions": [
+    "20260916_042305_43fcc3"
+   ],
+   "models": [
+    "grok-4.5"
+   ],
+   "snapshots": 2,
+   "verdict": "PROVEN_HERMES",
+   "per_snapshot": [
+    {
+     "business_date": "2026-09-11",
+     "stub_literal": false,
+     "judgment_matches_hermes": true,
+     "understanding_matches_hermes": true
+    },
+    {
+     "business_date": "2026-09-12",
+     "stub_literal": false,
+     "judgment_matches_hermes": true,
+     "understanding_matches_hermes": true
+    }
+   ]
+  },
+  {
+   "run_id": "9a10c8b3-a540-49f7-a017-d1f85a807f63",
+   "status": "BLOCKED",
+   "window": "2026-09-12..2026-09-13",
+   "created_at": "2026-09-15T20:08:06.502Z",
+   "manifest_hash": "legacy-prefix-run",
+   "hermes_sessions": [
+    "20260916_040830_b6ed6d"
+   ],
+   "models": [
+    "grok-4.5"
+   ],
+   "snapshots": 1,
+   "verdict": "PROVEN_HERMES",
+   "per_snapshot": [
+    {
+     "business_date": "2026-09-12",
+     "stub_literal": false,
+     "judgment_matches_hermes": true,
+     "understanding_matches_hermes": true
+    }
+   ]
+  },
+  {
+   "run_id": "920332b4-2fab-403d-898c-73583f1cb3ca",
+   "status": "COMPLETED",
+   "window": "2026-09-04..2026-09-12",
+   "created_at": "2026-09-15T21:54:27.143Z",
+   "manifest_hash": "87613e010d44493b2ed58c500ed47dd847c15cbae9136cacd2390d6a71e77fec",
+   "hermes_sessions": [
+    "20260916_055529_3957b5"
+   ],
+   "models": [
+    "grok-4.5"
+   ],
+   "snapshots": 9,
+   "verdict": "PROVEN_HERMES",
+   "per_snapshot": [
+    {
+     "business_date": "2026-09-04",
+     "stub_literal": false,
+     "judgment_matches_hermes": true,
+     "understanding_matches_hermes": true
+    },
+    {
+     "business_date": "2026-09-05",
+     "stub_literal": false,
+     "judgment_matches_hermes": true,
+     "understanding_matches_hermes": true
+    },
+    {
+     "business_date": "2026-09-06",
+     "stub_literal": false,
+     "judgment_matches_hermes": true,
+     "understanding_matches_hermes": true
+    },
+    {
+     "business_date": "2026-09-07",
+     "stub_literal": false,
+     "judgment_matches_hermes": true,
+     "understanding_matches_hermes": true
+    },
+    {
+     "business_date": "2026-09-08",
+     "stub_literal": false,
+     "judgment_matches_hermes": true,
+     "understanding_matches_hermes": true
+    },
+    {
+     "business_date": "2026-09-09",
+     "stub_literal": false,
+     "judgment_matches_hermes": true,
+     "understanding_matches_hermes": true
+    },
+    {
+     "business_date": "2026-09-10",
+     "stub_literal": false,
+     "judgment_matches_hermes": true,
+     "understanding_matches_hermes": true
+    },
+    {
+     "business_date": "2026-09-11",
+     "stub_literal": false,
+     "judgment_matches_hermes": true,
+     "understanding_matches_hermes": true
+    },
+    {
+     "business_date": "2026-09-12",
+     "stub_literal": false,
+     "judgment_matches_hermes": true,
+     "understanding_matches_hermes": true
+    }
+   ]
+  },
+  {
+   "run_id": "16220625-5a39-4868-ac16-18d982aebff6",
+   "status": "COMPLETED",
+   "window": "2026-09-04..2026-09-12",
+   "created_at": "2026-09-15T21:54:27.433Z",
+   "manifest_hash": "87613e010d44493b2ed58c500ed47dd847c15cbae9136cacd2390d6a71e77fec",
+   "hermes_sessions": [
+    "20260916_061512_bf70b1"
+   ],
+   "models": [
+    "grok-4.5"
+   ],
+   "snapshots": 9,
+   "verdict": "PROVEN_HERMES",
+   "per_snapshot": [
+    {
+     "business_date": "2026-09-04",
+     "stub_literal": false,
+     "judgment_matches_hermes": true,
+     "understanding_matches_hermes": true
+    },
+    {
+     "business_date": "2026-09-05",
+     "stub_literal": false,
+     "judgment_matches_hermes": true,
+     "understanding_matches_hermes": true
+    },
+    {
+     "business_date": "2026-09-06",
+     "stub_literal": false,
+     "judgment_matches_hermes": true,
+     "understanding_matches_hermes": true
+    },
+    {
+     "business_date": "2026-09-07",
+     "stub_literal": false,
+     "judgment_matches_hermes": true,
+     "understanding_matches_hermes": true
+    },
+    {
+     "business_date": "2026-09-08",
+     "stub_literal": false,
+     "judgment_matches_hermes": true,
+     "understanding_matches_hermes": true
+    },
+    {
+     "business_date": "2026-09-09",
+     "stub_literal": false,
+     "judgment_matches_hermes": true,
+     "understanding_matches_hermes": true
+    },
+    {
+     "business_date": "2026-09-10",
+     "stub_literal": false,
+     "judgment_matches_hermes": true,
+     "understanding_matches_hermes": true
+    },
+    {
+     "business_date": "2026-09-11",
+     "stub_literal": false,
+     "judgment_matches_hermes": true,
+     "understanding_matches_hermes": true
+    },
+    {
+     "business_date": "2026-09-12",
+     "stub_literal": false,
+     "judgment_matches_hermes": true,
+     "understanding_matches_hermes": true
+    }
+   ]
+  },
+  {
+   "run_id": "845f85ed-5bc3-4691-9fdf-ce277f7609a2",
+   "status": "READY",
+   "window": "2026-09-07..2026-09-08",
+   "created_at": "2026-09-15T23:03:59.959Z",
+   "manifest_hash": "87613e010d44493b2ed58c500ed47dd847c15cbae9136cacd2390d6a71e77fec",
+   "hermes_sessions": [
+    "20260916_070408_03abc0"
+   ],
+   "models": [
+    "grok-4.5"
+   ],
+   "snapshots": 0,
+   "verdict": "NO_COGNITION",
+   "per_snapshot": []
+  },
+  {
+   "run_id": "6a27177c-f16b-4dcf-a45e-2819a9a517c9",
+   "status": "RUNNING",
+   "window": "2026-09-07..2026-09-08",
+   "created_at": "2026-09-15T23:05:47.237Z",
+   "manifest_hash": "87613e010d44493b2ed58c500ed47dd847c15cbae9136cacd2390d6a71e77fec",
+   "hermes_sessions": [
+    "20260916_070554_0f57b2"
+   ],
+   "models": [
+    "grok-4.5"
+   ],
+   "snapshots": 1,
+   "verdict": "PROVEN_HERMES",
+   "per_snapshot": [
+    {
+     "business_date": "2026-09-07",
+     "stub_literal": false,
+     "judgment_matches_hermes": true,
+     "understanding_matches_hermes": true
+    }
+   ]
+  }
+ ]
+}
