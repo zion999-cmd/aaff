@@ -2896,3 +2896,530 @@ Hermes
 - POST /api/fabric/execute → 1 行 evidence_observations + 4 行 situation_observations (gmv/orders/uv/cvr × 1 situation)
 - GET /api/situations/:id/observations 返回 1 row: `{metric: "gmv", business_time_bucket: "2026-09-01T17", current_value: 7939.19, baseline_value: 3905.27, change_pct: 103.3}` —— 与 latest evidence 数字精确匹配
 - cross_signal (无 metric tag) situation 在 situation_observations 中有 0 行，符合"不扩 cross_signal"边界
+
+---
+
+## ADR-081 — CSRF/Dynamic-Token Acquisition = Runtime Layer, NOT Connector Factory (P0011.x Follow-up D, 2026-09-03)
+
+**Status**: ACCEPTED. Anchors P0011.x D's real-data outcome + the boundary of "what is CF's responsibility vs Runtime's responsibility".
+
+**Context**:
+- P0011.x C (frozen failure, 10.5 min, 0 data on disk) discovered that JD 商智 rejects out-of-context ajax fetches with `code=-407 desc=不安全的请求` because CSRF tokens (`user-mnp` / `user-mup` / `uuid`) rotate per SPA call and are context-bound.
+- C's last diagnosis (in `data/_blind_runs/p0011x-followup-d-goal.md`): "intercept via `page.route()` and modify the BODY of the live SPA call instead of issuing my own fetch. This way, the SPA's own tokens are used."
+- User posed the question: "is CSRF handling a Connector Factory problem?"
+- P0011.x D (~14 min, 1450 orders + 12 KPIs on disk, 20/20 real-page reconciliation) proved it ISN'T — Hermes solved it with `page.route()` interception, using the SPA's own context. Per-window slicing + cap detection is a separate problem that DID need engineering, but it's a generic pattern, not JD-specific.
+
+**Decision**:
+1. **CSRF/dynamic-token acquisition belongs to the RUNTIME layer.** When a real SPA issues a signed ajax call, the `page.route()` interception pattern uses the SPA's own context — this is a general browser automation pattern (Playwright), not a JD-specific concern. It should live in the Fabric `acquire*ViaCDP` functions as a standard browser-context acquisition primitive, NOT in a new Connector Factory subsystem.
+2. **Per-window slicing + cap detection belongs to a Connector Factory `paginateByWindow()` helper** (or equivalent). The pattern (try the wide window, observe row count == server cap, switch to per-day queries, dedupe by natural key, prove completeness by summing) is generic across any endpoint with a structural row cap. The 3 scripts Hermes wrote (`jd_pagination_diag.py` + `jd_size_vs_window.py` + `acquire_jd_orders_perday.py`) demonstrate the pattern. It is worth productizing in `apps/ecommerce/connectors/jd/_lib/` (or analogous per-provider dir).
+3. **The 1000-row server-side cap is method-discovered evidence**, not in any catalog. It should be recorded as `endpoint_metadata.cap_behavior` in the next catalog update, not as a feature of Connector Factory.
+
+**Reasoning**:
+- P0011.x's original hypothesis (per user 2026-09-03): "Connector Factory should solve CSRF" — this is REFUTED by D. CSRF is a transport-layer concern that the browser context already handles via `page.route()`.
+- The gap that P0011.x D actually exposed is: **per-window slicing is not yet a reusable component**. Every new endpoint with a server cap requires Hermes (or the next Agent) to re-discover the cap, re-write the diagnostic, re-implement the per-day query + dedup. That is the real engineering tax that Connector Factory can productize away.
+- Connector Factory's responsibility, in priority order:
+  1. `paginateByWindow()` helper (or equivalent) — generic, wraps server-cap detection + per-window slicing + dedup + completeness proof
+  2. `acquire*ViaCDP(shopId, startDate, endDate, options)` functions per provider — wrap the `connect_over_cdp` + reuse-existing-page + `page.route()` + paginate-by-window pattern into one TS function per acquisition
+  3. Catalog record-keeping — write discovered endpoint metadata into `catalog/jd/endpoints.json` so the next Agent can read it instead of reverse-engineering
+
+**Boundary honored**:
+- ❌ No new subsystem for CSRF handling — `page.route()` is already in Playwright
+- ❌ No change to existing `acquire*ViaCDP` signatures
+- ❌ No catalog update in this slice (per user "现在不要改 catalog")
+- ❌ No new Hermes integration contract
+- ❌ No fake time / fake provenance / fake completeness claim
+- ✅ Per-window slicing pattern documented as engineering debt that CF should productize
+- ✅ D's 5 Python scripts on disk = working reference implementation; the next step is to translate them into TS, not to "improve" the scripts in place
+
+**Verification**:
+- Real data: 1450 unique orders / ¥195,136.89 / 30 days / shop_id 11855009 — all 20/20 KPIs match live JD 商智 page byte-for-byte
+- Method-level proof: 30 per-day calls all returned 200, sum of per-day amt == summary card, no row counted twice
+- Engineering proof: 5 Python scripts on disk that another Agent can read and adapt
+
+**NOT Included** (deferred to user-approved follow-ups):
+- Connector Factory design (separate proposal)
+- Productize `paginateByWindow()` as a Fabric helper
+- Update `catalog/jd/endpoints.json` with `getSummary.ajax` / `getTrend.ajax` / `getDealOrders.ajax` metadata
+- Pressure-test cap detection on more endpoints (traffic / 商品 / 用户 / 营销)
+- Build 报表 (reports) capability — `trade.reports` family is the next untested surface
+
+**Stop conditions NOT triggered**: no schema change, no Hermes change, no new persistent lifecycle, no Event Bus / Wake Engine / Action Engine / Approval.
+
+---
+
+# ADR-076: P0013 Historical Cognitive Replay — Cognitive Trajectory Generator Under Information Boundary
+
+**Date**: 2026-09-03
+**Status**: PROPOSED (P0013 implementation complete; awaiting operator 15-step click path acceptance)
+**Decider**: User
+**Supersedes**: P0006.2 historical-replay-runtime (marked SUPERSEDED BY P0013)
+**Lineage**: P0006.2 (sketch) → P0011 / P0012 (Evidence / Business Time / Continuous Observation) → P0011.x D (Real Data Acquisition VERIFIED 2026-09-03) → **P0013 Historical Cognitive Replay**
+
+## Decision
+
+P0013 is implemented as a **Cognitive Trajectory generator** under a strict historical information boundary, not as a proof that the Agent "was right at the time" for any business decision.
+
+**Three hard principles**:
+
+1. **Boundary at the data layer, not the prompt (§3)**. The Agent's runtime kernel receives ONLY evidence rows whose `business_date <= T` AND `replay_run_id = currentRunId`. Production rows are NEVER visible. This is enforced by SQL filter (`visibleEvidenceFor` in `apps/ecommerce/runtime/replay/temporal-evidence-view.ts`), not by prompt engineering. Verified by §23 mid-window SQL proof in `tests/contract/p0013-acceptance.contract.ts` (zero violations across 30 steps).
+
+2. **Replay Recommendation is NEVER executed (§14)**. `recommendation_executed` is always `false` on every snapshot. The monthly review's `unverified_recommendations` field carries the literal note "No Action Evidence available; cannot verify execution or outcome." Replay is an observation surface, not an action surface.
+
+3. **Production / Replay isolation at the data layer (§32)**. The runner writes ONLY to `replay_runs`, `replay_run_steps`, `replay_run_evidence_refs`, `replay_run_cognitive_snapshots`, `replay_monthly_reviews`. Production `situations` / `learning_contexts` / `knowledge` / `skills` tables stay at 0 rows. Contract test §32 pins this.
+
+## Reasoning
+
+- The user's verbatim direction in the proposal: "第一版 Replay 的目的不是证明 Agent 当时一定'判断正确'，而是证明它在严格的历史信息边界下，能够持续给出每日 Understanding / Judgment / Recommendation / Unknowns，留下可用的 Cognitive Trajectory." The boundary is the test; the trajectory is the deliverable.
+- §3 data-layer enforcement is correct because prompt-level "do not look at future data" rules are not robust under LLM drift. The contract test SQL proof guarantees the boundary regardless of model fidelity.
+- §14 execution impossibility is the moral boundary of Replay: if we allowed execution, we'd be testing what an Agent does in the past, which we cannot faithfully simulate. Replay is for trajectory observation, not for back-testing decisions.
+- §32 isolation is required because P0013 must NOT pollute production `situations` or `knowledge` (the V1 path remains the canonical "live" surface). Replay lives in its own tables, scoped by `replay_run_id`.
+
+## Architecture
+
+- **ReplayBusinessClock** (pure, `shared/utils/replay-clock.ts`): a deterministic clock. NO `Date.now()` reads. Status `READY|RUNNING|PAUSED|COMPLETED|FAILED` is data, not state.
+- **ReplayRun** (`replay_runs`): first-class entity, partitioned by `replay_run_id` (§22). Production rows do not carry this column.
+- **DailyCognitiveSnapshot** (additive extension of `InvestigationSchema`): 8 new fields (`business_date`, `observed_facts`, `evidence_gaps`, `temporal_boundary_checked_at`, `supporting_evidence_refs`, `recommendation_executed`, `month_anchor`, `replay_run_id`) — all `.optional()` / `.default([])`. Pre-P0013 fixtures still parse.
+- **Monthly Review** (`replay_monthly_reviews`): 12 §19 fields + §20 unverified note + §21 PARTIAL detection. Deterministic; no LLM. Generated at the natural month boundary by `replay-runner-p0013.ts` BEFORE the clock advance.
+- **Workspace "历史回放" view**: 5 sub-regions — start panel, controls, 30-cell timeline, daily view (7 §29 sections + §14 banner), monthly review. The `window.__replayStopPlay` IIFE export tears down the play timer on view switch.
+
+## Boundary honored
+
+- ❌ No P0011.x reopening — fixture is read-only, frozen, `Object.freeze`d
+- ❌ No auto-write to production `situations` / `learning_contexts` / `knowledge` / `skills` (contract §32)
+- ❌ No `recommendation_executed = true` path (contract §10/§14)
+- ❌ No Schedule / Wake / Event Bus / new Hermes transport
+- ❌ No Knowledge writes from monthly review
+- ❌ No Catalog update (per user P0011.x D rule "现在不要改 catalog")
+- ❌ No real-data write to the P0011.x fixture (§6)
+- ✅ EXTEND only — no field rename / removal / move in `InvestigationSchema`
+- ✅ Pure functions for clock + temporal filter (testable without DB)
+- ✅ Idempotent re-run (UNIQUE on `replay_run_id + business_month`)
+- ✅ Page-refresh persistence (DB-backed, not in-memory)
+
+## Verification
+
+- 125 P0013 tests pass across 10 files
+- 18 contract assertions: 9 §31 + §23 SQL + §10/§14 + §20 + §21 + §22 + §32 + §33 + §6
+- `npm run typecheck`: 0 new errors (vs baseline)
+- Real-page acceptance: `docs/acceptance/p0013-click-path.md` — 15-step operator click path
+
+## NOT Included (deferred)
+
+- **LLM kernel wiring (Phase 5.5 in the plan)** — current `httpStubKernel` returns literal "[HTTP-driven stub]" text. The §23 SQL boundary is enforced regardless of kernel fidelity, so the stub-vs-LLM swap is a follow-up ticket, not a closure blocker.
+- **Cohort-1450 question-driven Replay** — operator asks "what did the Agent think on 2026-08-12?" — out of P0013 v1 scope.
+- **Cross-validation with the live Agent** — for the same 30-day window, compare the Replay trajectory with what the live RuntimeLoop produced in real time. Out of scope; future P-ticket.
+- **Memory Bridge (P0013 retread)** — the entry that P0013 retired in `context/p0010_1_productization_baseline.md` keeps its TBD number for a future Memory Bridge P-ticket.
+- **Connector Factory `paginateByWindow()`** — D's per-window slicing pattern is engineering debt; the next P-ticket should productize it as a Fabric helper (per ADR-075).
+
+## Stop conditions NOT triggered
+
+- No new persistent lifecycle
+- No new schema migration (only ADDITIVE nullable columns on `evidence_observations`)
+- No new Hermes integration contract
+- No new public API surface beyond `/api/replay/runs/...` (the legacy `/api/runtime/replay` returns 410 with pointer)
+- No new dependency in `package.json`
+
+---
+
+## ADR-082 — Evidence Semantic Integrity: DirectionalFact + RelativePerformance contracts (2026-09-06)
+
+**Status**: Accepted (2026-09-06)
+**Context**: P0013 Replay `task.md` 暴露 "GMV 回落 -44.6%" 类问题 — direction word + signed number 双重表达。审计 84 个 evidence 表达路径，确认 production 路径零 double-sign，但 3 处 ambiguity 必须修。
+
+**Decision**:
+
+1. **DirectionalFact Contract** (`shared/utils/directional-fact.ts`):
+   - Type: `Direction = 'increase' | 'decrease' | 'flat'`
+   - `DirectionalFact` 同时携带 `delta_pct_signed` (math repr) + `magnitude_pct` (semantic repr, always abs) — decouple 符号与方向枚举
+   - `BaselineSource` union pins provenance: `yesterday_same_moment` / `previous_day_full` / `prior_window` / `industry_indicator` / `product_vs_category`
+   - `formatDirectionalFact` 输出 `从 A 下降至 B，降幅 44.6%` — statically impossible to emit forbidden pattern
+   - `DEFAULT_FLAT_EPS_PCT = 0.05` matches 现有 `directionByDelta` in `analysis/metrics/calculators/direction.ts:9-13`
+
+2. **RelativePerformance Contract** (`shared/utils/relative-performance.ts`):
+   - `RelativePerformance = 'outperform' | 'underperform' | 'equal'`
+   - `relative_gap_pp` = EXACTLY `subject.delta_pct_signed - comparison.delta_pct_signed`
+   - Prose: `店铺下降 44.6%，大盘下降 89.4%，店铺相对大盘跑赢 44.8 个百分点`
+   - **Hard guard**: 永远不附加 Judgment ("异常/恶化/健康/客户画像改变/活动导致/故障") — 那是 Agent 的工作
+
+3. **rules.ts refactor** (E.1): `buildMeaningfulChangeDescription` / `buildMeaningfulChange` / `buildCrossSignal` route through contract. Comparison base 显式 `"昨日同时段"` 替代 "较昨日"（producer.ts:189-216 已 overwrite 用 `yesterday_same_moment`）
+
+4. **Replay kernel refactor** (E.2): `formatVisibleEvidence` 在 raw values 之后追加 "方向性事实 (Structured DirectionalFact, computed by Fabric — do NOT verbalize direction yourself)" 段。LLM 仍看到 raw values（§3 invariant），但方向词不再由 LLM synthesize
+
+5. **NOT to do** (per user 2026-09-06 spec):
+   - 不改 P0013 cognition quality / 不优化 prompt / 不动 Knowledge / Skill / Hermes / model / temperature / Situation detection threshold / Investigation policy / Re-evaluation policy / Business Time arch / JD acquisition / sourceManifestHash / Workspace IA / unrelated code
+   - 不用 regex 后处理 Agent output
+   - 不根据 Agent 输出反向修改事实
+   - 不为通过测试伪造 fixture
+
+**Reasoning**:
+
+- "Normalize representation, never normalize truth" — signed delta preserved in structured payload，只 normalize prose
+- Contract 强制 direction enum + magnitude word（降幅/涨幅/幅度）的解耦，从语言层消除 double-sign 可能性
+- Replay kernel 让 LLM 不再 verbalize 方向 → "回落" 类输出自然消失
+- `outperform/underperform` 是 Fact，"经营异常 / 客户画像改变" 是 Judgment — Fact 不携带 Judgment
+
+**Consequences**:
+
+- 51/51 contract tests pass；40/40 situation tests pass；175/175 in 套件 `tests/unit/{situation, shared/utils, replay}` pass
+- 4 个 pre-existing test failure (clear-block-dispatcher, evidence-store-history, gettrend-provider-watermark, chat.contract, runtime-loop) 与本 ADR 无关
+- Situation description shape changed (operator-visible) — release note 需提及
+- Phase D 审计：Business Time / Percent vs pp / Fact vs Inference 三个维度没有发现新 bug
+- Phase F real-data 5 cases 全部 verify 通过 — script 在 `scripts/verify-evidence-semantic-integrity.ts`
+
+**Not blocking / not changed**:
+- `ranking_attention` description 含 "相对突出" 定性词 (RELATIVE_PERFORMANCE_AMBIGUOUS) — 属 operator IA 改动，本 ADR 不动
+- `pattern/detector.ts:242` `seasonal_peak` signed formatter latent bug-shape — 当前不触发，本 ADR 不动
+- Workspace presentation.js / app.js — operator IA，不动
+
+## ADR-083 — Epistemic Integrity: 5-layer cognition contract between Fabric and Agent (2026-09-07)
+
+**Status**: ACCEPTED (closes Epistemic Integrity 2026-09-07 task)
+
+**Context**: P0013 08-14 Replay incident. The Agent (Hermes / ark-code-latest) emitted
+"放量日 + 回调日交替", "8-14 是 88 大促 8-15 前夜", "确认为订单前置",
+"若 GMV 破 12000 则订单前置确认", `confident judgment` — all without proper
+Evidence support, all in one prose block, all mixing 5 distinct epistemic layers
+into one. The previous InvestigationSchema had only 3 layered fields (knownEvidence[],
+hypotheses[], judgment) and the prompt's vocabulary normalization silently rewrote
+"confirmed" → "supported" at the raw→canonical boundary, HIDING the L3→L4 distinction
+(the largest single epistemic violation in the output).
+
+**Decision**: introduce a 5-layer epistemic contract ADDITIVE to InvestigationSchema.
+
+| Layer | Schema | Requires | Default |
+|---|---|---|---|
+| L1 Observed Fact | `ObservedFactSchema` | `evidence_refs[]` ≥ 1 | — |
+| L2 Pattern | `PatternSchema` | `pattern_type: candidate\|established` + `based_on[]` | `candidate` |
+| L3 Hypothesis | `HypothesisEpistemicSchema` | `supporting_evidence_refs[]` + `missing_evidence[]` + `falsifier` | `status: proposed` |
+| L4 Confirmed | `ConfirmedSchema` | `confirmed_evidence_refs[]` ≥ 1 + `confirmed_by: operator\|system\|historical_evidence` | — |
+| L5 Judgment | `JudgmentBasisSchema` | `known[]` + `inferred[]` + `unknown[]` + `decision` + `confidence_basis` | safe empty |
+
+Combined in `EpistemicLayersSchema`. InvestigationSchema gains 4 NEW OPTIONAL
+fields: `epistemic_layers / claim_evidence_refs[] / thresholds[] / prior_cognition[]`.
+ZERO existing field renamed/removed/moved. Pre-epistemic rows parse byte-identical
+(verified by 113/113 existing investigation tests still green).
+
+**3 hard contracts**:
+
+1. **L3↔L4 cannot be silent-upgraded.** REMOVED the `confirmed → supported` rewrite
+   in `normalizeInvestigationContract`. A `hypotheses[].status: "confirmed"` now
+   surfaces as `driftUnmappable` and the parser fails closed. The LLM MUST use
+   `epistemic_layers.confirmed[]` with explicit `confirmed_evidence_refs[]` to
+   express an L4 claim. Pre-ADR-083 this rewrite hid the bug. The previous
+   `tests/unit/investigation/contract-normalize.test.ts` encoded the silent
+   rewrite as expected behavior — 5 tests UPDATED to assert the new
+   (correct) contract.
+
+2. **Knowledge ≠ Evidence.** Knowledge is a PROFESSIONAL PRIOR, not current
+   store Evidence. The new prompt section "## Knowledge ≠ Evidence" pins this:
+   `Knowledge → suggest hypothesis` is allowed; `Knowledge → manufacture
+   current-world fact` is forbidden. LLM must surface Knowledge-driven
+   claims as `hypotheses[] status: proposed` with `missing_evidence[]`
+   rather than as `observed[]`.
+
+3. **Prior Cognition is not Fact.** T-1's hypothesis at T is a HISTORICAL
+   HYPOTHESIS, not a current fact. The new `PriorCognitionSchema` +
+   `loadPriorCognition` (SQL `WHERE business_date < T`) +
+   `formatPriorCognition` + prompt section "## Prior Cognition (Historical,
+   NOT Current)" together enforce: T-1's `status: proposed` is STILL
+   `proposed` at T until NEW Evidence at T shifts it. The LLM may write a
+   fresh `prior_cognition[]` entry with `status_at_t` shifted, but the
+   L3→L4 silent upgrade path is gone.
+
+**Threshold provenance (Phase E)**: any quantitative threshold (e.g. "若
+GMV > 12000 则确认") MUST have `thresholds[].provenance: heuristic |
+evidence_derived | knowledge_rule | operator_rule | business_policy`.
+`heuristic` MUST NOT be called a "confirmation rule". The Zod schema
+enforces this (rejects free-floating thresholds without provenance).
+
+**Per-claim provenance (Phase C)**: 16 `claim_type` enum values
+(numeric / temporal / campaign / operation / consecutive / alternation /
+stable / baseline / recovery / anomaly / confirmation / reversal / causal /
+pattern / hypothesis / other). Strong claims MUST have `evidence_refs[]`;
+empty = "Evidence Gap" (semantic signal, NOT a free pass).
+
+**Soft validation (validateEpistemicContract)**: scans prose fields
+(currentUnderstanding / judgment / recommendation.{recommendation,
+rationale, expectedOutcome}) for unsourced confirmation language via
+`CONFIDENT_LANGUAGE_ALLOWLIST` (zh-CN + en: 确认 / 已确认 / confirmed /
+definitely / ...). Emits `EpistemicDriftRecord[]` with `hasConfirmedEntry`
+flag so the operator can see "Agent used 确认 3 times but did not
+populate the confirmed[] list". Does NOT fail-closed — the L3→L4
+structural upgrade is already Zod-prevented. Prose-level drift is a UX
+signal, not a contract violation.
+
+**Production + Replay single contract**: BOTH paths use the SAME
+InvestigationSchema with the SAME 4 ADDITIVE fields. NO Replay-only
+workaround. The Replay path (`apps/ecommerce/runtime/replay/replay-cognition-kernel.ts`)
+ADDITIONALLY pre-loads `prior_cognition[]` from T-1's persisted
+judgment + recommendation_text; production has no such pre-load step
+(there is no T-1 for a real-time investigation).
+
+**Consequences**:
+- Pre-ADR-083 LLM behavior that said "确认为订单前置" without
+  `confirmed_evidence_refs[]` → **structurally rejected** (Zod fails closed).
+- Pre-ADR-083 `confirmed → supported` rewrite → **removed** (parser now
+  surfaces as unmappable drift).
+- Pre-ADR-083 T-1 hypothesis re-cited as T's current fact → **prompt
+  section explicitly forbids**, schema structurally isolates.
+- LLM cognitive load goes UP: must populate 4 new fields per turn
+  (epistemic_layers, claim_evidence_refs, thresholds, prior_cognition).
+  Trade-off: lower throughput for higher epistemic correctness. Per
+  user 2026-09-06: "Fabric 提供的事实可以是正确的, 但 Agent 会把
+  Observation、Pattern、Hypothesis、Causal Explanation、Confirmed
+  Conclusion 混成一个层级" — explicit acceptance of this cost.
+- `InvestigationPolicy` (Workspace / Recovery / Replay consumer) gains
+  the ability to verify epistemic integrity at the row level.
+
+**20 NOT-to-do constraints honored** (verbatim from user 2026-09-06 task spec):
+no 订单维度 / no Operator Historical Evidence / no 电商专业知识 / no
+互联网知识 / no Knowledge content change / no Skill / no SkillOpt / no
+Hermes / model / provider / temperature / no Business Time / no
+No-Future-Leak / no JD acquisition / no Situation detection threshold /
+no Re-evaluation Policy / no 业务硬阈值 / no P0013 Retry / no
+sourceManifestHash / no `ranking_attention` / no `seasonal_peak` / no
+Workspace IA / no regex 修 Agent output / no 禁止所有 Hypothesis.
+
+**42 new tests, 0 regression**:
+- 23 schema tests (L1-L5 + ClaimEvidenceRef + Threshold + PriorCognition
+  + InvestigationSchema ADDITIVE integration + CONFIDENT_LANGUAGE_ALLOWLIST)
+- 12 normalize tests (L3→L4 silent upgrade REMOVED, validateEpistemicContract
+  soft drift, parseInvestigation returns epistemicDrift)
+- 7 prompt tests (Phase F Prior Cognition section + invariant verbatim +
+  L1-L5 Epistemic Layers + Knowledge ≠ Evidence + Per-claim + Threshold
+  + output JSON shape)
+- 5 UPDATED tests in contract-normalize.test.ts to pin new contract
+
+**Validation**:
+- `npm run typecheck` — 0 new errors
+- `npx vitest run tests/unit/investigation/` — 118/118 green
+- `npx vitest run tests/unit/replay/replay-cognition-kernel.test.ts` — 15/15 green
+- `npm test` — 1573/1577 green (4 pre-existing failures, all unrelated:
+  clear-block-dispatcher HTML matcher, evidence-store-history integration,
+  gettrend-watermark provider, chat.contract needs live Hermes — confirmed
+  via git stash baseline)
+
+**H.1 Real-path acceptance**: PENDING operator-driven real Hermes 9120
+session. Machine-acceptable, but per user 2026-08-28 hard rule "验收也别
+只看测试" the BEFORE/AFTER 08-14 Replay must be run with real Hermes on
+operator's Chrome :9222. Schema + prompt + parse + Replay kernel are all
+machine-validated; the LLM's behavior under the new contract is the
+operator-acceptance piece.
+
+**H.5 wiring NOT YET BUILT**: `ConfirmedSchema.confirmed_by: operator |
+system | historical_evidence` is supported in the schema, but the
+operator-intervention record table + system-stamp flow that would
+actually produce `confirmed_evidence_refs[]` is a SEPARATE TICKET.
+
+## ADR-084 — OrderEvidenceMetrics + perOrder Evidence access (P0013 Task 2, 2026-09-07)
+
+**Status**: ACCEPTED for structural / integration / reconciliation layers;
+Real Hermes Replay acceptance is PARTIAL — BLOCKED on operator cleanup of
+39 prior non-terminal replay_runs in the dev DB (see
+[[p0013-replay-start-panel-hidden-by-prior-run]]).
+
+**Context**: P0013 Task 1 audit (`README` / `context/handoff.md`) found two
+gaps in the existing Replay Evidence layer:
+
+1. **AOV semantic bug**: the LLM was computing `GMV / orders` and labeling
+   it "AOV / 客单价" in judgment + recommendation text. JD source semantics
+   say `客单价 = GMV / 成交客户数 (customers)`, not per-order. The LLM
+   invented a denominator. The OLD run's 9-01 snapshot literally wrote
+   "9-01 订单 37 / AOV ¥287".
+2. **Per-order evidence invisible**: 1450 parent orders + 962 child rows
+   exist in
+   `data/jd_acquisition_20260903_0834/target_b_order_detail_parsed.json` but
+   `seedReplayEvidence()` only wrote daily aggregate rows
+   (`order.overview/perDaySummary`). The LLM had no way to reason about
+   per-SKU concentration, top-N contribution, or the H≠S asymmetry, so it
+   listed "SKU 级 分解" in `unknowns[]` for every audit date.
+
+**Decision**: introduce a 4-part OrderEvidence stack — schema contract,
+per-day seed row, retrieval function, and operator-facing HTTP route —
+without modifying the Epistemic Integrity contract, the Knowledge content,
+the Hermes integration, or the kernel prompt body.
+
+| Layer | File | What it does |
+|---|---|---|
+| Schema | `shared/contracts/historical-dataset.ts` | `OrderEvidenceMetricsSchema` — gmv / parent_orders / header_units / sku_line_count / unique_skus / average_order_amount (optional, requires parent_orders > 0) / customers (optional, only when source provides) / customer_aov (optional, requires customers > 0). `superRefine` enforces the cross-field invariants. |
+| Per-day summary | `apps/ecommerce/runtime/replay/per-order-summary.ts` (NEW) | Pure module. `computePerOrderMetrics` + `computeTopContributors` + `renderPerOrderSummary`. Output: `parent_orders={N} \| sku_lines={M} \| unique_skus={K} \| top_sku={id}:{name} ¥{amt} ({pct}%) \| top_order=¥{amt} ({pct}%) \| header_units={H} \| sku_units={S} (note: H≠S by source design) \| 平均订单金额={aov} \| 客单价={— \| GMV/customers} \| gmv={X} \| date={T}`. Bounded to ~200 chars. |
+| Seed row | `apps/ecommerce/runtime/replay/seed-evidence.ts` | NEW 4th block: `(capability='order.overview', data_type='perOrder', business_date=that_day)`, 30 rows, per-day content_hash, single source file. Idempotent against the natural-key UNIQUE INDEX. |
+| Kernel wiring | `apps/ecommerce/runtime/replay/replay-cognition-kernel.ts` | `readEvidenceContentSummary` 4th branch: when `(capability, data_type) = ('order.overview', 'perOrder')`, render the 1-line summary into the existing `## Current evidence` section. NO new prompt rule. |
+| Retrieval function | `apps/ecommerce/runtime/replay/order-retrieval.ts` (NEW) | 6 query shapes (`parentOrdersByDay`, `skuLinesByDay`, `skuGmvContribution`, `orderAmountDistribution`, `topContributingOrders`, `perSkuDailyOrders`) with `WHERE biz_date <= T` enforced at the function boundary (defense in depth). |
+| HTTP route | `platform/server/routes/replay-orders.ts` (NEW) | `POST /api/replay/runs/:runId/orders/retrieve` with body `{ businessDate, query, queryParams? }`. Belt-and-suspenders No-Future-Leak: route layer checks `businessDate <= run.current_business_date` (returns 400 with named "No-Future-Leak" error). The route is operator-facing; NOT in the kernel prompt. |
+| Server mount | `platform/server/index.ts` | `app.use('/api/replay', replayOrdersRouter(db))`. |
+
+**Data-driven label selection (the load-bearing rule)**:
+
+| Source has `customers`? | Prompt shows | LLM interpretation |
+|---|---|---|
+| No (the P0011.x case) | `平均订单金额=GMV/orders` + `客单价=—` | The LLM cannot relabel `GMV/orders` as 客单价 because the prompt literally says `客单价=—`. |
+| Yes | `平均订单金额=GMV/orders` + `客单价=GMV/customers` | Both are sourced. |
+
+**H≠S preserved verbatim (NOT-to-do 23)**: `header_units = sum(header.sale_qty)`
+and `sku_units = sum(child.sale_qty)` differ for every audit date (Δ ranges
+from 14 to 115). The summary emits `(note: H≠S by source design)` when
+they differ. No reconciliation. The asymmetry is a structural fact of the
+P0011.x source data (parents carry a `sale_qty` that doesn't equal the sum
+of their child rows).
+
+**No-Future-Leak at 3 layers** (the load-bearing assertion of Task 2):
+
+| Layer | Mechanism | Surface |
+|---|---|---|
+| 1. SQL | `visibleEvidenceFor(db, runId, T)` with `WHERE business_date <= T` | `temporal-evidence-view.ts` |
+| 2. Function | `retrieveOrders(rows, T, query)` filters `r.biz_date <= T` first | `order-retrieval.ts` |
+| 3. HTTP | `POST /api/replay/runs/:runId/orders/retrieve` checks `businessDate <= run.current_business_date` → 400 with `No-Future-Leak` in the error string | `replay-orders.ts` |
+
+**The 1-line summary in the kernel prompt is bounded to ~200 chars and
+does NOT dump the 1450 rows** (NOT-to-do 17). The 1450 rows remain
+reachable only on demand via the operator-facing route, which the LLM
+does NOT call (per NOT-to-do 4: no new prompt rule). The LLM can either
+(a) cite the summary numbers directly as L1 Observed Facts, or (b)
+express the gap in `unknowns[]` — the existing Epistemic Integrity
+contract (ADR-083) supports both.
+
+**Hard constraints 100% honored** (per `task.md:538-564`):
+
+- ✅ Did NOT modify Knowledge content.
+- ✅ Did NOT modify Epistemic Integrity contract.
+- ✅ Did NOT add more Prompt rules.
+- ✅ Did NOT modify Hermes.
+- ✅ Did NOT use fixed top-N/quartile/random sampling as the only Evidence access.
+- ✅ Did NOT dump all 1450 orders to the prompt.
+- ✅ Did NOT overwrite old Replay cognition.
+- ✅ Did NOT modify Production Investigation behavior.
+- ✅ Did NOT create new Proposal.
+- ✅ Reported new problems (dev-server overload, 39 prior runs) — did NOT silently fix.
+- ✅ Kept No-Future-Leak at SQL + function + route boundary.
+
+**Verification**:
+
+- `npm test -- tests/unit/replay tests/unit/routes tests/contract tests/integration` —
+  **58/58 P0013 Task 2 tests green** (20 per-order-summary + 6 seed-evidence +
+  13 order-retrieval + 8 replay-orders route + 7 no-future-leak + 4 reconciliation).
+- `npm test` — 5 pre-existing failures in the broader suite, all unrelated
+  (date drift, SPA string-match, Hermes unreachable).
+- Real data reconciliation: all 4 audit dates (08-10 / 08-18 / 09-01 / 09-02)
+  match an independent recomputation of the P0011.x raw data exactly.
+  Reconciliation table in `context/final-report-2026-09-07-task2.md` §5.
+- Before/After comparison: OLD run `9bc882e7-...` wrote "9-01 订单 37 /
+  AOV ¥287"; NEW perOrder summary is `平均订单金额=286.76 | 客单价=—` and
+  shows top_sku = 10076147649602 (中秋/教师节礼盒) at ¥3513.89 (33.1% of
+  GMV). The "1-2 单大单 vs 多单综合" hypothesis the OLD LLM couldn't
+  falsify is now directly answerable from the summary alone.
+
+**Risks + open items**:
+
+- **Real Hermes Replay (Phase J) PARTIAL**: `scripts/run-task2-replay.ts`
+  is in place and works end-to-end (run creation, day-by-day advance,
+  snapshot capture, DB cleanup all verified). 1/4 audit dates captured
+  in the live run; the dev server is currently overloaded by **39 prior
+  non-terminal runs** from prior probe sessions (the
+  [[p0013-replay-start-panel-hidden-by-prior-run]] debt). Final
+  acceptance requires operator cleanup + dev-server restart +
+  re-execution. **NOT a Task 2 bug**; this is pre-existing technical
+  debt.
+- **The 39 prior non-terminal runs** are a separate ticket. A future
+  `scripts/cleanup-prior-replay-runs.ts` should delete rows with
+  `status NOT IN ('COMPLETED', 'FAILED')` older than N days.
+- **Operator acceptance on real Chrome :9222**: per S0002, this is the
+  only valid DONE gate. The 16-point checklist at
+  `docs/acceptance/p0013-operator-checklist-16.md` still applies.
+
+**Lineage**: P0011.x D (Real Data Acquisition, 2026-09-03) → P0013
+Epistemic Integrity (ADR-083, 2026-09-07) → **P0013 Task 2 OrderEvidence
+(ADR-084, 2026-09-07)**.
+
+---
+
+## ADR-085 (2026-09-12) — Hermes 长会话 compression 撞 600s turn deadline：operator 恢复程序（删 FAILED 行 + fresh session 正式续跑）
+
+**状态**: Accepted（运维事实记录 + operator 工具，不改任何接线）
+
+**背景**: P0013 Task 2 Phase J 真实 30 日连续 Replay（run 16468bd3）中，单一 per-run WS session 每 turn 累积约 27–30k tokens（完整 Investigation JSON + prior_cognition + 可见 evidence 列表）。到约 192k tokens（256k 窗口，ark-code-latest）时 Hermes 在 turn 前触发 preflight compression；实测压缩流式耗时 120→238→358→476→594/597s（"extending wait (ceiling 600s)"），kernel 的 600s turn deadline（"Turn timed out waiting for message.complete"）先到 → step FAILED + run FAILED + dropSession。08-15 / 08-20 / 08-25 / 08-29 / 09-01 共 5 次（5/30 日）。
+
+**决策**:
+1. 不 patch Hermes、不改 model/provider、不拆 prompt（Phase J 明确禁改 cognition/prompt/schema）。
+2. Operator 恢复程序固化为脚本 `scripts/phasej-recover-failed-step.ts <runId>`：事务内 ① DELETE 当前 current_business_date 上 status='FAILED' 的 step 行（失败步骤无快照、linkEvidenceRefs 未执行，无悬挂引用）② run 置回 RUNNING；其他表只读。随后正式 `POST /advance {mode:'step'}` 重跑——FAILED 路径已 dropSession，ensureSession 开**全新 Hermes session**，prior_cognition 从持久化快照加载（正式连续性机制，非替代接线）。
+3. 正式 route 的 mode='retry' 只清孤儿 RUNNING，run 终态 FAILED 时 runReplayRunStep 短路，故需要此 operator 级工具；脚本不绕过任何 kernel/SQL/HTTP 边界。
+
+**验证**: 5 次恢复均 `{deletedSteps:1, runsReset:1}`；恢复后 turn 全部真实 LLM 输出并持久化；30/30 COMPLETED、30 快照、1396 refs；No-Future-Leak 三层全过（含 HTTP 400 实测）。
+
+**含义/风险**: 这是 Hermes 运行时在长 Replay 场景的执行特性，不是 Fabric 缺陷。长窗口连续 Replay 的产品化需要：压缩预算前置告警（如 150k tokens 主动换 session）或 runner 内置 FAILED-step 自动换 session 续跑。列为后续候选项，Phase J 不实现。
+
+**Lineage**: ADR-084（Task 2 OrderEvidence, 2026-09-07）→ **ADR-085（Phase J compression 恢复程序, 2026-09-12）**。
+
+## ADR-086 (2026-09-12) — Replay 时间区间去硬编码：数据集发现端点 + 服务端覆盖校验 + manifest 哈希权威归位
+
+**状态**: Accepted（P0013+，代码已实现并经真实路径验证；operator Workspace 验收待亲手点击）
+
+**背景**: operator 2026-09-12 指出"今天都 9 月 12 号了，历史回放还是 8 月 4 日到 9 月 2 日硬编码"。审核结论：数据区间的**真实来源**是磁盘采集数据集的 `PROVENANCE_MANIFEST.json.time_window`（09-03 CDP 采集时按"近30天 end=today-1"冻结），loader 在创建 run 时惰性读盘（非启动加载）；但前端从不读取，存在 5 处硬编码（2 个 POST body、时间轴 enumerateDates、两处 `/30` 分母、开始面板静态 HTML）+ 月度评审硬编码 `2026-08`。审计另发现三个真实缺陷：① UI 创建的 run 落库 `source_manifest_hash='placeholder-hash'`（DB 实证 4/4 个 UI run），破坏 P0013"哈希是数据集真伪凭据"；② `loadRun` SELECT/映射缺 `start_business_date`，UI 的 `run.startBusinessDate` 恒 undefined，首日点"上一天"可越界到窗口之前；③ 越界区间（如 end=今天）会创建零证据空转 run。
+
+**决策**:
+1. **新增数据集发现端点** `GET /api/replay/datasets`：纯读取模块 `apps/ecommerce/runtime/replay/dataset-catalog.ts` 扫描 `<cwd>/data` 下含 `PROVENANCE_MANIFEST.json` 的目录，逐个经 fail-closed 的 `loadHistoricalDataset` 提取 {rootPath, dirName, shop, windowStart/End/Days, missingDates, manifestHash}；无 manifest 的目录静默忽略（data/ 有 fabric-workspace 等非数据集目录）；有 manifest 但契约失败的目录进 `skipped[]` 附原因，绝不拖垮整列表；按 windowEnd 降序。dataRoot 经 `ReplayRouterOptions.dataRoot` 可注入（测试用）。
+2. **服务端是区间与哈希的唯一权威**：`POST /runs` 先 resolve 路径并 `loadHistoricalDataset`，不可读→400；请求区间必须落在 `[manifest.window.start, manifest.window.end]`，越界→400 named error（`outside dataset coverage … — No-Future-Leak / No-Past-Coverage`）；落库哈希一律取磁盘重算的真哈希，`sourceManifestHash` 改为可选且客户端值被忽略（"normalize representation, never truth"——客户端只表达选择，不表达事实）。
+3. **UI 全部去硬编码**：开始面板改为两个 `type=date` 输入（min/max/默认值/天数/店铺/完整性全部来自发现端点），零数据集时禁用并提示先采集；`buildCreateBody()` 单一构造点消除 start/restart 重复；时间轴、step 分母、月度评审（改为 list 端点按 run 实际跨月渲染）全部从 run 窗口派生。
+4. **YAGNI 边界**：不做多数据集下拉（磁盘仅 1 个；>1 时端点已就位，UI 再开）；不做 09-03→09-12 数据（未采集，需另走 P0011.x CDP，属独立任务）；子窗口起跑时 `visibleEvidenceFor` 只有 `business_date ≤ T` 上界、无下界——Agent 仍可见 08-04 以来累积证据，这是"经营有历史"的正确语义，不改。
+5. `loadRun` 补 `start_business_date` 字段（SELECT + 行类型 + 映射 + ReplayRunState 接口），修复越界导航。
+6. **（operator 实测后追加）「重新回放」是导航动作，不是创建动作**：日期输入只存在于开始面板；第一版 onRestartClick 直接读隐藏输入（恒为全窗口默认值）POST 新建 run，operator 永远无法回到选择器（现象："刚还能选，现在又不能了"——且进页面时面板还会先渲染再被已有 run 藏掉，闪一下消失）。决策：`onRestartClick` 只做 RUNNING 拦截 + 回到 `showStartPanel()`（预填当前 run 窗口供修改），**run 创建唯一入口是面板「开始回放」onStartClick**；`loadReplay` 先藏面板，runs 列表决定显面板还是时间轴，空列表/fetch 失败才显面板（不留空白视图）。契约：`tests/contract/replay-restart-panel.contract.test.ts` 4 断言钉死（restart 不 POST、onStartClick 是唯一 POST 点、显隐面、无闪现）。
+
+**验证**: 新增 dataset-catalog 单测 4 个、路由测试新增 6 个（发现端点/真哈希忽略占位/无哈希可选/超覆盖双向 400/坏数据集 400）、runner 映射断言 1 个、restart-panel 契约 4 个；replay 全套件 134/134（14 文件）+ 真实对账 integration 4/4 绿；触碰文件 typecheck 0 错误（仓库既有 91 个无关错误未动）。真实路径（dev :3000）：GET /datasets 返 1 数据集 + 真哈希 df8783a7…；end=09-12 POST 返 400 named error；子窗口 08-20→09-02 真实 Hermes step COMPLETED，51 refs 跨 08-04→08-20、0 future、kind=observe、understanding 231 字；探针 run 已连同 91 evidence rows/快照/refs 全量清理，5 个 Phase J 保留 run 不动。
+
+**风险**: 旧 UI 缓存（浏览器未刷新）仍会 POST placeholder + 全窗口——服务端现已全部接管，行为正确但日期输入默认全窗口；仓库 typecheck 基线有 91 个既有错误（非本次引入）。
+
+**Lineage**: ADR-085（Phase J compression 恢复程序, 2026-09-12）→ **ADR-086（Replay 区间发现端点 + 覆盖校验 + 哈希权威, 2026-09-12）**。
+
+## ADR-087 — Shared Analysis Target Contract: business state/structure over curve narration
+
+Date: 2026-09-14 | Status: ACCEPTED | 依据：2026-09-14 Analysis Contract 双入口只读审计 + Production/Replay 双真实样例
+
+- **Context**: 审计确认 Production Runtime 与 Historical Replay 共用 parser/schema/WS 但 prompt 各自复制，且两份 contract 都只规定 epistemic hygiene（L1-L5），从未规定分析**目标**。注入证据是日环比标量序列与行业指数序列，Fabric 还预计算"方向性事实/跑赢跑输"；生产实测 47 次调查 46 次 observe、38 次零 capability 调用，Replay 真实输出出现"企稳/反弹/等待确认"曲线叙述且 UV 结构证据连续缺失被 observe 掩盖。
+- **Decision**:
+  1. 新增共享文本合同 `apps/ecommerce/runtime/investigation/analysis-contract.ts`（两条 prompt 唯一来源）：时间序列（含方向性事实/行业序列）是 Evidence 不是分析目标；目标=解释经营状态与经营结构；强制 `business_structure_coverage[]` 五维（product/orders/traffic/conversion/operations，covered|gap|not_applicable，gap 必须给 acquisition_need）。
+  2. 停止规则：存在结构 gap 禁止 observe，必须 evidence_gaps + requiredEvidence + investigationRequest 形成 acquisition need；证据足够必须输出非空经营 judgment（judgment）。
+  3. `observed_facts/supporting_evidence_refs/evidence_gaps` 从可选惯例提升为 fail-closed 正式义务（`analysis-obligations.ts`，在共享 `parseInvestigation` 两条解析路径强制；completed 回合必须给规范 stopReason）。
+  4. Production prompt 接入 prior cognition（从该 situation 上一个 completed investigation 构造 prior_hypothesis/judgment/recommendation，与 Replay 同语义、同共享渲染器）。
+  5. Replay snapshot 不再硬编码 `evidence_gaps=[]`，持久化 Agent 真实 gaps/observed/refs/coverage。
+- **不动**：ADR-083 epistemic L1-L5、acquisition/Replay 业务时间/No-Future-Leak、检测阈值（±15%/连续2-3天/UV<500 在 Knowledge 内未改）、业务 Knowledge 内容。
+- **真实验收（非单测）**：Replay run bd4edf24（新冻结数据集 87613e01）09-08/09 真实 Hermes step COMPLETED：五维 2 covered+3 gap（traffic/conversion/operations 带具体 acquisition need）、5 gaps、17-21 refs、结构 judgment、零曲线结论词；null acquisition_need 回合被 fail-closed 诚实拒绝（后加 null→默认值兼容）。Production sit_94f1fc… 真实回合：stopReason=judgment、3 covered+2 gap、5 gaps、3 refs、prior_cognition 2 条自上轮注入并重评。
+- **残留 seam（未修）**：Production recommendation 子回合仍由 stopReason 派生 kind（judgment→act），"保持观察"文本被标 act chip；Replay 用模型自报 kind。统一为内容驱动留待后续 ticket。
+
+## ADR-088 — Evidence Resolution Contract: Context Missing ≠ Evidence Missing (V1 = Order Evidence binding)
+
+Date: 2026-09-15 | Status: ACCEPTED | Proposal: P0013.2-evidence-resolution-contract.md | 真实验收：run 37e3fbd3（09-04→09-12）
+
+- **Context**：2026-09-14 cb110066 轨迹审计证明——订单检索能力存在但对 Agent operator-only，Agent 连续 6 天把"价格带/去顶 AOV/SKU 组合"合规登记为 evidence gap（frozen dataset 里有全部原始行），仅退款/买家身份是真缺口。
+- **Decision（严格按 Proposal，不做通用 Resolver）**：
+  1. 共享 Resolution 语义：IN_CONTEXT / RETRIEVED / UNAVAILABLE；声明 gap 前必须先 resolution（`analysis-contract.ts` EVIDENCE_RESOLUTION_SECTION，两条 prompt 共用）。
+  2. 唯一新 binding：MCP 只读工具 `fabric_replay_retrieve_orders` → 现有 POST /api/replay/runs/:id/orders/retrieve，紧凑投影（order_id/date/kind/sku/qty/amount/pay）+ 价格带 0-50/50-100/100-300/300-1000/1000+ + 聚合；Replay prompt 唯一放行的工具，禁止 live 采集/browser；Production binding 仍为 fabric_execute_capability。
+  3. fail-closed 义务：coverage gap 必须有对应维度 UNAVAILABLE resolution（带 note）；RETRIEVED 必须有 retrieved_refs；可从持有证据回答的问题禁止进 evidence_gaps。
+  4. `evidence_resolutions[]` 进 InvestigationSchema；snapshot 持久化；检索仍是 ≤T 可见切片（行带 date，单日分析自行过滤），No-Future-Leak 由服务端强制。
+- **真实验收（真 Hermes，run 37e3fbd3）**：09-05 起每日 3–4 个 RETRIEVED（parentOrdersByDay/topContributingOrders/skuGmvContribution/skuLinesByDay），8 天零订单结构误报；judgment 落到检索行（如 09-10：5 笔 ≥1000 元=64% GMV、ex-top1 AOV≈344、头单 20.1%，refs 为真实订单号）；退款/买家身份每日经检索后仍 UNAVAILABLE（真 gap 保持）；traffic/conversion/operations 诚实 UNAVAILABLE。09-04 在旧 Hermes 进程下运行（新工具未加载），Agent 诚实记录"工具本会话不可用"。
+- **运维事实（非产品缺陷）**：新增 MCP 工具需重启 hermes serve（工具表启动时加载）；回合进行中重启 Hermes 会因未捕获 WS 断连异常 crash fabric dev server（重启顺序：先停回合/再重启 Hermes/再重启 fabric）；hermes serve 需 HERMES_DASHBOARD_SESSION_TOKEN 与 fabric 一致（本次固定 token 存 /tmp/hermes-token.txt）；09-12 首次撞 message.complete 超时，清失败 step 重跑通过。
+
+## ADR-089 — Historical Evidence Enrichment: append-only human context + stale/rerun (P0013.3)
+
+Date: 2026-09-15 | Status: ACCEPTED | Proposal: P0013.3-historical-evidence-enrichment.md | 真实验收：run 37e3fbd3
+
+- **Context**：需要在回放中为历史日补充当时的事实/运营动作/人工反馈并重形成认知，同时不改原始 Evidence。
+- **Decision**：
+  1. 新表 `replay_evidence_enrichments`（append-only：fact/action/operator_feedback，source=operator）；`replay_run_steps.enrichment_stale_at` 标 stale；补充 T 即把 T 及以后 COMPLETED 认知打 stale，T 前不动。
+  2. 可见性同 Business Time 边界：kernel 只注入 `business_date <= T` 的补充；operator_feedback 在 prompt 中显式标注 "HUMAN INPUT, NOT AN OBSERVED FACT"，禁入 observed[]；action→后续 outcome 禁止自动因果（"describe sequence, not causation"）。
+  3. Runner：`rerunHistoricalStep`（单日重算，不动时钟，之后日期保持 stale）、`resetRunToEarliestStale`+`runReplayRunToCompletion`（从最早 stale 连续重放）；重跑生成新 step（stale 戳清空），snapshot/refs 随 step 删除重建，frozen evidence 不动。
+  4. Routes：POST/GET `/runs/:id/enrichments`、POST `/runs/:id/rerun`（mode=day|stale，NO_STALE 免 Hermes）；steps/day 端点返回 stale 标记。
+  5. Workspace：时间轴 ✎ 标记+stale 底色、日视图补充区（追加列表/三类选择/保存/保存并重放）、stale 横幅"从最早 stale 连续重放"。
+- **真实验收（真 Hermes）**：09-10 action（满300减40券）→ 10/11/12 stale、04-09 fresh；单日重放 09-10 COMPLETED，judgment 引用"运营店券为已记录共现因子，不作因果结论"；09-11 追加 fact（2 笔物流破损退款）+operator_feedback（大单为老客企业礼赠）→ fact 以"客服记录事实"入 observed，feedback 被记入 unknowns/evidence_gaps（"无法被订单行证实或证伪"）未升格 Fact；mode=stale 从 09-11 连续重放 2 步 COMPLETED；frozen manifest hash 87613e01 与文件 mtime 全程不变；evidence_observations 37 行不动。
+- **边界**：不做 Production feedback/Experience/Knowledge/Skill、反事实、因果归因、通用 Feedback 平台；未改 Analysis/Resolution/Acquisition/Business Time/阈值/Knowledge。Workspace 手工点击验收待 operator 硬刷新确认。
+
+### ADR-089 addendum — Product Acceptance Repair（2026-09-15）
+
+人工验收 6 项缺陷修复：
+1. **语义校正**：Enrichment 属于 Run+Business Date（非 step/completed/created_at）。所有时间轴格（含 pending/未来日）可点，任意合法日期 run 创建后即可补充（不要求先 replay）。
+2. Business Date 主显示（`Business Date: YYYY-MM-DD` 粗体），created_at 仅作"录入时间"次要元数据；DB 列 `business_date`、API 窗口校验、kernel `business_date <= T` 三层绑定审计一致。
+3. 表单 CSS 类名失配修复（HTML 为 `replay-enrich-form`，CSS 误写 `replay-enrichment-form`，导致宽度规则全失配/textarea 被挤出）；确定宽度 `width:600px;max-width:100%` 防 shrink-to-fit 回退。
+4. "请先暂停"死路消除：runner 本就支持 pause/resume（advance mode=pause/resume，exec 槽位已有 ⏸）。`重新回放` 改为自动 pause idle scheduler 后回开始面板；in-flight step 时按钮临时禁用并说明；"保存并重放"在 RUNNING 时等待 in-flight 完成或自动 pause 后 rerun，不要求 UI 外动作。
+5. viewedBusinessDate 与 cursor 解耦（timeline 点击只设 viewedDate；pending 格也绑定 onclick）。
+6. 未来未执行日补充=预置（stale UPDATE 只影响 COMPLETED step，无 step 则零 stale），replay 到 T 自然消费。
+- 真实 Hermes 后端 E2E（run bf740b90）：09-07 预置 action→执行时消费"券与 GMV 只记序列"；09-08 预置 fact→"停券与软化只记序列"；运行中未来日 09-08 预置零死锁；已完成日 09-04 补 fact→stale=[04,05]；mode=stale 从 09-04 连续重放 5 步 COMPLETED、0 stale、hash 87613e01 不变。
+- Headless Chrome（独立 9334 profile，不碰 9222）Workspace E2E 15/15：pending ○ 格可点可预置、Business Date 正确、表单 600px 不遮挡、rerun 按钮按 reached 状态启用/禁用、重新回放无 alert 死路。

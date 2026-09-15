@@ -19,13 +19,24 @@
 (function () {
   'use strict';
 
-  const apiGet = (path) => fetch(path).then((r) => r.json().then((body) => ({ status: r.status, body })));
+  // Tolerant of non-JSON error bodies (e.g. Express 404 HTML on stale
+  // servers) — callers must never get stuck because .json() threw.
+  const readBody = async (r) => {
+    const text = await r.text();
+    try {
+      return JSON.parse(text);
+    } catch {
+      return { success: false, error: 'HTTP ' + r.status + ' (非 JSON 响应: ' + text.slice(0, 120) + ')' };
+    }
+  };
+  const apiGet = (path) =>
+    fetch(path).then((r) => readBody(r).then((body) => ({ status: r.status, body })));
   const apiPost = (path, body) =>
     fetch(path, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify(body),
-    }).then((r) => r.json().then((resp) => ({ status: r.status, body: resp })));
+    }).then((r) => readBody(r).then((resp) => ({ status: r.status, body: resp })));
   const escHtml = (s) =>
     String(s == null ? '' : s)
       .replace(/&/g, '&amp;')
@@ -53,8 +64,19 @@
     runId: null,
     run: null, // { id, status, currentStep, currentBusinessDate, ... }
     steps: [], // [{ step_number, business_date, status, ... }]
+    // P0013+: dataset discovery result (newest acquisition on disk).
+    // { rootPath, shopId, shopName, windowStart, windowEnd, windowDays, missingDates, manifestHash }
+    dataset: null,
+    // P0013.1: all discovered datasets (newest first) for gap resolution.
+    allDatasets: [],
+    acquirePollTimer: null,
+    acquireInFlight: false,
     playTimer: null,
     viewedDate: null, // P0013 G2.4: pure-UI viewed date, independent of execution cursor
+    // P0013.3: operator enrichments (date → rows) + marker dates + stale flag.
+    enrichmentsByDate: new Map(),
+    enrichedDates: [],
+    enrichmentsLoadedFor: null,
     // P0013 G2.3-fix (2026-09-04): client-side concurrency lock. The
     // playTimer (setInterval 5s) used to fire advance() before the
     // previous call's kernel round-trip returned, so the runner kept
@@ -320,15 +342,16 @@
       return { enabled: false, reason: '当前不能跳过' };
     })();
 
-    // ── restart (重新回放) — create a fresh run ──
-    // G2.5-fix: the playTimer is "playing" in both RUNNING_ACTIVE
-    // (kernel mid-flight) and RUNNING_IDLE (kernel idle, waiting
-    // for next tick). Both must be paused before restart.
+    // ── restart (重新回放) — back to the start panel ──
+    // P0013.3 repair: never present the unreachable "请先暂停" state.
+    // The click handler itself pauses the scheduler (existing runner
+    // capability) before leaving; a step mid-flight disables until it
+    // completes (the control explains the transient wait).
     const restart = (() => {
-      if ((uiState === 'RUNNING_ACTIVE' || uiState === 'RUNNING_IDLE' || uiState === 'PAUSED') && isPlaying) {
-        return { enabled: false, reason: '请先暂停再重新回放' };
+      if (uiState === 'RUNNING_ACTIVE') {
+        return { enabled: false, reason: '当前 step 执行中，完成后即可重新回放（无需手动暂停）' };
       }
-      return { enabled: !isAdvancing, reason: null };
+      return { enabled: true, reason: null };
     })();
 
     return {
@@ -377,25 +400,381 @@
     setControlState(document.getElementById('replayRestartBtn'), ctrls.restart);
   };
 
-  // ── Start panel ───────────────────────────────────────────────────────
+  // ── Start panel (P0013+: dataset discovery, no hardcoded window) ──────
 
-  const renderStartPanel = () => {
-    const startBtn = document.getElementById('replayStartBtn');
-    if (!startBtn) return;
-    startBtn.onclick = onStartClick;
+  // P0013+ fix (2026-09-12): the date inputs live ONLY in the start panel.
+  // Previously 重新回放 POSTed a new run immediately, reading the hidden
+  // inputs (always full-window defaults) — the operator could never reach
+  // the range selector after the first run. Now 重新回放 returns here:
+  // hide the run surfaces, prefill the inputs with the abandoned run's
+  // window so the operator can edit it, and let 开始回放 create the run.
+  const showStartPanel = () => {
+    stopPlay();
+    stopAcquirePolling();
+    state.acquireInFlight = false;
+    hideGapSection();
+    const controls = document.getElementById('replayControls');
+    if (controls) controls.style.display = 'none';
+    const timeline = document.getElementById('replayTimeline');
+    if (timeline) timeline.style.display = 'none';
+    const daily = document.getElementById('replayDailyView');
+    if (daily) daily.style.display = 'none';
+    const review = document.getElementById('replayMonthlyReview');
+    if (review) review.style.display = 'none';
+    const start = document.getElementById('replayStartPanel');
+    if (start) start.style.display = '';
+    // Prefill from the run being abandoned (refreshDatasetPanel only fills
+    // empty inputs, so these values survive the fetch).
+    const startInput = document.getElementById('replayStartDate');
+    const endInput = document.getElementById('replayEndDate');
+    if (state.run) {
+      if (startInput && state.run.startBusinessDate) startInput.value = state.run.startBusinessDate;
+      if (endInput && state.run.endBusinessDate) endInput.value = state.run.endBusinessDate;
+    }
+    refreshDatasetPanel();
+  };
+
+  // Fetch GET /api/replay/datasets and render the panel: shop, coverage,
+  // date-input bounds/defaults, day count. The panel NEVER trusts literals
+  // — the server is the authority for window, hash, and dataset path.
+  const refreshDatasetPanel = async () => {
+    const shopEl = document.getElementById('replayShopName');
+    const rangeEl = document.getElementById('replayDatasetRange');
+    const coverageEl = document.getElementById('replayCoverageText');
+    const noticeEl = document.getElementById('replayDatasetNotice');
+    const startInput = document.getElementById('replayStartDate');
+    const endInput = document.getElementById('replayEndDate');
+    const btn = document.getElementById('replayStartBtn');
+    if (shopEl) shopEl.textContent = '加载中…';
+    const result = await apiGet('/api/replay/datasets');
+    if (result.status !== 200 || !result.body.success) {
+      state.dataset = null;
+      if (shopEl) shopEl.textContent = '数据集发现失败';
+      if (rangeEl) rangeEl.textContent = '—';
+      if (noticeEl) {
+        noticeEl.style.display = '';
+        noticeEl.textContent = '无法获取历史数据集: ' + (result.body?.error || result.status);
+      }
+      if (btn) btn.disabled = true;
+      return;
+    }
+    const list = Array.isArray(result.body.data?.datasets) ? result.body.data.datasets : [];
+    state.allDatasets = list;
+    if (list.length === 0) {
+      state.dataset = null;
+      if (shopEl) shopEl.textContent = '—';
+      if (rangeEl) rangeEl.textContent = '无可用历史数据集（可在下方发起真实采集）';
+      if (coverageEl) coverageEl.textContent = '—';
+      if (btn) btn.disabled = true;
+      const acquireBtn0 = document.getElementById('replayAcquireBtn');
+      if (acquireBtn0) acquireBtn0.disabled = true;
+      if (startInput) startInput.disabled = false;
+      if (endInput) endInput.disabled = false;
+      return;
+    }
+    // Newest acquisition window first (server sorts). Multiple datasets are
+    // not selectable yet (YAGNI); gap resolution considers all of them.
+    const ds = list[0];
+    state.dataset = ds;
+    if (shopEl) shopEl.textContent = ds.shopName;
+    if (rangeEl) {
+      rangeEl.textContent = ds.windowStart + ' → ' + ds.windowEnd + ' (' + ds.windowDays + ' 天)';
+    }
+    if (coverageEl) {
+      coverageEl.textContent =
+        ds.missingDates === 0
+          ? ds.windowDays + ' 天 (完整)'
+          : ds.windowDays - ds.missingDates + ' / ' + ds.windowDays + ' 天 (缺 ' + ds.missingDates + ' 天)';
+    }
+    // P0013.1: inputs are NOT bounded to dataset coverage — a need beyond
+    // coverage is a legal business request routed to real acquisition.
+    [startInput, endInput].forEach((el) => {
+      if (el) {
+        el.removeAttribute('min');
+        el.removeAttribute('max');
+        el.disabled = false;
+        el.onchange = updateRangeDays;
+      }
+    });
+    // Default to the full window; preserve an in-progress operator choice
+    // across view re-entries.
+    if (startInput && !startInput.value) startInput.value = ds.windowStart;
+    if (endInput && !endInput.value) endInput.value = ds.windowEnd;
+    if (btn) btn.disabled = false;
+    const acquireBtn = document.getElementById('replayAcquireBtn');
+    if (acquireBtn && !state.acquireInFlight) acquireBtn.disabled = false;
+    updateRangeDays();
+    if (noticeEl) {
+      const skipped = Array.isArray(result.body.data?.skipped) ? result.body.data.skipped : [];
+      if (skipped.length > 0) {
+        noticeEl.style.display = '';
+        noticeEl.textContent = '注意: 已跳过无法加载的数据集目录: ' + skipped.map((s) => s.dirName).join(', ');
+      }
+    }
+  };
+
+  const updateRangeDays = () => {
+    const daysEl = document.getElementById('replayRangeDays');
+    const startInput = document.getElementById('replayStartDate');
+    const endInput = document.getElementById('replayEndDate');
+    if (!daysEl || !startInput || !endInput) return;
+    const n = enumerateDates(startInput.value, endInput.value).length;
+    daysEl.textContent = n > 0 ? '共 ' + n + ' 天' : '区间无效';
+  };
+
+  // Read + validate the two date inputs. Returns { start, end } or { error }.
+  // P0013.1: out-of-coverage dates are NOT an error — they express a
+  // business need routed to real acquisition.
+  const readRequestedWindow = () => {
+    const startInput = document.getElementById('replayStartDate');
+    const endInput = document.getElementById('replayEndDate');
+    const start = startInput ? startInput.value : '';
+    const end = endInput ? endInput.value : '';
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(start) || !/^\d{4}-\d{2}-\d{2}$/.test(end)) {
+      return { error: '请选择合法的起止日期 (YYYY-MM-DD)' };
+    }
+    if (start > end) return { error: '起始日期不能晚于结束日期' };
+    return { start, end };
+  };
+
+  // V1 coverage = ONE self-contained dataset containing every requested
+  // date (no dataset merge). Mirrors the server gap resolver; server stays
+  // the authority and re-checks on POST.
+  const findCoveringDataset = (start, end) => {
+    const all = Array.isArray(state.allDatasets) && state.allDatasets.length > 0
+      ? state.allDatasets
+      : (state.dataset ? [state.dataset] : []);
+    const dates = enumerateDates(start, end);
+    return (
+      all.find((ds) => {
+        if (ds.windowStart > start || ds.windowEnd < end) return false;
+        const holes = new Set(Array.isArray(ds.missingDateList) ? ds.missingDateList : []);
+        return dates.every((d) => !holes.has(d));
+      }) || null
+    );
+  };
+
+  // Build the POST /runs body. Returns { body } or { gap } or { error }.
+  const buildCreateBody = () => {
+    const win = readRequestedWindow();
+    if (win.error) return { error: win.error };
+    const covered = findCoveringDataset(win.start, win.end);
+    if (!covered) return { gap: { start: win.start, end: win.end } };
+    return {
+      body: {
+        shopId: covered.shopId,
+        shopName: covered.shopName,
+        // Absolute path from discovery; the server re-resolves and reads
+        // the real manifest hash itself (no client-supplied hash).
+        sourceDatasetPath: covered.rootPath,
+        startBusinessDate: win.start,
+        endBusinessDate: win.end,
+      },
+    };
+  };
+
+  const showGapSection = (start, end) => {
+    const section = document.getElementById('replayGapSection');
+    const text = document.getElementById('replayGapText');
+    const status = document.getElementById('replayAcquireStatus');
+    const ranges = (state.allDatasets || [])
+      .map((ds) => ds.windowStart + ' → ' + ds.windowEnd)
+      .join('；');
+    if (text) {
+      text.textContent =
+        '请求区间 ' + start + ' → ' + end +
+        ' 超出已冻结数据覆盖（现有: ' + (ranges || '无') + '）。';
+    }
+    if (status) status.textContent = '';
+    if (section) section.style.display = '';
+  };
+
+  const hideGapSection = () => {
+    const section = document.getElementById('replayGapSection');
+    if (section) section.style.display = 'none';
+    const detail = document.getElementById('replayAcquireDetail');
+    if (detail) detail.style.display = 'none';
+  };
+
+  const setAcquireStatus = (message, isError) => {
+    const status = document.getElementById('replayAcquireStatus');
+    if (status) {
+      status.textContent = message;
+      status.style.color = isError ? '#b00020' : '';
+    }
+  };
+
+  const stopAcquirePolling = () => {
+    if (state.acquirePollTimer) {
+      clearInterval(state.acquirePollTimer);
+      state.acquirePollTimer = null;
+    }
+  };
+
+  // Neutral operator-facing labels for agent tool names. The raw names
+  // stay in the on-disk trajectory for audit; the panel never prints
+  // acquisition-implementation vocabulary.
+  const ACQUIRE_TOOL_LABELS = {
+    terminal: '执行操作',
+    read_file: '读取文件',
+    write_file: '写入文件',
+    patch: '修改文件',
+    search_files: '搜索文件',
+    vision_analyze: '核验截图',
+    execute_code: '执行代码',
+    todo: '规划任务',
+    browser_exec: '浏览器操作',
+  };
+
+  const fmtEventTime = (iso) => {
+    if (!iso) return '';
+    const d = new Date(iso);
+    return Number.isNaN(d.getTime()) ? '' : d.toLocaleTimeString('zh-CN', { hour12: false });
+  };
+
+  const renderAcquireEvents = (payload) => {
+    const detail = document.getElementById('replayAcquireDetail');
+    const log = document.getElementById('replayAcquireLog');
+    if (!detail || !log) return;
+    const events = Array.isArray(payload.events) ? payload.events : [];
+    if (events.length === 0) return;
+    detail.style.display = '';
+    const lines = [];
+    let lastDelta = '';
+    for (const e of events) {
+      const t = fmtEventTime(e.at);
+      if (e.kind === 'tool.start') {
+        lines.push(
+          '<div>[' + escHtml(t) + '] ▶ ' + escHtml(ACQUIRE_TOOL_LABELS[e.name] || 'Agent 动作') + '</div>',
+        );
+      } else if (e.kind === 'tool.complete') {
+        lines.push(
+          '<div>[' + escHtml(t) + '] ✓ ' +
+          escHtml(ACQUIRE_TOOL_LABELS[e.name] || 'Agent 动作') +
+          (e.duration_s != null ? ' (' + e.duration_s + 's)' : '') + '</div>',
+        );
+      } else if (e.kind === 'message.delta' && e.text) {
+        lastDelta = e.text;
+      } else if (e.kind === 'turn.start') {
+        lines.push('<div>[' + escHtml(t) + '] 采集开始</div>');
+      } else if (e.kind === 'turn.result') {
+        lines.push('<div>[' + escHtml(t) + '] 回合结束</div>');
+      }
+    }
+    if (lastDelta) {
+      lines.push('<div class="muted" style="margin-top:4px">Agent: ' + escHtml(lastDelta) + '</div>');
+    }
+    log.innerHTML = lines.slice(-80).join('');
+    log.scrollTop = log.scrollHeight;
+  };
+
+  const finishAcquireUi = (job, btn) => {
+    stopAcquirePolling();
+    state.acquireInFlight = false;
+    if (btn) btn.disabled = false;
+    if (job.status === 'SUCCEEDED') {
+      setAcquireStatus(
+        '采集完成并已冻结: 实际覆盖 ' + (job.actualStart || '?') + ' → ' + (job.actualEnd || '?') +
+        '。数据集已加入发现列表，请确认区间后点「开始历史回放」。',
+      );
+      void refreshDatasetPanel().then(() => {
+        // Clamp the request to what the source actually provided.
+        const startInput = document.getElementById('replayStartDate');
+        const endInput = document.getElementById('replayEndDate');
+        if (startInput && job.actualStart) startInput.value = job.actualStart;
+        if (endInput && job.actualEnd) endInput.value = job.actualEnd;
+        updateRangeDays();
+        hideGapSection();
+      });
+    } else {
+      setAcquireStatus(
+        '采集未成功: ' + job.status + (job.failureCode ? ' (' + job.failureCode + ')' : '') +
+        (job.errorMessage ? ' — ' + job.errorMessage : ''),
+        true,
+      );
+    }
+  };
+
+  const pollAcquireJob = (jobId, btn, startedAt) => {
+    stopAcquirePolling();
+    state.acquirePollTimer = setInterval(async () => {
+      const [jobR, eventsR] = await Promise.all([
+        apiGet('/api/replay/acquisitions/' + jobId),
+        apiGet('/api/replay/acquisitions/' + jobId + '/events'),
+      ]);
+      if (jobR.status === 200 && jobR.body.success && eventsR.status === 200 && eventsR.body.success) {
+        renderAcquireEvents(eventsR.body.data);
+      }
+      if (jobR.status !== 200 || !jobR.body.success) return;
+      const job = jobR.body.data;
+      if (job.status === 'RUNNING' || job.status === 'QUEUED') {
+        const mins = startedAt ? Math.max(0, Math.round((Date.now() - startedAt) / 60000)) : 0;
+        const steps = eventsR.body?.data?.toolCalls ?? 0;
+        setAcquireStatus(
+          '真实采集进行中: ' + job.status + ' — 已 ' + mins + ' 分钟、约 ' + steps +
+          ' 个动作（约需 10–30 分钟，请保持商智登录，可展开执行轨迹查看进度）…',
+        );
+        return;
+      }
+      finishAcquireUi(job, btn);
+    }, 3000);
+  };
+
+  const onAcquireClick = async () => {
+    if (state.acquireInFlight) return;
+    const win = readRequestedWindow();
+    if (win.error) {
+      alert(win.error);
+      return;
+    }
+    const ds = state.dataset;
+    if (!ds) {
+      setAcquireStatus('缺少店铺身份：尚无已发现数据集，无法发起采集。', true);
+      return;
+    }
+    const btn = document.getElementById('replayAcquireBtn');
+    state.acquireInFlight = true;
+    if (btn) btn.disabled = true;
+    setAcquireStatus('正在创建真实采集任务…');
+    let created;
+    try {
+      created = await apiPost('/api/replay/acquisitions', {
+        shopId: ds.shopId,
+        shopName: ds.shopName,
+        startBusinessDate: win.start,
+        endBusinessDate: win.end,
+      });
+    } catch (err) {
+      state.acquireInFlight = false;
+      if (btn) btn.disabled = false;
+      setAcquireStatus('采集任务请求失败（服务可能未重启/不可达）: ' + (err && err.message ? err.message : err), true);
+      return;
+    }
+    if (created.status !== 201 || !created.body.success) {
+      state.acquireInFlight = false;
+      if (btn) btn.disabled = false;
+      setAcquireStatus('采集任务创建失败: ' + (created.body.error || created.status), true);
+      return;
+    }
+    const jobId = created.body.data.jobId;
+    setAcquireStatus('采集任务已提交 (' + jobId + ')，等待真实采集与对账冻结…');
+    pollAcquireJob(jobId, btn, Date.now());
   };
 
   const onStartClick = async () => {
+    hideGapSection();
+    const built = buildCreateBody();
+    if (built.error) {
+      alert(built.error);
+      return;
+    }
+    if (built.gap) {
+      showGapSection(built.gap.start, built.gap.end);
+      return;
+    }
     const btn = document.getElementById('replayStartBtn');
     if (btn) btn.disabled = true;
-    const result = await apiPost('/api/replay/runs', {
-      shopId: 'jd_shop_001',
-      shopName: '祁门红茶官方旗舰店',
-      sourceDatasetPath: 'data/jd_acquisition_20260903_0834',
-      sourceManifestHash: 'placeholder-hash',
-      startBusinessDate: '2026-08-04',
-      endBusinessDate: '2026-09-02',
-    });
+    const result = await apiPost('/api/replay/runs', built.body);
     if (btn) btn.disabled = false;
     if (result.status === 200 && result.body.success) {
       state.runId = result.body.data.runId;
@@ -421,9 +800,23 @@
       if (steps.status === 200 && steps.body.success) {
         state.steps = steps.body.data || [];
       }
+      // P0013.3 — load operator enrichments (timeline markers + day pane).
+      const enr = await apiGet('/api/replay/runs/' + state.runId + '/enrichments');
+      if (enr.status === 200 && enr.body.success) {
+        const byDate = new Map();
+        (enr.body.data.enrichments || []).forEach((e) => {
+          if (!byDate.has(e.businessDate)) byDate.set(e.businessDate, []);
+          byDate.get(e.businessDate).push(e);
+        });
+        state.enrichmentsByDate = byDate;
+        state.enrichedDates = enr.body.data.enrichedDates || [];
+        state.enrichmentsLoadedFor = state.runId;
+      }
       renderTimeline();
+      renderStaleBanner();
       renderStatus();
       applyControls();
+      if (state.viewedDate) renderEnrichmentPane(state.viewedDate);
     }
   };
 
@@ -439,66 +832,22 @@
   // ── Controls ─────────────────────────────────────────────────────────
 
   const onRestartClick = async () => {
-    // P0013 G-fix (2026-09-03): user can ALWAYS start a new run, even
-    // when a prior run (e.g. the stub-era 30/30 run) is in DB. The old
-    // run stays as historical record; the new run takes over the view.
-    // The button is disabled while a run is actively RUNNING to avoid
-    // operator confusion about which run the view is showing.
-    // P0013 G1.6-fix: PAUSED is allowed (the operator explicitly paused
-    // the run — usually to start fresh). Only RUNNING blocks restart.
-    // P0013 P1-3-fix (2026-09-04): confirm before creating a new Run.
-    // The old Run is preserved in DB; only the view's pointer changes.
+    // P0013+ fix: restart returns to the start panel (the old run stays
+    // in DB untouched). P0013.3 repair — no "please pause first" dead
+    // end: if the scheduler is idle-RUNNING we pause it ourselves
+    // (existing pauseReplayRun capability via advance mode=pause); if a
+    // step is mid-flight the button is disabled by deriveReplayControls
+    // until it completes. PAUSED runs need no action.
     // eslint-disable-next-line no-console
-    console.log('[replay] control clicked: restart', 'currentRunId=', state.runId, 'status=', state.run && state.run.status);
+    console.log('[replay] control clicked: restart → back to start panel', 'currentRunId=', state.runId, 'status=', state.run && state.run.status);
     if (state.run && state.run.status === 'RUNNING') {
-      alert('当前 run 还在 RUNNING，请先点「⏸ 暂停」再开始新一次。');
-      return;
+      const stepRunning = (state.steps || []).some((s) => s.status === 'RUNNING');
+      if (stepRunning) return; // control disabled; transient wait
+      stopPlay();
+      await apiPost('/api/replay/runs/' + state.runId + '/advance', { mode: 'pause' });
+      await refreshRunState();
     }
-    if (!confirm('将创建一次新的历史回放，现有回放记录不会删除。')) {
-      return;
-    }
-    const btn = document.getElementById('replayRestartBtn');
-    if (btn) btn.disabled = true;
-    try {
-      const result = await apiPost('/api/replay/runs', {
-        shopId: 'jd_shop_001',
-        shopName: '祁门红茶官方旗舰店',
-        sourceDatasetPath: 'data/jd_acquisition_20260903_0834',
-        sourceManifestHash: 'placeholder-hash',
-        startBusinessDate: '2026-08-04',
-        endBusinessDate: '2026-09-02',
-      });
-      if (result.status === 200 && result.body.success) {
-        // eslint-disable-next-line no-console
-        console.log('[replay] restart created new runId=', result.body.data.runId);
-        state.runId = result.body.data.runId;
-        await refreshRunState();
-        // P0013 P0-2-fix (2026-09-04): the new Run's executionCursor
-        // is its startBusinessDate (2026-08-04). The OLD viewedDate
-        // (e.g. 2026-09-02 if the operator was browsing the end of
-        // the previous Run) is now invalid — pointing past the new
-        // Run's startBusinessDate disables Next and orphans the
-        // timeline. Reset viewedDate to the new Run's cursor before
-        // applyControls / renderTimeline, so 下一天 is enabled and
-        // the timeline starts on 08-04.
-        if (state.run) {
-          state.viewedDate = state.run.currentBusinessDate || state.run.startBusinessDate;
-        }
-        showControls();
-        // The new run starts at step 0, so the timeline is all ○ except
-        // the ◀ Current on 08-04. The user clicks [▶ 下一天] to begin.
-      } else {
-        // eslint-disable-next-line no-console
-        console.error('[replay] restart failed:', result.status, result.body);
-        alert('开始新一次回放失败: ' + (result.body?.error || '未知错误'));
-      }
-    } catch (err) {
-      // eslint-disable-next-line no-console
-      console.error('[replay] restart threw:', err);
-      alert('开始新一次回放异常: ' + (err instanceof Error ? err.message : String(err)));
-    } finally {
-      if (btn) btn.disabled = false;
-    }
+    showStartPanel();
   };
 
   // The 6 stable buttons are bound to their handlers EXACTLY ONCE
@@ -529,6 +878,24 @@
     if (retryBtn) retryBtn.onclick = onRetryClick;
     if (skipBtn) skipBtn.onclick = onSkipClick;
     if (restartBtn) restartBtn.onclick = onRestartClick;
+    // P0013.3 — enrichment + stale continuous replay (bound once).
+    const enrSave = document.getElementById('replayEnrichmentSaveBtn');
+    const enrRerun = document.getElementById('replayEnrichmentRerunBtn');
+    const rerunStale = document.getElementById('replayRerunStaleBtn');
+    if (enrSave) enrSave.onclick = () => submitEnrichment(false);
+    if (enrRerun) enrRerun.onclick = () => submitEnrichment(true);
+    if (rerunStale) {
+      rerunStale.onclick = async () => {
+        rerunStale.disabled = true;
+        const r = await apiPost('/api/replay/runs/' + state.runId + '/rerun', { mode: 'stale' });
+        await refreshRunState();
+        if (state.viewedDate) renderDailyView(state.viewedDate);
+        rerunStale.disabled = false;
+        if (r.status !== 200 || !r.body.success) {
+          alert('连续重放失败: ' + ((r.body && r.body.error) || r.status));
+        }
+      };
+    }
     controlsBound = true;
     // eslint-disable-next-line no-console
     console.log('[replay] controls bound: prev/next/exec/retry/skip/restart (6 stable, one-time)');
@@ -872,7 +1239,9 @@
     const cells = document.getElementById('replayTimelineCells');
     if (!cells) return;
     cells.innerHTML = '';
-    const allDates = enumerateDates('2026-08-04', '2026-09-02');
+    // P0013+: the timeline follows THIS run's persisted window, not a
+    // hardcoded 30-day range.
+    const allDates = enumerateDates(state.run.startBusinessDate, state.run.endBusinessDate);
     const stepMap = new Map();
     state.steps.forEach((s) => stepMap.set(s.business_date, s));
     const currentDate = state.run && state.run.currentBusinessDate;
@@ -887,51 +1256,64 @@
         // SKIPPED_NO_DATA = ⊘, RUNNING = ◐. All clickable to open
         // the daily view (FAILED/SKIPPED show the reason in the
         // status header).
+        const enriched = state.enrichedDates.includes(d);
+        const stale = !!step.enrichment_stale_at;
+        const enrMark = enriched ? ' ✎' : '';
         if (step.status === 'FAILED') {
-          cell.textContent = d.slice(5) + ' ✗';
+          cell.textContent = d.slice(5) + ' ✗' + enrMark;
           cell.title = d + ' — FAILED: ' + (step.error || '');
           cell.className = 'replay-cell replay-cell-failed';
         } else if (step.status === 'SKIPPED_NO_DATA') {
-          cell.textContent = d.slice(5) + ' ⊘';
+          cell.textContent = d.slice(5) + ' ⊘' + enrMark;
           cell.title = d + ' — SKIPPED: ' + (step.error || '');
           cell.className = 'replay-cell replay-cell-skipped';
         } else if (step.status === 'RUNNING') {
-          cell.textContent = d.slice(5) + ' ◐';
+          cell.textContent = d.slice(5) + ' ◐' + enrMark;
           cell.title = d + ' — RUNNING (in flight)';
           cell.className = 'replay-cell replay-cell-running';
         } else {
-          cell.textContent = d.slice(5) + ' ●';
-          cell.title = d + ' — COMPLETED';
+          cell.textContent = d.slice(5) + ' ●' + enrMark;
+          cell.title = d + ' — COMPLETED' + (stale ? ' — STALE (补充后待重放)' : '') + (enriched ? ' — 有补充' : '');
+          if (stale) cell.className = 'replay-cell replay-cell-stale';
         }
-        cell.onclick = async () => {
-          // P0013 G2.4: clicking a timeline cell navigates viewedDate
-          // (does NOT advance execution). The daily view pane re-
-          // renders the selected day's persisted snapshot.
-          state.viewedDate = d;
-          await renderDailyView(d);
-          applyControls();
-        };
       } else if (d === currentDate) {
         cell.textContent = d.slice(5) + ' ◀';
-        cell.title = d + ' — Current';
+        cell.title = d + ' — Current（可点击查看/补充）';
       } else {
         cell.textContent = d.slice(5) + ' ○';
-        cell.title = d + ' — Pending';
+        cell.title = d + ' — Pending（未 replay，可点击预置补充）';
       }
+      // P0013.3 repair: EVERY in-window date is clickable — browsing is
+      // decoupled from the execution cursor. Future/pending dates show
+      // the enrichment pane so operators can preset fact/action/feedback
+      // that replay will consume when it reaches the date.
+      cell.onclick = async () => {
+        state.viewedDate = d;
+        await renderDailyView(d);
+        applyControls();
+      };
       cells.appendChild(cell);
     });
   };
 
   const enumerateDates = (start, end) => {
     const out = [];
+    if (!start || !end) return out;
     const [sy, sm, sd] = start.split('-').map(Number);
     const [ey, em, ed] = end.split('-').map(Number);
     const a = Date.UTC(sy, sm - 1, sd);
     const b = Date.UTC(ey, em - 1, ed);
+    if (Number.isNaN(a) || Number.isNaN(b) || a > b) return out;
     for (let t = a; t <= b; t += 24 * 60 * 60 * 1000) {
       out.push(new Date(t).toISOString().slice(0, 10));
     }
     return out;
+  };
+
+  // P0013+: total planned days for the CURRENT run (replaces hardcoded /30).
+  const runTotalDays = () => {
+    if (!state.run || !state.run.startBusinessDate) return 0;
+    return enumerateDates(state.run.startBusinessDate, state.run.endBusinessDate).length;
   };
 
   const renderStatus = () => {
@@ -949,7 +1331,7 @@
       'state=' + state.run.status +
       ' | cursor=' + cursor +
       ' | viewed=' + viewed + divergeTag +
-      ' | step ' + state.run.currentStep + '/30' +
+      ' | step ' + state.run.currentStep + '/' + runTotalDays() +
       ' | Run ' + state.run.id.slice(0, 8);
     // P0013 G2.3-fix: when an advance call is in flight, append the
     // elapsed seconds so the operator sees the kernel is working,
@@ -972,7 +1354,8 @@
     if (content) content.innerHTML = '<p class="muted">加载中…</p>';
     const result = await apiGet('/api/replay/runs/' + state.runId + '/steps/' + businessDate);
     if (result.status !== 200 || !result.body.success) {
-      if (content) content.innerHTML = '<p class="muted">这一天还没有 cognition（点击 ▶ 下一天 先产生一次）。</p>';
+      if (content) content.innerHTML = '<p class="muted">这一天还没有 cognition（可先在下方补充当时情况，再重放；或点击 ▶ 下一天 产生一次）。</p>';
+      renderEnrichmentPane(businessDate);
       return;
     }
     const { step, snapshot, evidenceRefs } = result.body.data;
@@ -1004,7 +1387,7 @@
       '<div class="replay-section replay-step-status" data-step-status="' +
         escHtml(stepStatus) +
         '"><h5>Step 状态</h5>' +
-        '<p>' + statusBadge + ' <span class="muted">step ' + escHtml(String(step.step_number)) + ' / 30</span></p>' +
+        '<p>' + statusBadge + ' <span class="muted">step ' + escHtml(String(step.step_number)) + ' / ' + runTotalDays() + '</span></p>' +
         (step.error ? '<p class="muted">错误: ' + escHtml(step.error) + '</p>' : '') +
         '</div>',
     );
@@ -1097,27 +1480,231 @@
       html.push('<p class="muted">该 step 已运行但未产生 cognition snapshot。</p>');
     }
     if (content) content.innerHTML = html.join('');
+
+    // P0013.3 — stale cognition badge (this day was invalidated by an
+    // enrichment at/after it and has not been re-played).
+    if (step.enrichment_stale_at) {
+      const statusWrap = document.querySelector('.replay-step-status');
+      if (statusWrap) {
+        statusWrap.insertAdjacentHTML(
+          'beforeend',
+          ' <span class="replay-badge" style="background:#fff8ef;color:#92400e;border:1px solid #d9b38c">STALE · 补充后待重放</span>',
+        );
+      }
+    }
+    renderEnrichmentPane(businessDate);
+  };
+
+  // ── P0013.3 Historical Evidence Enrichment ────────────────────────────
+
+  const renderStaleBanner = () => {
+    const banner = document.getElementById('replayStaleBanner');
+    if (!banner) return;
+    const staleDates = (state.steps || [])
+      .filter((s) => s.enrichment_stale_at)
+      .map((s) => s.business_date);
+    if (staleDates.length === 0) {
+      banner.style.display = 'none';
+      return;
+    }
+    banner.style.display = '';
+    const text = document.getElementById('replayStaleText');
+    if (text) {
+      text.textContent = '有 ' + staleDates.length + ' 天 cognition 已 stale（最早 ' + staleDates[0] + '，补充后需重放）。';
+    }
+  };
+
+  // P0013.3 repair — enrichments belong to Run + Business Date (NOT to a
+  // step / completed cognition / created_at). The pane is therefore
+  // available for EVERY in-window date the operator clicks, including
+  // future (never-replayed) dates. Preset enrichments are consumed
+  // naturally when replay reaches that date.
+  const renderEnrichmentPane = (businessDate) => {
+    const wrap = document.getElementById('replayEnrichment');
+    if (!wrap) return;
+    wrap.style.display = '';
+    const dateEl = document.getElementById('replayEnrichmentDate');
+    if (dateEl) dateEl.textContent = businessDate;
+    const listEl = document.getElementById('replayEnrichmentList');
+    const rows = state.enrichmentsByDate.get(businessDate) || [];
+    const step = (state.steps || []).find((s) => s.business_date === businessDate);
+    const cursor = state.run && state.run.currentBusinessDate;
+    const rel =
+      step && step.status === 'COMPLETED'
+        ? '已 replay（补充将把本日及以后标 stale）'
+        : businessDate >= (state.run?.startBusinessDate || '') && businessDate > (cursor || '')
+          ? '未 replay（预置补充：执行到该日自动读取）'
+          : '该日尚无 cognition（补充为预置，执行到该日自动读取）';
+    if (listEl) {
+      const header =
+        '<div class="muted" style="font-size:0.74rem;margin-bottom:6px">' +
+        escHtml(rel) +
+        '</div>';
+      if (rows.length === 0) {
+        listEl.innerHTML = header + '<span class="muted">该业务日暂无补充（追加保存，不覆盖历史）。</span>';
+      } else {
+        listEl.innerHTML =
+          header +
+          rows
+            .map(
+              (e) =>
+                '<div class="replay-enrichment enr-' +
+                escHtml(e.kind) +
+                '"><span class="enr-kind">' +
+                escHtml(e.kind) +
+                '</span>' +
+                escHtml(e.content) +
+                '<div class="muted" style="font-size:0.72rem">Business Date ' +
+                escHtml(e.businessDate) +
+                ' · 录入时间 ' +
+                escHtml((e.createdAt || '').slice(0, 16).replace('T', ' ')) +
+                ' · source=' +
+                escHtml(e.source) +
+                '</div></div>',
+            )
+            .join('');
+      }
+    }
+    const contentEl = document.getElementById('replayEnrichmentContent');
+    if (contentEl) {
+      contentEl.value = '';
+      contentEl.dataset.businessDate = businessDate;
+    }
+    // "保存并重放这一天" is only actionable when this business date has
+    // already been reached by the run cursor (rerunning a future day has
+    // no cognition to replace; the preset is consumed on natural arrival).
+    const rerunBtn = document.getElementById('replayEnrichmentRerunBtn');
+    if (rerunBtn) {
+      const reached = !!step;
+      rerunBtn.disabled = !reached;
+      rerunBtn.title = reached
+        ? '保存后立即重新形成该业务日认知（约 2–7 分钟）'
+        : '该业务日尚未 replay；保存为预置补充，连续回放到达该日时自动读取';
+    }
+  };
+
+  const submitEnrichment = async (andRerun) => {
+    const date = state.viewedDate;
+    const contentEl = document.getElementById('replayEnrichmentContent');
+    const kindEl = document.getElementById('replayEnrichmentKind');
+    const statusEl = document.getElementById('replayEnrichmentStatus');
+    if (!date || !contentEl || !kindEl) return;
+    const content = contentEl.value.trim();
+    if (!content) {
+      if (statusEl) statusEl.textContent = '请输入补充内容';
+      return;
+    }
+    const btn1 = document.getElementById('replayEnrichmentSaveBtn');
+    const btn2 = document.getElementById('replayEnrichmentRerunBtn');
+    const setBusy = (b) => {
+      if (btn1) btn1.disabled = b;
+      if (btn2 && btn2.title.startsWith('保存后')) btn2.disabled = b;
+    };
+    setBusy(true);
+    if (statusEl) statusEl.textContent = '保存中…';
+    const body = { businessDate: date, kind: kindEl.value, content };
+    const created = await apiPost('/api/replay/runs/' + state.runId + '/enrichments', body);
+    if (created.status !== 201 || !created.body.success) {
+      if (statusEl) statusEl.textContent = '保存失败: ' + (created.body.error || created.status);
+      setBusy(false);
+      return;
+    }
+    if (statusEl) statusEl.textContent = '已保存（Business Date ' + date + '）';
+    await refreshRunState();
+    renderEnrichmentPane(date);
+    contentEl.value = '';
+    setBusy(false);
+    if (!andRerun) return;
+
+    // ── Save + rerun: never a dead end. If a step is mid-flight
+    // (RUNNING), wait for it to finish; if the run is mid continuous
+    // replay (RUNNING, idle), pause the scheduler first (existing
+    // pauseReplayRun capability surfaced through advance mode=pause),
+    // then rerun the single business date. ──
+    if (statusEl) statusEl.textContent = '准备重放 ' + date + '…';
+    const waitForNotRunningStep = async () => {
+      for (let i = 0; i < 120; i += 1) {
+        const step = (state.steps || []).find((s) => s.business_date === date);
+        const anyRunning = (state.steps || []).some((s) => s.status === 'RUNNING');
+        if (!anyRunning) return true;
+        await new Promise((r) => setTimeout(r, 5000));
+        await refreshRunState();
+        void step;
+      }
+      return false;
+    };
+
+    let anyRunning = (state.steps || []).some((s) => s.status === 'RUNNING');
+    if (anyRunning) {
+      if (statusEl) statusEl.textContent = '有 step 正在执行，等待其完成（最多 10 分钟）…';
+      const ok = await waitForNotRunningStep();
+      if (!ok) {
+        if (statusEl) statusEl.textContent = '当前 step 仍在执行；补充已保存，可稍后用「连续重放 stale」补算';
+        return;
+      }
+    }
+    // Continuous replay scheduler idle (run=RUNNING, no RUNNING step):
+    // pause the run state so the scheduler cannot interleave, rerun, then
+    // the run is left PAUSED (operator resumes via 继续).
+    if (state.run && state.run.status === 'RUNNING') {
+      await apiPost('/api/replay/runs/' + state.runId + '/advance', { mode: 'pause' });
+      await refreshRunState();
+    }
+    if (statusEl) statusEl.textContent = '正在重放 ' + date + '（真实 Hermes，约 2–7 分钟）…';
+    const rerun = await apiPost('/api/replay/runs/' + state.runId + '/rerun', {
+      mode: 'day',
+      businessDate: date,
+    });
+    await refreshRunState();
+    await renderDailyView(date);
+    if (rerun.status === 200 && rerun.body.success && rerun.body.data.result.status !== 'FAILED') {
+      if (statusEl) {
+        statusEl.textContent =
+          '已基于补充重放 ' + date + '（后续日期若 stale，可用「从最早 stale 连续重放」）';
+      }
+    } else {
+      if (statusEl) {
+        statusEl.textContent =
+          '补充已保存，但重放失败: ' +
+          ((rerun.body && rerun.body.error) || (rerun.body?.data?.result?.error) || rerun.status);
+      }
+    }
   };
 
   // ── Monthly review ────────────────────────────────────────────────────
 
   const renderMonthlyReviewIfAny = async () => {
-    // Auto-show August review (only one that has a complete 28-day partial window).
+    // P0013+: the review month is derived from THIS run's window (the runner
+    // generates a review whenever a step crosses a month boundary), not a
+    // hardcoded 2026-08. List first, then fetch each generated review.
     if (!state.runId) return;
-    const result = await apiGet('/api/replay/runs/' + state.runId + '/monthly-reviews/2026-08');
-    if (result.status === 200 && result.body.success && result.body.data) {
-      renderMonthlyReview(result.body.data);
+    const listResult = await apiGet('/api/replay/runs/' + state.runId + '/monthly-reviews');
+    if (listResult.status !== 200 || !listResult.body.success || !Array.isArray(listResult.body.data)) {
+      return;
     }
+    const months = listResult.body.data.map((m) => m.business_month).filter(Boolean).sort();
+    const reviews = [];
+    for (const month of months) {
+      const detail = await apiGet('/api/replay/runs/' + state.runId + '/monthly-reviews/' + month);
+      if (detail.status === 200 && detail.body.success && detail.body.data) {
+        reviews.push(detail.body.data);
+      }
+    }
+    if (reviews.length > 0) renderMonthlyReviews(reviews);
   };
 
-  const renderMonthlyReview = (review) => {
+  const renderMonthlyReviews = (reviews) => {
     const wrap = document.getElementById('replayMonthlyReview');
     if (wrap) wrap.style.display = '';
     const content = document.getElementById('replayMonthlyContent');
     if (!content) return;
+    content.innerHTML = reviews.map((review) => buildMonthlyReviewHtml(review)).join('<hr/>');
+  };
+
+  const buildMonthlyReviewHtml = (review) => {
     const html = [];
     html.push('<div class="replay-section">');
-    html.push('<h5>数据覆盖</h5>');
+    html.push('<h5>月度评审 ' + escHtml(review.business_month || '') + ' — 数据覆盖</h5>');
     html.push(
       '<p>' +
         escHtml(review.data_coverage_start) +
@@ -1160,7 +1747,7 @@
       }
       html.push('</div>');
     });
-    content.innerHTML = html.join('');
+    return html.join('');
   };
 
   // ── Entry: loadReplay ────────────────────────────────────────────────
@@ -1177,9 +1764,9 @@
     state.steps = [];
     state.viewedDate = null;
     stopPlay();
-    // Show the start panel; if a run already exists on the server, surface it.
-    const start = document.getElementById('replayStartPanel');
-    if (start) start.style.display = '';
+    // P0013+ fix: do NOT flash the start panel first — with an existing run
+    // it appeared for a moment and then vanished, which read as "the range
+    // selector disappeared". Decide from the runs list, then render once.
     const controls = document.getElementById('replayControls');
     if (controls) controls.style.display = 'none';
     const timeline = document.getElementById('replayTimeline');
@@ -1188,8 +1775,13 @@
     if (daily) daily.style.display = 'none';
     const review = document.getElementById('replayMonthlyReview');
     if (review) review.style.display = 'none';
-    renderStartPanel();
-    // Rehydrate existing run if any.
+    const start = document.getElementById('replayStartPanel');
+    if (start) start.style.display = 'none';
+    const startBtn = document.getElementById('replayStartBtn');
+    if (startBtn) startBtn.onclick = onStartClick;
+    const acquireBtn = document.getElementById('replayAcquireBtn');
+    if (acquireBtn) acquireBtn.onclick = onAcquireClick;
+    // Rehydrate existing run if any; only show the start panel when none.
     apiGet('/api/replay/runs').then((result) => {
       if (result.status === 200 && result.body.success && Array.isArray(result.body.data) && result.body.data.length > 0) {
         const run = result.body.data[0];
@@ -1204,7 +1796,12 @@
           showControls();
           showTimeline();
         });
+      } else {
+        showStartPanel();
       }
+    }).catch(() => {
+      // Never leave the view blank: the panel renders its own fetch-failure state.
+      showStartPanel();
     });
   };
 })();

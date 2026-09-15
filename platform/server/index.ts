@@ -10,11 +10,17 @@ import { memoryRouter, reviewsRouter, traceRouter } from './routes/reviews.js';
 import { workspaceRouter } from './routes/workspace.js';
 import { chatRouter } from './routes/chat.js';
 import { runtimeRouter } from './routes/runtime.js';
+import { replayRouter } from './routes/replay.js';
+import { replayOrdersRouter } from './routes/replay-orders.js';
+import { acquisitionRouter } from './routes/replay-acquisition.js';
+import { markInterruptedAcquisitionJobs } from '#app/runtime/acquisition/job-store.js';
 import { p0007Router } from './routes/p0007.js';
 import { situationChatRouter } from './routes/situation-chat.js';
 import { knowledgeRouter } from './routes/knowledge.js';
 import { scheduleRouter } from './routes/schedule.js';
 import { outputsRouter } from './routes/outputs.js';
+import { explorationRouter } from './routes/exploration.js';
+import { exploreRunRouter } from './routes/explore-run.js';
 import { openDb } from '#platform/storage/connection.js';
 import { initDatabase } from '#platform/storage/init.js';
 import { setEvidenceHistoryDb } from '#app/connectors/evidence/store.js';
@@ -62,6 +68,12 @@ export const createServer = (options: ServerOptions): Express => {
   app.use('/api', workspaceRouter(db));
   app.use('/api', chatRouter(db));
   app.use('/api', runtimeRouter(db));
+  app.use('/api/replay', replayRouter(db));
+  app.use('/api/replay', replayOrdersRouter(db));
+  // P0013.1 — dynamic historical acquisition jobs (gap → Hermes explore → freeze).
+  app.use('/api/replay', acquisitionRouter(db));
+  // Jobs left RUNNING/QUEUED by a previous process cannot resume in V1.
+  markInterruptedAcquisitionJobs(db, new Date().toISOString());
   app.use('/api', p0007Router(db));
   // P0008.3 — Situation Chat Bridge (Hermes session integration).
   // Lazy: only connects to Hermes serve on first chat. Session mapping held server-side.
@@ -101,6 +113,16 @@ export const createServer = (options: ServerOptions): Express => {
   // P0010.1 Post-Productization REPAIR — minimal Output / WorkItem API.
   // Mounted at /api so the routes inside can be /situations/:id/outputs/...
   app.use('/api', outputsRouter(db));
+  // P0011.x — generic exploration wire routes. Each tool is a thin
+  // deterministic executor; the model remains the sole reasoner. The
+  // 7 generic tools (inspect_surface / interact / inspect_network /
+  // detect_download / inspect_response / replay_verify / record_discovery)
+  // forward here from the MCP server at platform/runtime/fabric-mcp/.
+  app.use('/api/explore', explorationRouter);
+  // P0011.x — thin exploration entry. POST /api/explore/run drives a
+  // single Hermes turn (with native MCP tool loop) and streams the
+  // transcript back as NDJSON. Pure collector bridge; no reasoning.
+  app.use('/api/explore', exploreRunRouter);
 
   // P0010.2 — Continuous Business Runtime HTTP control surface.
   // Mounted only when the Loop is the active scheduler (the legacy per-day

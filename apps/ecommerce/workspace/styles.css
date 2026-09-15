@@ -1320,6 +1320,137 @@ body.has-situation-chat-composer #decisionPanel.open .decision-rail {
   cursor: default;
   opacity: 0.6;
 }
+/* P0013.3 — cognition stale after a later operator enrichment */
+.replay-cell-stale {
+  background: #fff8ef;
+  border-color: #d9b38c;
+}
+.replay-enrichment {
+  padding: 4px 8px;
+  margin-bottom: 4px;
+  border-left: 3px solid #d9b38c;
+  background: var(--bg);
+  border-radius: var(--radius-sm);
+  font-size: 0.78rem;
+  line-height: 1.35;
+}
+.replay-enrichment:last-child {
+  margin-bottom: 0;
+}
+.replay-enrichment .enr-kind {
+  /* only the section title is bold; record labels stay regular weight */
+  font-weight: 400;
+  color: var(--muted);
+  margin-right: 6px;
+}
+.replay-enrichment .muted {
+  font-size: 0.72rem;
+}
+.replay-enrichment.enr-operator_feedback {
+  border-left-color: #9ca3af;
+  background: #f3f4f6;
+}
+/* P0013.3 compact enrichment composer — height driven by content:
+   selector + textarea share one row; textarea is exactly ~3 lines and
+   scrolls internally; the whole dock targets ~150–220px. */
+#replayEnrichment {
+  width: 100%;
+  box-sizing: border-box;
+}
+.replay-enrich-form {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  align-items: stretch;
+  width: 100%;
+  box-sizing: border-box;
+}
+/* selector above, textarea below (stacked, full width) */
+.replay-enrich-form .replay-enrich-inputrow {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.replay-enrich-form #replayEnrichmentKind,
+.replay-enrich-form #replayEnrichmentContent {
+  flex: 0 0 auto;
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+  box-sizing: border-box;
+  margin: 0;
+  font-size: 0.82rem;
+}
+/* exactly ~3 rows; longer input scrolls inside, never grows the dock */
+.replay-enrich-form #replayEnrichmentContent {
+  height: 70px;
+  min-height: 70px;
+  max-height: 70px;
+  resize: none;
+  overflow-y: auto;
+}
+.replay-enrich-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+.replay-enrich-actions .btn {
+  flex: 0 0 auto;
+  padding: 6px 12px;
+}
+#replayEnrichmentStatus {
+  flex: 1 1 160px;
+  font-size: 0.76rem;
+}
+
+/* P0013.3 compact dock — the daily view is CONTENT-SIZED. It must not
+   grow to fill the flex parent (that stretched the enrichment dock to
+   half-screen). Step cognition keeps its own capped scroll region. */
+#replayDailyView {
+  flex: 0 0 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+#replayDailyView > .replay-daily-content {
+  flex: 0 0 auto;
+  min-height: 0;
+  max-height: none;
+}
+.replay-enrichment-dock {
+  flex: 0 0 auto;
+  z-index: 20;
+  margin: 4px -4px 0;
+  padding: 8px 10px;
+  background: var(--panel, #ffffff);
+  border: 1px solid var(--border, #d1d5db);
+  border-radius: var(--radius-lg, 8px);
+}
+/* Existing records: small internal scroll region; zero when empty. */
+.replay-enrichment-dock #replayEnrichmentList {
+  max-height: 88px;
+  overflow-y: auto;
+  margin: 0 0 6px;
+}
+/* Only the section title is bold; everything else shares one size. */
+.replay-enrichment-dock h5 {
+  margin: 0 0 4px;
+  font-size: 0.85rem;
+  font-weight: 700;
+}
+.replay-enrichment-dock h5 .muted {
+  font-weight: 400;
+  font-size: 0.76rem;
+}
+.replay-enrichment-dock > p,
+.replay-enrichment-dock #replayEnrichmentList {
+  font-size: 0.78rem;
+}
+.replay-daily-content {
+  scroll-margin-bottom: 8px;
+}
 
 .replay-daily {
   padding: 16px 18px;

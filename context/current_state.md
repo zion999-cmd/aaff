@@ -1,6 +1,179 @@
 # 当前状态
 
-|**版本**: v0.13.13 (P0010.2.11 — Hourly Evidence → Current Situation Fact Refresh: 4/4 metric latest facts 全填; shop_id=11855009 canonical normalization; Hourly Acquisition Cadence; Business Time same-time baseline; P0011 Knowledge Semantic Domain INDEX (Implementation complete / Runtime acceptance pending); Tool Boundary = Runtime limitation ADR-075) | **Hermes**: v0.20.5 | **测试**: 1255 passed / 1 pre-existing flaky (chat contract 30s 超时竞态) / 3 skipped / 0 new regression (net +9 new tests: shop-identity + situation same-time + fact refresh + Phase A UV refresh, 跨 4 commits) | **P0010.2.11 business-time 不变量 (ADR-077)**: realtime Situation 恒用最新 getSummary current + 同 response ##compareValue (yesterday same-moment); historical adjacent-date Evidence 不覆盖该 baseline; missing required compareValue → honest silence (no Situation emitted) | **ADR-078 hourly cadence**: RuntimeLoop 60s heartbeat; autonomous trade.overview 从 daily-once guard 改为 Beijing business-hour bucket; 同 bucket 成功一次后 skip, failure 不锁 bucket, 下一 Beijing hour 自动重新允许; manual /api/fabric/execute 不受 guard 限制; 不引入 cron / persistent scheduler (process restart 可在同 bucket 重采一次, 当前接受) | **ADR-079 fact refresh (含 UV Phase A)**: situations 表扩 6 latest_* 投影列; producer CREATE-or-REFRESH (同 deterministic situationId → INSERT 或 UPDATE latest_* + description); Phase A 主动 refresh 已存在 open meaningful_change situation (独立于 detectSituations threshold, 修复 UV 跌出 20% 时不被 refresh 的根因); Phase B 仍跑 detectSituations INSERT/UPDATE 候选; fact refresh 不依赖 detection threshold; completed Investigation / Analysis / Conclusion / Recommendation 不自动重算 (Re-evaluation Policy 待设计, 尚未实现) | **P0011 Knowledge Semantic Domain (Implementation complete)**: knowledge/INDEX.md 语义路由 (4 域 + 通用前置内联) + traffic/conversion/product/operations/ INDEX.md 路由 + 18 pages (2-5.5KB) + 12/12 raw provenance 全覆盖; Hermes fabric-knowledge-ingest skill 同步语义域 File Structure / INDEX 规则; investigation/prompt.ts 知识指令改 3 层导航; **Runtime acceptance pending** (真实调查未在 P0011 INDEX 下端到端验证)
+|**版本**: v0.13.28 | **Hermes**: v0.20.5 | **S0002 + S0001 governance activated (2026-09-04)** | **2026-09-13 P0013.1 管道建成（IMPLEMENTED — BUSINESS VERIFICATION PENDING）**：Need/Result/Candidate 三合同 + gap/resolution + BLIND goal + freezer（机器 manifest v2.0、对账门控）+ acquisition_jobs + 真 Hermes turn runner + /api/replay/acquisitions + Workspace gap UX；67/67 新测试；真实采集待值守场次。| **2026-09-12 P0013+ Replay 时间区间选择**: 去 5 处硬编码；新增 `GET /api/replay/datasets` 发现端点（dataset-catalog.ts）；POST /runs 服务端读盘校验覆盖区间（越界 400 named error）+ 真 manifest 哈希落库（placeholder 假哈希缺陷修复，ADR-086）；loadRun 补 start_business_date（越界导航修复）；月度评审按 run 实际跨月渲染。追加 UX 修复：「重新回放」改为回到日期选择面板（不再直接建 run），消除面板闪现。134/134 replay 套件（含新 restart-panel 契约 4）+ 真实对账 integration 绿；真实路径全验（子窗口 08-20→09-02 真 Hermes step，51 refs 0 future，探针已清理）。⏳ 待 operator 硬刷新后亲手 Workspace 验收。| **2026-09-12 Task 2 Phase J — Real Replay Acceptance Closure**: run 16468bd3 真实 30/30 日 COMPLETED、30 快照、1396 refs；4/4 验收日（08-10/08-18/09-01/09-02）正式 wiring 真实 Hermes 认知；§2 双粒度对账（header 订单锚定 ¥3932.08/37.1% vs child SKU 行级 ¥3513.89/33.1%，Task 2 无错）；§5 Evidence Access / 指标语义 / No-Future-Leak（SQL+HTTP 400+文本 0 未来事实）/ Evidence Gap 全 PASS（机检 13 PASS 0 FAIL，7 WARN 全部人工裁定）；ADR-085（Hermes 长会话 compression 撞 600s deadline，5/30 日 operator fresh-session 恢复，非接线替代）。**§6 当前 PARTIAL（6/7），唯一未关门项 = operator 真实浏览器 Workspace 亲手验收**；点完即 ACCEPTED。报告 `context/phasej-final-report-2026-09-12.md`，原始认知 `context/phasej-cognition-raw-2026-09-12.md`。OPERATOR ACCEPTANCE ⏳ PENDING（dev server :3000 保持运行至验收完成）。
+
+## ✅ P0013.3 Historical Evidence Enrichment（2026-09-15，ADR-089，真实 Hermes 已验收；UI 待手工确认）
+
+Replay 可对历史日追加 fact/action/operator_feedback（append-only 表，不动 frozen dataset）；补 T 即把 T 及以后 cognition 标 stale；kernel 仅见 ≤T 补充，feedback 显式非 ObservedFact、action 禁自动因果；支持单日重放与从最早 stale 连续重放（POST /runs/:id/rerun day|stale）；Workspace 时间轴 ✎/stale 标记 + 日视图补充区 + stale 横幅。真实 run 37e3fbd3：满减券→"共现因子不作因果"、退款事实入 observed、企业礼赠反馈留 unknown/gap、连续重放 2 日 COMPLETED、manifest hash 不变。13 新测试。
+
+## ✅ P0013.2 Evidence Resolution Contract（2026-09-15，ADR-088，真实 9 日回放已验收）
+
+Context Missing ≠ Evidence Missing：Agent 声明 gap 前必须先做 Evidence Resolution（IN_CONTEXT/RETRIEVED/UNAVAILABLE）。共享 Resolution Contract 进两条 prompt；V1 binding = 只读 MCP 工具 `fabric_replay_retrieve_orders`（现有订单检索路由，紧凑投影+价格带），非通用 Resolver Framework；fail-closed：gap 须维度匹配 UNAVAILABLE+note，RETRIEVED 须 refs。真实 run 37e3fbd3（09-04→09-12）：09-05 起每日 3–4 次 retrieve（价格带/去顶 AOV/Top 订单/SKU 组合），8 天零订单结构误报；judgment 落真实订单行（09-10：5 笔 ≥1000=64% GMV、ex-top1 AOV≈344）；退款/买家身份每日仍 UNAVAILABLE 真 gap。运维：新 MCP 工具需重启 hermes serve；回合进行中勿重启 Hermes（会 crash fabric）。
+
+## ✅ P0013.2 Shared Analysis Target Contract（2026-09-14，ADR-087，双真实样例已验收）
+
+把分析目标从"曲线解释"校正为"经营状态/经营结构解释"，Production+Replay 继续共用同一 Contract。新增共享 `analysis-contract.ts`（时序=证据非目标；五维 business_structure_coverage：商品/订单/流量/转化/运营，gap 必须带 acquisition_need）；`analysis-obligations.ts` 在共享 parser fail-closed：结构 gap 禁止 observe（必须 evidence_gaps+requiredEvidence+investigationRequest，stop=missing_capability），证据足必须 judgment，completed 必须 stopReason；observed_facts/supporting_evidence_refs/evidence_gaps 成正式义务。生产 prompt 接入上轮 prior cognition（同 Replay 语义）；Replay snapshot 持久化真实 gaps/coverage/stopReason（原 evidence_gaps 硬编码 []）。
+
+真实验收（非单测）：Replay run bd4edf24 09-08/09 真 Hermes step 通过——3 维 gap 带具体采集需求、结构 judgment、fail-closed 拒绝 null 回合后重跑通过；Production sit_94f1fc 真回合 stopReason=judgment、3 covered+2 gap、prior cognition 自上轮注入。残留：生产 recommendation.kind 仍由 stopReason 派生（judgment→act），内容/标签 seam 已记入 ADR-087。
+
+## 🚧 P0013.1 Dynamic Evidence Acquisition — 管道建成，真实 Vertical Slice 待值守（2026-09-13）
+
+**Proposal**：[P0013.1](../proposals/P0013.1-historical-replay-dynamic-evidence-acquisition-contract.md)（12 SC 不弱化）。本次完成 Phase 0-4：Need/Evidence Result/Candidate 三合同（shared/contracts）；gap 纯函数（V1 要求单一自洽数据集覆盖，无 merge）；resolution V1 恒 explore（candidate 不自动 promotion，SC9）；BLIND goal 构造器（禁技术攻略，禁词契约）；**freezer**（actual window 从文件重算、三角对账门控、机器 manifest v2.0 含逐文件 sha256）；candidate store；acquisition_jobs 异步任务 + 真 Hermes turn runner（WS，trajectory 全量）；POST/GET `/api/replay/acquisitions`；Workspace gap 区块与采集轮询（超覆盖不再硬拦，成功后 clamp actual window，无假成功）。
+
+- **验证**：触碰文件 typecheck 0 错误（全仓 91 既存）；新测试 **67/67**；全量 1712 pass / 4 既存失败（日期漂移×1、断言漂移×1、UI 漂移×1、live 路径×2，均非本次文件）；integration 5 项真路由+真冻结+catalog+replay（Hermes 为边界外显式 fake，只证接线）。
+- **Business Acceptance：NOT RUN / OPERATOR PENDING** — 真实 Chrome :9222 + 真 Hermes 采集（SC1/4/5/7/11）按约定另约值守场次；重启 dev server 后执行 Phase 5（实验报告 + ADR-087 + context 更新）。Phase 0 已 commit e2cc047（9 脚本+2 harness 原样留档）；管道代码未 commit。
+
+## ✅ P0013 上游只读审计：Historical Dataset Acquisition Capability（2026-09-13）
+
+**交付**：[context/p0013-upstream-acquisition-audit.md](p0013-upstream-acquisition-audit.md)（只读，零代码变更）。
+
+- **最终判定：EXPERIMENTAL；Recommended action: EXTRACT。** Exploration=PARTIAL；当日 trade.overview=FORMAL（ADR-073 锁当日）；历史订单/KPI 采集=EXPERIMENTAL；Dataset Productization=ARTIFACT_ONLY（loader/catalog FORMAL，freezer/manifest 发射 MISSING）；Replay 上游断点=Case 3。
+- **事实纠偏（trace 为准）**：09-03 数据集由 **run C**（Hermes 临场写并执行 9 个 Python 脚本，08:33–08:43）采得；**run D 零采集**，只做审计/对账并手写 PROVENANCE_MANIFEST.json。ADR-081 等文档的"D 采数"叙事错误，报告内标注未改历史文档。
+- **风险**：9 个已验证采集脚本 + 2 harness 全部 **git untracked**；manifest 无文件级哈希。
+- **建议下一步（未动手）**：新 Proposal P0011.x-E——脚本先 commit 留档 → EXTRACT TS acquirer（按日切片 orders + route 改写 tradeSummary）+ paginateByWindow → freezeHistoricalDataset + 机器 manifest → CLI 编排入口（Catalog 零改动自动发现）→ 真实页面对账 + Experiment E。
+
+## ✅ P0013+ Replay 时间区间选择（2026-09-12，代码完成，待 operator Workspace 验收）
+
+**触发**：operator 指出区间 08-04→09-02 硬编码（"今天都 9 月 12 号了"）。审核确认真区间来源 = 磁盘 `PROVENANCE_MANIFEST.json.time_window`（09-03 采集时冻结），loader 创建 run 时惰性读盘；但前端从不读取。**ADR-086**。
+
+- **新增**：`apps/ecommerce/runtime/replay/dataset-catalog.ts`（纯读取发现模块）+ `GET /api/replay/datasets`（扫描 data/ 含 manifest 的目录，窗口/店铺/真哈希/缺失日；坏目录进 skipped[]；dataRoot 可注入测试）。
+- **服务端权威**：`POST /runs` 现先 `loadHistoricalDataset`——不可读 400、请求区间超出 `[window.start, window.end]` 400 named error（09-12 实测拒绝）、落库哈希一律用磁盘真哈希（客户端 hash 改可选且被忽略；消除 `placeholder-hash` 假凭据）。
+- **UI 去硬编码**：开始面板两个 date input（min/max/默认/天数/店铺/完整性全来自发现端点；零数据集禁用+提示）；`buildCreateBody()` 单点构造；时间轴、step 分母 `/30`、月度评审（改 list 端点按实际跨月）全部从 run 窗口派生。
+- **连带修复**：`loadRun` 补 `start_business_date`（此前 UI `run.startBusinessDate` 恒 undefined，首日"上一天"可越界）。
+- **测试**：新增 11 个断言（catalog 4 / 路由 6 / runner 1）；replay 全套件 **129/129** + reconciliation integration **4/4**；触碰文件 typecheck 0 错误。
+- **真实路径**（dev :3000）：发现端点返真哈希 df8783a7…；越界 400；子窗口 08-20→09-02 run `2c1dad8a` 真 Hermes step COMPLETED，51 refs 跨 08-04→08-20（子窗口不抹历史，正确语义）、0 future、kind=observe；探针 run + 91 evidence rows/快照/refs 已全量清理；5 个 Phase J 保留 run 不动。dev server :3000 保持运行待验收。
+- **边界**：不做多数据集下拉（YAGNI，端点已就位）；09-03→09-12 无数据需另走 P0011.x CDP 采集（已记录后续票）；不改 prompt/schema/kernel/seed。
+- **追加 UX 修复（operator 实测发现，同日）**：日期选择器只存在于开始面板，而 ① 进页面时面板先渲染再被"已有 run 自动跳转时间轴"藏掉（闪一下消失，operator："刚还能选，现在又不能了"）；②「重新回放」此前直接读隐藏 input 的全窗口默认值 POST 新建 run，永远改不了区间（operator 的 `f48b0961`/`53f09c15` 即如此产生）。修复：新增 `showStartPanel()`，`onRestartClick` 改为回面板（只保留 RUNNING 拦截，不再 POST/confirm；创建唯一入口是面板「开始回放」= `onStartClick`）；`loadReplay` 先藏面板，runs 列表返回后再决定显面板还是时间轴（空列表/fetch 失败才显面板，杜绝闪现）；新契约测试 `tests/contract/replay-restart-panel.contract.test.ts` 4/4 钉住。
+
+## ✅ Task 2 Phase J — Real Replay Acceptance Closure（2026-09-12，6/7，待 operator 最后一关）
+
+**状态**：PARTIAL → ACCEPTED 只差 operator 亲手 Workspace 点击。完整证据链见 `context/phasej-final-report-2026-09-12.md`。
+
+- **§1 清理 DONE**：44 非终态 runs / 2287 evidence rows / 30 stub 孤儿 / 637 ghost 行已清；生产 Evidence/Knowledge/Experience/Situation/数据集/4 个历史 COMPLETED runs 全保留；备份 `data/agentfabric.db.pre-phasej-backup`。
+- **§2 对账 DONE**：09-01 Top SKU 差异 = header 订单锚定成交额（¥3932.08/37.1%）vs child SKU 行级成交额（¥3513.89/33.1%），同 SKU（10 位 id 为截断），Task 2 无错，未改数据。另发现 08-18 两粒度 #1 SKU 不同。
+- **§3 真实回放 DONE**：run `16468bd3`，30/30 COMPLETED + 30 快照 + 1396 refs，4 验收日全真实。5/30 日撞 Hermes compression 墙（~192k tokens，压缩 594–597s > 600s deadline）经 ADR-085 operator 恢复（删 FAILED 行 + 正式 advance 在 fresh session 重跑，prior_cognition 走持久化快照）。
+- **§4 原文 DONE**：`context/phasej-cognition-raw-2026-09-12.md`（1999 行，不摘要不修正）。
+- **§5 验收**：(a) Evidence Access PASS（37 parent/45 行/15 SKU/¥3513.89 33.1%/¥2201.04 20.7%/H≠S）；(b) 指标语义 PASS（Fabric 输出 `平均订单金额=…|客单价=—`；LLM 用英文 AOV 等义词、零客单价误用；09-02 客户数 1399 来自真实 getSummary id=3970 非编造；中文字面差异已披露）；(c) No-Future-Leak PASS（SQL 0 future + HTTP 400 named error 实测 + 文本 8 处"09-02"全为预注册前视、未来事实 0 命中）；(d) Gap 诚实 PASS（evidence_gaps 空；缺的 UV/运营/买家/流水真不存在；getSummary `[object Object]` 解码缺陷只报告）；(e) Epistemic 观察：因果 claim 全 status-gated + falsifier、confirmedAction 全 null、无矛盾、阈值全 tagged、轻度重复。月度 1450 单/¥195,136.89/2350 件独立加总精确一致。
+- **§6 判定**：1–6 条件 ✅；条件 7（operator Workspace）⏳。数据底物已预验（run 列表 5 个 COMPLETED、steps 30/30、4 日快照端点、monthly-review PARTIAL）。
+- **下一步（仅 3 项）**：① operator 点 Workspace 关第 7 关 → ACCEPTED；② 验收后 `pkill -f with-hermes-env` + `pkill -f platform/server/index.ts`；③ 后续票：runner 内置 compression 自动换 session、getSummary 字段名解码修复、洪流 630 笔订单后台流水人工对账。
+
+## ⚠️ P0013 Historical Cognitive Replay — G1.6 pause-deadlock fix complete; G operator acceptance pending (2026-09-04 continuation)
+
+**状态**: BC.2 (real Hermes kernel REUSING production WS plumbing) + D+E (runner-side invariants: anti-stub + §3 future-leak + §10/§14 confirmed_action:null + epistemic boundary stamp) + F (view 404 root-cause fixed — view now reads last step's `business_date` T, not run's already-advanced T+1) + G1.4 (Observed Facts section: real Hermes output, not stub placeholder) + **G1.5 (UNIQUE constraint on (replay_run_id, business_date) — atomic `INSERT ... ON CONFLICT DO NOTHING RETURNING id` + idempotent return based on existing row state)** 都实现 + 自动测试全过 (58/58 P0013 tests green across 6 files; 488/489 broader suite pass). **剩 G operator acceptance**: operator 在真实 Chrome :9222 走 3 天连续 run (08-04 → 08-05 → 08-06) + spot-check 08-15 / 08-31 + 15-step click path.
+
+**修正原因 (operator 验收暴露)**:
+- `platform/server/routes/replay.ts:60-76` `httpStubKernel` 在 HTTP route 层 inline,**没有 LLM kernel** — 30/30 step 跑的是 stub
+- 生产 cognition path = `createRuntimeKernel` → `runInvestigationTurn` → `collectTurn` → Hermes WS,**replay 完全没接**这条
+- `visibleEvidenceFor(db, runId, T)` SQL `WHERE business_date <= T` 存在但 runner **从来没调过** — §3 数据边界保护 = 0,只在 prompt 写了"不要看未来"
+- 所有 snapshot 的 `evidenceObservationIds` = `[]` (stub 返) — Source References 全空
+- `recommendation_executed` schema 字段有,但 runner 没保证每次写 false
+- 没有 Observed vs Inference vs Confirmed Action 边界
+- 3 个 /steps/2026-08-{05,06,07} 的 404 是 tsx watch hot-reload race,**backend 实际返 200**;但 UI 没有 retry,会 silent 失败
+
+**已完成 (本刀 BC.2 + D+E + F — 自动验证全过,operator 验收 = G gate)**:
+- **B. Real LLM kernel wired**: `apps/ecommerce/runtime/replay/replay-cognition-kernel.ts` — `createReplayCognitionKernel(db, { client, sessionId })` REUSES production `client.submitPrompt` + `collectTurn` + `parseInvestigation` from `platform/server/routes/situation-chat.ts`. Kernel signature `(runId, stepId, businessDate) => KernelStepResult` matches runner's interface (no fork). `platform/server/routes/replay.ts` `httpStubKernel` literal **REMOVED**; module-level `sessions: Map<runId, ActiveReplaySession>` mirrors situation-chat pattern; `ensureSession` lazily connects to Hermes per runId, `dropSession` on FAILED. Real cognition now flows: per-day step → visibleEvidenceFor (SQL < T) → buildReplayInvestigationPrompt (canonical Investigation Contract) → submitPrompt + collectTurn → parseInvestigation → KernelStepResult with `confirmedAction: null`.
+- **C. §3 data-boundary enforced at SQL**: `visibleEvidenceFor(db, runId, T)` is called INSIDE the kernel BEFORE the prompt is built. The prompt's "Current evidence" section is populated ONLY from the visible slice. The LLM literally cannot see future data — the boundary is at the SQL, not at the prompt text. Runner's `assertNoFutureLeakage` (SQL `WHERE id IN (?)` + `business_date > step.business_date` check) throws on violation; future-dated evidence is never tagged with `replay_run_id`.
+- **D. recommendation_executed=false (runner-side, NOT DB trigger)**: per user rule "优先 runner invariant，而不是 DB trigger". `assertReplayProposal` throws if `inv.confirmedAction !== undefined && inv.confirmedAction !== null`. `KernelStepResult.investigation.confirmedAction?: unknown` field added; kernel always sets `confirmedAction: null`. `stampEpistemicBoundary` records `confirmed_action: null` in `raw_investigation_json._epistemic_boundary`. Empty `currentUnderstanding` / `judgment` are also refused (functionally identical to stub).
+- **E. Epistemic boundary (Observed | Inferred | Confirmed Action null)**: `stampEpistemicBoundary` adds `{observed: observedFacts, inferred: inferredClaims, confirmed_action: null, boundary_checked_at}` to `raw_investigation_json`. Three-segment split recorded; UI surfaces it via `renderDailyView` (Observed Facts section from `snapshot.observed_facts` JSON; Agent's currentUnderstanding + judgment surface in their own sections; the §10/§14 invariant is visible in `_epistemic_boundary.confirmed_action === null`).
+- **F. 404 root-cause + view fix (NO server-side retry)**: per user rule "F 先根因后修复，不预设 retry". Reproduced via curl on dev server: route returns 200 for in-window dates with persisted step, 404 for before/after window (correct), 400 for bad format. **The actual bug is in the view**, not the server. `replay-view.js:131-132` (pre-fix) read `state.run.currentBusinessDate` (= T+1, already advanced) — that date has NO step row yet. Fix: read the LAST completed step's `business_date` (= T) from `state.steps[state.steps.length - 1]`. 6-line view fix, no server retry. **Ruled out**: NOT a server-restart race; the route SQL is correct, 0 retries would help; the bug is upstream of the HTTP call.
+- **G. Operator acceptance — pending**. Real 3-day continuous run (08-04 → 08-05 → 08-06) + spot-check 08-15 / 08-31 + 15-step click path on real Chrome :9222. **This is the only valid DONE gate.** Per user verbatim: "完成自动验证后停在 Workspace operator acceptance，由我亲自点".
+- **G1.4 (Observed Facts UI — real Hermes output, not stub placeholder)**. Operator reported: "为什么总有: '从历史 Evidence 直接读出 (尚未在 Phase 4 stub kernel 填入...)' 这个提示???我们不是有agent了么??". `replay-view.js:329-366` had hardcoded stub-kernel placeholder text. Fix: render real `snapshot.observed_facts` (JSON parsed from `replay_run_cognitive_snapshots.observed_facts`) + visible evidence refs (id + business_date from `replay_run_evidence_refs` JOIN `evidence_observations` filtered by `business_date <= T`). LLM's "evidenceAcquired" list now flows through to the UI. `node --check` green.
+- **G1.5 (UNIQUE constraint on (replay_run_id, business_date) — atomic UPSERT + idempotent return)**. Operator reported: "直接提示:回放下一天失败: UNIQUE constraint failed: replay_run_steps.replay_run_id, replay_run_steps.business_date". Root cause: `runReplayRunStep` did plain INSERT; double-click on "▶ 下一天" or concurrent "▶ 连续回放" both read the same `run.currentBusinessDate` before either UPDATEd it, both try INSERT, second throws. Fix: `INSERT ... ON CONFLICT (replay_run_id, business_date) DO NOTHING RETURNING id` in new `insertOrFetchRunningStep` helper. On conflict: fetch existing row's state, return idempotent `StepResult` (COMPLETED → COMPLETED, FAILED → FAILED with original error, RUNNING → PAUSED with "concurrent advance in flight" note, SKIPPED_NO_DATA → SKIPPED_NO_DATA). Pre-SELECT is racy; in-process mutex doesn't survive restarts. SQL-level UPSERT is the durable answer. **3 new TDD tests** in `tests/unit/replay/replay-runner-p0013.test.ts` (concurrent `Promise.all` of 2 calls; pre-existing COMPLETED step; pre-existing FAILED step). All 13 runner tests pass; 58/58 P0013 tests pass; 0 new typecheck errors.
+
+**已完成 (骨架, NOT CLOSED)**:
+- Phase 0 ReplayBusinessClock + TemporalVisibilityFilter (pure, 26 unit tests)
+- Phase 1 replay_* schema (5 tables + 2 nullable cols on evidence_observations, integration tests)
+- Phase 2 HistoricalDataset loader (P0011.x frozen, Object.freeze deep, sha256 manifest)
+- Phase 3 DailyCognitiveSnapshot schema (additive on InvestigationSchema, InvestigationSchema 不动)
+- Phase 5 /api/replay/runs routes (8 endpoints, 9 contract tests, legacy /api/runtime/replay → 410)
+- Phase 6 Workspace "历史回放" view (start panel + timeline + 7-§29 daily view, click handler defensive)
+- Phase 7 Monthly Review generator (deterministic, PARTIAL honest for August, 10 unit tests)
+- Phase 8 contract assertions (9 §31 + §23 SQL + §10/§14/§20/§21/§22/§32/§33 = 18 contract tests, all green by MACHINE, NOT operator)
+
+**边界守住 (100%)**:
+- 不动 InvestigationSchema / 现有 kernel / Hermes transport / .env / Chrome / user foreground
+- 不重跑 Phase 1-3 / 5-7 / 8 的 contract tests (它们都是正确的,只是 Phase 4 runner 内部用 stub,contract 没探到)
+- 不重开 P0011.x / 不破坏 §6 raw immutable
+- 不重写 UI (Phase 6 view 完整,只补 F retry)
+- REUSE production kernel, do not duplicate
+
+**Lineage**: P0006.2 (sketch, `SUPERSEDED BY P0013`) → P0011 / P0012 (Evidence / Business Time / Continuous Observation) → P0011.x D (Real Data Acquisition VERIFIED 2026-09-03) → **P0013 Historical Cognitive Replay (skeleton 8 phases green, REAL COGNITION wiring pending — ADR-076 INCOMPLETE until operator acceptance)**.
+
+**DONE = REAL historical Evidence → strict historical visibility boundary → REAL Agent cognition → real Judgment → real Recommendation → persisted trajectory → clickable Workspace inspection. Until then: P0013 NOT CLOSED.**
+
+**Lineage**: P0006.2 (sketch, `SUPERSEDED BY P0013`) → P0011 / P0012 (Evidence / Business Time / Continuous Observation) → P0011.x D (Real Data Acquisition VERIFIED 2026-09-03) → **P0013 Historical Cognitive Replay (2026-09-03)**.
+
+**Three hard principles** (verbatim from the proposal):
+- **§3 Data-layer boundary** — no-future-leak enforced by SQL `WHERE business_date <= ?`, NOT by prompt. Verified at the data boundary by the §23 mid-window SQL proof: zero violations across 30 days × N evidence refs.
+- **§14 No execution** — `recommendation_executed` is always `false`; Replay is read-only, observable, judgment-generating; the operator decides what to do.
+- **§32 Production isolation** — runner writes ONLY to `replay_run_*` tables; production `situations` / `learning_contexts` row counts are unchanged before/after a full 30-day run; `knowledge` / `skills` tables never written.
+
+**Phase-by-phase delivery**:
+- **Phase 0** (pure, no DB): `shared/utils/replay-clock.ts` + `temporal-visibility.ts` — `createReplayClock`, `nextDate`, `isReplayTerminal`, `filterToVisible`, `assertNoLeakage`. Deterministic, no `Date.now()` / no `process.env`. Tests: clock determinism + visibility filter + leakage assertion.
+- **Phase 1** (schema): `platform/storage/p0013-schema.ts` — 5 new tables (`replay_runs`, `replay_run_steps`, `replay_run_evidence_refs`, `replay_run_cognitive_snapshots`, `replay_monthly_reviews`) + 2 nullable columns on `evidence_observations` (`replay_run_id`, `replay_run_step_id`). All additive, idempotent. Wired into `platform/storage/init.ts`.
+- **Phase 2** (frozen loader): `shared/contracts/historical-dataset.ts` (Zod strict schemas) + `apps/ecommerce/runtime/replay/historical-dataset.ts` (sha256 manifest check, `Object.freeze` deep). Reads `data/jd_acquisition_20260903_0834/` (P0011.x 1450 orders / 12 KPIs / 30-day trend, frozen).
+- **Phase 3** (additive schema): `shared/schemas/daily-cognitive-snapshot.ts` wraps `InvestigationSchema` + 8 §9 fields (`business_date`, `observed_facts`, `evidence_gaps`, `temporal_boundary_checked_at`, `supporting_evidence_refs`, `recommendation_executed=false`, `month_anchor`, `replay_run_id`). NO field renamed / removed / moved. Existing `parseInvestigation` tests stay green (proves no regression).
+- **Phase 4** (orchestration): `apps/ecommerce/runtime/replay/replay-runner-p0013.ts` — `createReplayRun` / `getReplayRunState` / `runReplayRunStep` / `runReplayRunToCompletion` / `pauseReplayRun` / `resumeReplayRun`. Per step: load run → build clock → `kernel(runId, stepId, businessDate)` (the real `createReplayCognitionKernel` in `replay-cognition-kernel.ts`, which calls `client.submitPrompt` + `collectTurn` + `parseInvestigation` REUSING production WS plumbing) → §3 future-leak guard BEFORE tagging → `tagEvidenceAsReplayVisible(evidenceObservationIds, runId, stepId)` → `persistSnapshot` with anti-stub + §10/§14 + epistemic boundary stamp → `linkEvidenceRefs` → advance clock. §23 SQL enforced via `visibleEvidenceFor(db, runId, T)` at the kernel layer (not the runner).
+- **Phase 5** (HTTP): `platform/server/routes/replay.ts` — 8 endpoints (`POST /api/replay/runs`, `GET /api/replay/runs`, `GET /api/replay/runs/:runId`, `POST /api/replay/runs/:runId/advance` {step|complete|pause|resume}, `GET /api/replay/runs/:runId/steps`, `GET /api/replay/runs/:runId/steps/:businessDate`, `GET /api/replay/runs/:runId/monthly-reviews`, `GET /api/replay/runs/:runId/monthly-reviews/:businessMonth`). All `ok`/`fail` envelope, Zod body validation. `POST /api/runtime/replay` (legacy) → 410 alias.
+- **Phase 6** (Workspace): `apps/ecommerce/workspace/views/replay-view.js` + `index.html` (new "历史经营" sidebar section + `#view-replay` with 5 sub-regions) + `app.js` (`viewLoaders.replay = loadReplay` + 4 click handlers). IA mirrors Situation Detail. Daily view has the literal "执行状态: Replay Recommendation — Not Executed" boundary banner.
+- **Phase 7** (monthly review): `apps/ecommerce/runtime/replay/monthly-review.ts` — `generateMonthlyReview(db, { runId, businessMonth })` reads all snapshots + evidence_refs, computes 12 §19 fields deterministically (data_coverage, coverage_status, missing_dates, business_summary, business_phases, key_situations, judgment_evolution, major_recommendations, supported_judgments, revised_judgments, persistent_unknowns, evidence_gaps, unverified_recommendations with §20 note). Triggered at month boundary inside `runReplayRunStep`. Idempotent (UNIQUE on run_id+month).
+- **Phase 8** (acceptance): `docs/acceptance/p0013-click-path.md` (15-step operator click script with expected UI state at each step) + `tests/contract/p0013-acceptance.contract.ts` (18 contract tests: 9 §31 assertions + §23 SQL proof + §10/§14 recommendation_executed default + §20 unverified_recommendations + §21 PARTIAL honest + §22 terminal COMPLETED + §32 production-row-isolation + §33 knowledge/skill no-write + §6 filesystem invariants).
+
+**Architecture invariant**: Replay = `kernel.execute({ date, mock: false, acquisitionMethod: 'historical' })` reusing the existing kernel. The runner is a pure date loop with a temporal filter; the only difference from production is the data source and the §32 isolation bridge.
+
+**Workspace acceptance (Phase 8) is the only remaining gate**: the 9 §31 contract assertions are machine-checked (passing); the §23 mid-window SQL proof is codified (passing); the 15-step operator click script on real Chrome :9222 is the operator's hands-on verification (pending).
+
+## ⚠️ P0011.x A/B Acceptance — Fabric MCP Activation BLOCKER (2026-09-03)
+
+**状态**: STOPPED per user rule "如果正确 activation 无法通过现有 Hermes public/native contract 完成：STOP，报告 blocker"
+
+**Step 1 (Hermes MCP activation contract — 已确证)**:
+- `AIAgent(enabled_toolsets=...)` 是 gate, build-time 由 `_load_enabled_toolsets(platform)` 设置
+- `include_default_mcp_servers=True` → 所有 `mcp_servers.<name>.enabled=True` 的 name 自动加入 enabled toolsets
+- `register_mcp_servers(servers)` 在 `tools/mcp_tool.py:7603`, 对每个 tool 计算 `mcp__<server_name>__<tool_name>` 然后调 ownership gate
+- 成功 register 后 `register_toolset_alias(name, "mcp-"+name)` 让 server name 变 alias
+- `get_toolset(name, include_registry=True)` 解析 alias → canonical toolset
+- WS `prompt.submit` schema 只接 `{session_id, text}`, **不接受 `toolsets`** — `session-client.ts:706-708`
+
+**Step 2 (最小 harness 修复 — INSUFFICIENT → BLOCKER)**: 候选 diff
+```diff
+- (args.toolsets ?? 'browser-exploration');
++ (args.toolsets ?? 'mcp-fabric_browser');
+```
+不够: target toolset `'mcp-fabric_browser'` **不在 registry 里** (3 路 preflight 验证), 发出去等于发空头名字; `'browser-exploration'` 也不在 known_builtin_toolsets, Hermes 落回 cli 默认 → Run A 47 次 browser_exec 来源。
+
+**Step 3 (preflight — 3 路独立验证 fabric_browser_* 不可见)**:
+- `tools.list`: 62 toolsets, 仅 `fabric` (2 tools) enabled; NO `fabric_browser` / `mcp-fabric_browser` / `mcp__fabric_browser__*`
+- `tools.show` (default + fresh session.create): 17/20 sections, 唯一 MCP section = `mcp-fabric: 2 tools`; NO `mcp-fabric_browser`
+- `tools.configure enable:[mcp-fabric_browser, fabric_browser, browser-use]`: 全部返 `null`
+- 直 stdio probe `fabric-mcp-server.mjs`: 返 9 tools 正确 (smoking gun: server 没坏, 注册 seam 坏了)
+
+**Step 4 (Experiment B — STOPPED, 不跑)**: preflight fail → 跑 B = INVALID → 0/4 假分 → 触发 STOP
+
+**Step 5 (8 deliverables — 4 可答 / 4 blocked)**:
+1. ✅ Hermes MCP activation real mechanism (见 Step 1)
+2. ✅ Minimal modification diff (见 Step 2, 注明 INSUFFICIENT)
+3. ✅ B 未调 fabric_browser_* (B 未跑, N/A)
+4. ❌ BLOCKED — B transcript 无
+5. ❌ BLOCKED — A=3/4 baseline, B=N/A
+6. ❌ BLOCKED — 无 B 数据
+7. ⚠️ 推断 (非实测, 用户允许 4 选 1): "value is in standardized observation/provenance/recording/replay" — Fabric 7 tools 真正补的是 `inspect_network` (initiator/append-only log) + `detect_download` (Content-Disposition/blob/a_download) + `replay_verify` (历史采集核心) + `record_discovery` (Run A 3 个 found endpoint 没持久化就是缺这个), 4 个全是 `browser_exec` 没有的能力
+8. ✅ next-step diagnosis (见下, 3 个 escape hatch)
+
+**Step 6 (next-step — 3 个 escape hatch, 按"in-scope 最近"排)**:
+1. **合并 `~/.hermes/config.yaml` 两个 MCP server 为一个** (`.mjs` 不动): 9 tools 全在 `mcp-fabric` 一个 toolset 下, 模型可见。**需用户授权**(config 改 ≠ Hermes source 改, ADR-064 已允许 config seam)
+2. **`fabric-mcp-server.mjs` 加 argv/env 区分 server 身份**: 每个 MCP entry emit 不同 toolset。**需用户授权**(gray area, tool names 改 vs semantics 改)
+3. **不修 → 接受 3/4 baseline 关 P0011.x**: 诚实路径, Run A 数据已留
+
+**边界守住 (100%)**: ❌ 不重跑 Run A / 不跑 Run B / 不动 explore-run.ts / 不动 ~/.hermes/config.yaml / 不动 fabric-mcp-server.mjs / 不动 Hermes source / 不动 ground-truth prompt / 不调任何 string 提分
+
+**详细报告**: `data/_blind_runs/p0011-x-mcp-activation-blocker.md` (8 deliverables 完整版) + `context/handoff.md` Handoff P0011.x A/B Acceptance BLOCKER 节 + memory `p0011-x-mcp-activation-blocker.md`
+
+---
+
+**Run A 详细 (历史, frozen)**:
+
+|**版本**: v0.13.14 (P0011.x Acceptance: Live Hermes Blind Run on JD 商智 — 3/4 honest score, 0 ground-truth leakage; harness gap: `toolsets: 'browser-exploration'` 不在 Hermes known_builtin_toolsets → 7 fabric_browser_* MCP 工具全部未被激活, 模型走 browser_exec 通用通道; exportDealOrders 缺: 模型到 orderDetails 页面未点击 下载数据 按钮) | **Hermes**: v0.20.5 | **测试**: 115 prior passed / 0 new tests (ACCEPTANCE ONLY freeze, 0 code change) | **P0011.x Acceptance 关键事实 (3/4)**: ✅ downloadSummary.ajax (核心指标 下载数据 click 触发), ✅ getDealOrders.ajax (orderDetails 成交 tab 看到), ✅ behavior_report (cross-cutting RUM observation), ❌ exportDealOrders.ajax (Hermes 0 calls, 未点 订单明细 下载数据 按钮); Hermes 自主 stop, 9 分钟内 47 个 browser_exec call + 195 message.delta + 1 turn.result (6978 chars); 结构化发现: 12 metric cards / 6 report templates / 3-tab 订单结构 / 异步导出 + 下载中心 流程 / menuCode 命名空间 | **Harness Gap (REPORTED, NOT FIXED)**: mcp_servers.fabric_browser 已注册但 turn-time 未激活; 7 generic 工具在磁盘存在但对模型不可见; 修复方向 = 发 `mcp:fabric_browser` 或让 Hermes 加载所有 configured MCP servers (per freeze 留作下阶段) | **Data files**: data/_blind_runs/blind-20260902T151803Z.{ndjson,err,report.md} (3 件, 6.4MB NDJSON) |
 
 - [x] **P0010.2.11 C2.0 trade.overview business-date fail-closed guard (ADR-073) — 堵死 realtime payload 盖历史 business_date 的污染路径** - 真实污染事故确认: 2026-08-22/27/28_getSummary.json 被 8/29 realtime payload 覆写、却盖调用方传入的历史 business_date (shop_id 11855009)。根因: direct-fetch 路径下 `options.date` 只用于 stamping, 请求永远是 todayRealtime。修复: 新纯函数 `resolveTradeOverviewBusinessDate` + acquire 入口 fail-closed (见 header **C2.0 business-date 不变量**)。TDD RED→GREEN 7 项单测 (tests/unit/connectors/jd/trade-overview-date.test.ts: 默认今天/接受今天/拒历史/拒 UTC 错标/拒未来/acquire 先于 CDP 失败/guard 与 CDP 可用性无关); 全 suite 1237 passed / 既有失败 2 不变; typecheck 21 errors 全 pre-existing 0 新增; 真实链路 probe: 曾造成污染的确切调用路径 (POST /fabric/execute + date:2026-08-22) 现 fail-closed 且零 evidence 写入。守界: 不改 direct-fetch transport / getTrend 采集 / /fabric/trade-trend / Workspace 表格 / 不静默纠正。
 
@@ -16,6 +189,32 @@
 - [x] **P0010.2.x Clean Runtime Baseline Reset (ADR-065) — 1307 DB rows + 1485 FS entries deleted, KEEP paths hash-verified** - User requested destructive reset of dev DB + runtime filesystem to remove all runtime facts (Evidence/Signal/Situation/Investigation/Output/Intervention/business_traces/ranking_results/JD history) while preserving Knowledge/Capability/env/config/code. **New** `scripts/reset-runtime-baseline.ts` (~330 LOC) — `--dry-run` (default; flipped from APPLY default of fix-dirty-lifecycle.ts / cleanup-polluted-situations.ts because reset is significantly more destructive) / `--execute`. **FK-safe DELETE order** in single `db.transaction()` (children first: hourly_snapshot_signals → feedback → human_interventions → learning_contexts → situations → hourly_snapshots → reviews → signals/signal_weights/business_traces/ranking_results → context_memories/operator_memories → jd_*). Triggers NOT dropped (only fire on INSERT/UPDATE). **Filesystem cleanup** = 3 modes: (1) full-rm + recreate empty (data/evidence, data/fabric-workspace/{situations,investigations,investigation,investigation_contracts,logs,screenshots,reports,references,.hermes}, data/discovery-schema, data/test-fabric-workspace); (2) `contentsOnly` with regex patterns (data/fabric-workspace top-level: 12 stray investigation-*.json / investigation_result*.json / investigation_sit_*.json / recommendation*.json; context: 1 investigation_contract_*.json; knowledge/cases: 1 case-sit_*.md). **KEEP paths hash-verified** before/after: knowledge/ (14 files), knowledge-sources/raw/ (12 user uploads), capabilities/, systems/, AGENTS.md, README.md, context/handoff.md, generated/capability-contract.json — 0 unexpected changes (only the intentional `case-sit_ec85c7835fbaf3aa9521.md` was removed). **Idempotent**: re-running on clean baseline exits 0 with "Already clean — nothing to do". **Projector-aware**: signal_weights (9 rows) + jd_dataset_metadata (10 rows) re-appear on next boot because bootstrap projector re-emits them — this is correct, same pattern as `data/fabric-workspace/{capabilities,systems}` regeneration. **Verification**: post-reset Workspace UI on empty state — `/api/situations`=`{data:[]}`, `/api/outputs`=`{data:[],meta:{total:0,...}}`, `/api/runtime/loop`=`{running:true, tickCount:0}`, `/api/readiness` shows honest `hermes.{gateway:not_checked, sessionRuntime:..., agentTurn:never_attempted}` (no fake `d.workspace==='ready'`). **Smoke test** (POST `/api/runtime/collect` `mock:true`): 25 real signals (ingested_at=2026-08-27T10:51:39.911Z, gmv=4980, orders=51, uv=926, cvr=...) + 3 new evidence files — no fake INSERT, no demo seed, no fabricated timestamps. **0 situations on empty baseline is CORRECT**: `apps/ecommerce/runtime/situation/rules.ts:231` requires "at least two daily observations (latest vs prior day)" for `meaningful_change`; with only 1 day of data (2026-08-27) the rules correctly return "nothing meaningful yet". typecheck 0 新增 (21 baseline 全是 pre-existing, 与本刀无关). **Hard constraints 100% 遵守**: ❌ 不动 Hermes config / .env / HERMES_WS_URL / ADR-064 topology; ❌ 不删 Hermes installation / session token contract; ❌ 不清 Hermes 全局用户数据 / 不删无关 sessions; ❌ 不改 Hermes model / proxy / Session Runtime topology; ❌ 不删 test fixture source files; ❌ 不删用户上传的 raw knowledge sources; ❌ 不改 business Situation lifecycle 规则; ❌ 不引入 Event Bus / SSE / WebSocket / Wake Engine. **ADR-065**.
 
 - [x] **Hermes Integration Correction（ADR-064）— 3-layer runtime health + 诊断契约改写** - 用户 live 审 P0010.2.4 修复后明确点出"运行/诊断 contract"还犯 3 个错：(1) 暗示 9119 关闭 = Hermes 整体离线（错，gateway 仍可能跑在 8642），(2) 暗示 8642 gateway 存活 = session runtime 存活（错，session runtime 单独在 9119），(3) 把"无 token"和"runtime 不可达"两种 failure mode 混成"Missing Hermes dashboard session token"一句话。**5 项硬约束全部按 verbatim 执行**：①HermesSessionClient → `hermes serve` → `/api/ws` 是**唯一**整合（无 gateway:8642 fallback、无 gateway token/API_SERVER_KEY → session token 映射、无 PID 推 transport）；②`HERMES_WS_URL` 是 Session Runtime endpoint **唯一**配置来源（默认 9119，**注释**明示 "hermes serve default" 不是 "detected gateway"）；③endpoint 不可达错误**必须**写 `'Hermes Session Runtime unavailable at <url>. AgentFabric requires 'hermes serve' for the configured session adapter.'`（含 resolution note (a) export `HERMES_DASHBOARD_SESSION_TOKEN` / (b) 设 `HERMES_WS_URL` 指向已运行的 `hermes serve`，以及 "NOT a fallback: hermes gateway (port 8642, API_SERVER_KEY Bearer) is a separate service" 收尾）；④Health 必须**分层**：`gateway` `not_checked`（agentFabric 不探 gateway，明示）、`sessionRuntime` `healthy|unavailable`（`/api/health` 探 + connect 双重更新）、`agentTurn` `healthy|failed|never_attempted`（loop 每次 turn 写一次），**不**回退到单一 "Hermes online/offline"；⑤Token domain 分离：`/api/ws` 收 `HERMES_DASHBOARD_SESSION_TOKEN`（或 auto-discover from `hermes serve` env），`:8642/v1` 收 `API_SERVER_KEY`，**禁止**相互 fallback。**5 个文件 + 1 个新 test file** 一次性收口：① **新** `platform/runtime/hermes/health-state.ts` (257 LOC) — process-singleton 3-layer `HermesHealth` 单一 source-of-truth（无 class：`getHermesHealth()` 读 + `recordSessionRuntimeProbe / recordSessionRuntimeConnectOk / recordSessionRuntimeConnectFailure / recordAgentTurn` 写）。`gateway` 永远 `not_checked` + note 明示 agentFabric 不打 gateway — 这是一个**主动声明**的 non-feature（避免以后有人加 gateway probe 创造隐性依赖）；② `platform/runtime/hermes/session-client.ts` — `missingTokenError(probe)` 按用户 verbatim 重写（带 modeHint + resolution note (a)/(b) + "NOT a fallback" 收尾）；**新** `sessionRuntimeUnreachableError(err)` 收 "token accepted but WS upgrade failed" 这种**新**分路（区别于 `missingTokenError` 让 operator 分清 "无 token" vs "runtime 已通但拒绝"）；`connect()` 4 个出口（first-ok / second-ok / missing-token / fresh-empty / second-fail）**全部** 在抛前调用 `recordSessionRuntime*` 让 health-state 与 readiness/status 永远反映 truth（即使 no caller awaits throw）；`parsePortFromUrl` 改 export；`HermesAuthError.reason` 联合扩 `'session_runtime_unreachable'`；9119 注释全部改为 "hermes serve default (Session Runtime)" 而非 gateway；③ `platform/runtime/hermes/token-resolver.ts` — 顶部注释扩 "Token domain 分离" 段，明示 `HERMES_GATEWAY_TOKEN` / `API_SERVER_KEY` 是 gateway credential 永远不许发到 `/api/ws`；9119 全部 3 处注释（header / resolveHermesSessionToken / resolveHermesSessionTokenWithSource）改 "hermes serve default (Session Runtime) backs /api/ws"；④ `platform/server/routes/runtime.ts` — `/api/readiness` 嵌 `hermes: {gateway, sessionRuntime, agentTurn}` 字段，每次 call re-probe `/api/health`（hermes 切端口 / 切 auth_required 不会留 stale chip）；**新** `/api/runtime/hermes/status` 路由（同样的 3-layer shape，无 JD/CDP 噪音，cheap monitoring poll）；⑤ `apps/ecommerce/runtime/loop/runtime-loop.ts` — 引入 `recordAgentTurn`；3 个 turn outcome path 全部 call（`result.ok=true → 'healthy'`、`result.ok=false → 'failed' + 结构化 failureReason`、`catch → 'failed' + 'turn_threw'`）；⑥ `apps/ecommerce/workspace/app.js` — `renderReadiness()` 不再读假 `d.workspace === 'ready'`，改读 `d.hermes.sessionRuntime.state` (主) + `d.hermes.agentTurn.state` (次 'turn ok' / 'turn failed' / 'no turn yet')；3 个 catch-block UI hint (L2817 / L3404 / L3411) 重写为 "Session Runtime 是 `hermes serve`（默认端口 9119），不是 hermes gateway（端口 8642）. gateway 存活 ≠ Session Runtime 存活"（明确两个 transport 的可分离性）。⑦ **新** `tests/unit/hermes/diagnostic-message.test.ts` (13 tests) — pin 3-layer shape (gateway 永远 not_checked / sessionRuntime probe ok→healthy fail→unavailable / agentTurn never_attempted→healthy failed / 3 layer 独立) + 诊断契约 (`HermesAuthError` 收 `session_runtime_unreachable` / `missing_token` 含用户 verbatim prefix) + token domain 分离 (`HERMES_GATEWAY_TOKEN` 永不 promote 为 session token)。**测试**：typecheck 0 新增（baseline 19 全是 pre-existing，与本刀无关）；13 个新定向测试全 pass；既有 `session-client.test.ts` + `session-client-lazy-token.test.ts` 5 个 error-message assertion 改为新 wording；全 suite 1123 passed / 5 pre-existing flaky (master baseline 1110 passed / 5 pre-existing flaky — **net 0 new regression** + 13 net new tests)。**用户硬约束 100% 遵守**：❌ 不加 8642 adapter；❌ 不把 gateway 变 session transport；❌ 不加第 3 条 Hermes 主路径；❌ 不动 P0010.2.x Workspace State Convergence 设计 (ADR-063 完整保留)；❌ 不扩 Zod enum；❌ 不动 InvestigationSchema / LearningContext / situations.lifecycle；❌ 不删 SubprocessHermesClient；❌ 不引入 Event Bus / SSE / WebSocket push；❌ 不引入 Wake Engine / Action Engine / Approval / external sending；❌ 不造 ID 字段；❌ 不为 demo 伪造 time / provenance / final outcome。**Live acceptance 推迟到下个 session**（按用户原话 "先纠正运行/诊断 contract，再继续 7500f65 的真实浏览器 live acceptance"），届时测试环境**必须** `hermes serve --port <port>` + 设 `HERMES_WS_URL`（**不是** hermes gateway :8642）。**ADR-064**。
+
+---
+
+## S0002 + S0001 Governance Activation (2026-09-04)
+
+**状态**: 第 1 天 (v0.13.19-rc+4). 5 个 governance 文档一次性落地:
+
+| 文档 | 路径 | 变更 |
+|---|---|---|
+| `standards/S0002-testing-and-acceptance.md` | `standards/S0002-testing-and-acceptance.md` | **新** — 21 sections, Three Verification States (Structural / Integration / Business Acceptance), Acceptance Authority, Completion State Machine, Test Classification, Production Wiring Rule, Mock/Stub/Fixture Boundary, Real Result Before Assertion, Semantic Assertions, Fact Integrity, External Source Integrity, Agent/LLM Verification, No-Future/Epistemic Integrity, Workspace/Product Acceptance, Failure Honesty, Proposal Success Criteria Mapping, Automated Test Count, Coverage, Review/Close Gate, Reporting Standard, Fresh Session Requirement. Appendix A 映射到现有 ADR (P0006.1, P0008.6, P0009, P0009.1, ADR-063, ADR-064, ADR-076). |
+| `standards/S0001-cross-agent-collaboration.md` | `standards/S0001-cross-agent-collaboration.md` | **MODIFIED** — Version 1.1. 加入 S0002 reference 到 flow; "Review ≠ tests green", "Close 依赖 Proposal Success Criteria (Business Acceptance)", "Automated tests 不能替代 Business Acceptance", "Implementation Agent 无权修改或降低 Accepted Proposal 的 Success Criteria". |
+| `CLAUDE.md` (root) | `CLAUDE.md` | **MODIFIED** — 加入 "Mandatory Development Workflow" 7-step procedure. 硬规则: Accepted Proposal = acceptance contract, no reinterpretation, N/N tests = regression evidence only, no bypass/mock/stub, normalize representation never truth, no fact modification, STOP for blocked criteria, fresh session works from documents alone. |
+| `AGENTS.md` (root) | `AGENTS.md` | **MODIFIED** — 加入 "Mandatory Development Workflow" (mirror of CLAUDE.md for Codex onboarding). |
+| `README.md` (root) | `README.md` | **MODIFIED** — 加入 "Development Governance" section. ChatGPT/Claude/Proposal/Accepted 角色映射. "Implemented ≠ Verified ≠ Accepted". |
+| `proposals/README.md` | `proposals/README.md` | **MODIFIED** — Append "3. Proposal Governance (Effective 2026-09-04)". Acceptance Contract; Closure follows S0002; Scope discipline. |
+| `package.json` | `package.json` | **MODIFIED** — 加入 3 个小 npm scripts: `test:structural`, `test:integration`, `test:probes` (probes are .mjs scripts). |
+
+**应用 P0013 (S0002 reclassification)**:
+- Implementation: **DONE** (代码全部 in place, 60/60 P0013 unit + contract + integration tests green).
+- Structural Verification: **PASS** (typecheck 0 new errors on P0013 files; 488/489 broader suite pass, 1 pre-existing Hermes WS timeout unrelated).
+- Integration Verification: **PASS** (real Hermes WS plumbing via `createReplayCognitionKernel`; no httpStubKernel in route layer; SQL `WHERE business_date <= T` filter at data boundary).
+- Business Acceptance evidence: **PARTIAL — 21/30 days COMPLETED with real Hermes cognition**. §23 SQL proof at 08-15 mid-window PASS. §14 confirmed_action IS NULL for all 21 days. §6 P0011.x raw mtimes unchanged. §32 production isolation 298 rows untouched. **2 BLOCKED items** for follow-up P0013+:
+  1. `mode=complete` route bug at `platform/server/routes/replay.ts:222` — treats `r.status === 'COMPLETED'` (per-step) as terminal (run-level). Fix: check `state.status` instead of `r.status`.
+  2. Orphan RUNNING-step deadlock at `replay-runner-p0013.ts:534-557` — G1.6 fix pauses run-status, but `insertOrFetchRunningStep` returns `{kind: 'existing', status: 'RUNNING'}` and the route returns `PAUSED` "concurrent advance in flight", never recovering. Fix: add a stale-step timeout, OR allow operator-initiated retry of an orphan RUNNING step.
+- Human Operator Acceptance: **PENDING** — 16-point checklist at `docs/acceptance/p0013-operator-checklist-16.md` ready for operator walk-through on real Chrome :9222.
+- Overall P0013 status: **NOT CLOSED** per S0002 §19 — Business Acceptance evidence insufficient (2 BLOCKED). Operator hands close the loop.
 
 - [x] **P0010.2.x Workspace State Convergence（ADR-063）— 5 个 audit 真实 dead-leg 一次性收敛，详情/Feed 不再可能 disagree** - 用户 live 审 P0010.2~P0010.2.4 暴露 5 个真实架构权威性 gap：(1) Workspace UI 多个 derivation point（Feed 状态 chip、Detail banner、按钮可见性、Timeline 状态、3 处"恢复"按钮）从 8 个不同 state source 读、用 3 个不同 enum —— 详情页按 F5 之前的"等待 Agent 自动调查" + 同时显示"立即调查"按钮的 contradiction 就是从这里来的；(2) **WorkspacePresentation 必须作为派生视图**，**不是新 lifecycle**、**不持久化**、**不写回 DB**（用户原话硬约束）；(3) `failed + hasPriorValidCognition` → `recoverable`（**不是** `observing`）—— 之前判断"恢复后保留 cognition"是 pre-existing 误解；prior cognition 只作为 content-layer 提示（banner 上的"上一次有效判断仍保留"）出现，state 本身保持 `recoverable`；(4) `humanNeeded[]` **不参与** `waiting_human` 判定 —— 只有 `stopReason ∈ {ask_human, missing_capability}` 进入 `waiting_human`，推荐里说"建议人工核验"不算阻塞；(5) `blocked` **必须**用持久 sidecar (`consecutiveFailures + blockedEmittedAt`)，**不能**靠 `loopLastEvent === investigation_blocked`（ring buffer 进程重启就丢）。**6 个文件 + 3 个新 test 文件** 一次性收口：① `shared/schemas/workspace-presentation.ts` (239 LOC) — 7-state enum (`pending / investigating / recoverable / completed / observing / waiting_human / blocked`) + `WorkspacePresentationOutput` envelope + `PresentationAvailableActions` (showGenerateRecommendation/showClearBlock/showLegacyStart) + Zod schemas；② `apps/ecommerce/workspace/presentation-state.ts` (478 LOC) — 纯 server-side reducer (`reduce(input)` / `reduceForFeed(input)`)，**无 DB 写、无 `Date.now()`、无 LoopEvent 依赖**，`now` 由 caller 传入做可测性；3 类 evidence: situation row + learning_context body + interventions rows；纯函数 `sha1` 算 `presentationRevision` 排除 `computedAt`；8-step decision tree 实现用户所有硬约束；③ `apps/ecommerce/workspace/time-format.js` (181 LOC) + `.d.ts` (24 LOC) — 5 函数 (`formatLocalTime/formatUtcTime/formatBusinessDate/formatProxyTime/formatRelative`)，业务日期**绝不**伪造 00:00:00、proxy 时间**永远**带 `≈`、所有 missing/invalid 一律 "—"，**唯一**时间格式化入口；④ `apps/ecommerce/runtime/loop/recommendation-to-output.ts` 增 `writeRecommendationResult` 统一 seam (P0010.2.x #8 fix) — 修复了 `/chat` 末尾 materialize WorkItem 而 `/recommend` 末尾不 materialize 的 audit dead-leg #3（"已生成建议 + 生成建议按钮"同屏 contradiction 来源）；`/chat` turn-end + `/recommend` regenerate **必须**都过此函数；fingerprint 用 **原始** `investigation.updatedAt`（不重新 stamp），避免 idempotency 假象 + 重复 WorkItem（这是另一个 sub-bug 发现并修复的）；⑤ `platform/server/routes/p0007.ts` 修改 — `/api/situations` 列表返回 `presentation/headline/shortLabel/judgmentPreview/presentationRevision/hasAcceptedDecision` + legacy `investigation` block 保留（back-compat）；`/api/situations/:id` 返回完整 `workspacePresentation` envelope，**取消**详情页原本的二次 `/api/situation/:id/investigation` 调用（直接读 `raw.workspacePresentation` 渲染），**取消** 之前的 local 5-state `deriveInvestigationDisplayState` 读 raw `learningContext` 路径（presentation.js fallback 仍存在但不再被 workspace 调用）；⑥ `apps/ecommerce/workspace/app.js` 重构 — `loadSituationDetail` 取消第二次 `investigation` 调用、4 秒 setInterval polling 配 re-entry guard + `presentationRevision` dedup、`switchView` clear timer on leave；`loadSituationFeed` 改读 `s.presentation`/7-state 映射、derived `chipBucket` 把 7 state 折 5 chip bucket（investigating→调查中 / recoverable→待恢复 / blocked→已阻塞 / waiting_human→需人工 / 其它→观察/已判断）；⑦ `apps/ecommerce/workspace/presentation.d.ts` 扩 7 个 type + 2 个 function decl；⑧ `presentation.js` 增 3 export (`getWorkspacePresentation`/`getFeedEntrySummary`/`getAvailableActions`) + 旧 `deriveInvestigationDisplayState` 5-state 标记 DEPRECATED 保留 back-compat；`renderSituationTimeline` 改走 time-format.js 唯一 helper（消除 ad-hoc `.toLocaleString()` 和 `iso.slice(0,16)`）。**测试**：46 个新定向测试 (22 reducer + 5 write-recommendation-result + 19 time-format) 全 pass；reducer 覆盖 8-step decision tree + 4 hard rule (humanNeeded[] no influence, priorCognition preserves but state stays recoverable, blocked survives restart via persisted sidecars, awaiting-human 严格只用 stopReason) + revision stability (相同 state → 同 revision；不同 updatedAt → 不同 revision) + banner copy (blocked counter function, completed banner, generate-recommendation flag) + `reduceForFeed` shape；write-recommendation-result 覆盖 `/chat` materialization + `/recommend` same-content idempotent + `/recommend` different-content new WorkItem + null/undefined recommendation 是 no-op；time-format 覆盖 5 函数 + 业务日期不补 00:00:00 + proxy 永远带 ≈ + 全部 missing 返 "—"。**验收**：typecheck 0 新增（baseline 19 全部 pre-existing，与本刀无关）；全 suite 1110 passed / 5 pre-existing flaky（**比 master baseline 1105 passed / 10 failed 还少 5 个 failure**——本刀净修了 5 个 pre-existing failure + 加 46 个新测试 = net 0 new regression）；5 个 pre-existing flaky 是 (a) capability coverage (real API count vs assertion 50)、(b-d) runtime-loop 3 个 connect-spy timing 测（pre-existing vi.mock 顺序问题，与本刀无关）、(e) session-client unhandled rejection (pre-existing slow-timer pattern)。**用户硬约束 100% 遵守**：❌ 不动 `situations.lifecycle` 业务语义；❌ 不新增持久化 lifecycle；❌ 不引入 Event Bus / SSE / WebSocket（4 秒 polling 是 P0 acceptable）；❌ 不扩 Zod enum / 不动 InvestigationSchema / 不动 LearningContext；❌ 不删 SubprocessHermesClient；❌ 不造 ID 字段。**ADR-063**。 - 用户 live 报 "Investigation Contract 拒收因 hypothesis status vocabulary drift (`confirmed`, `strongly_supported`, `partially_rejected`)" + "Turn timed out waiting for message.complete"。**先 Audit，再修，最后 live verify (real Hermes, 不写新 Proposal)**。**Audit (5 个真实 bug)**：① InvestigationSchema 4-status enum (`proposed | supported | weakened | rejected`) 严格 fail-closed，Agent 真实模型 (agnes-2.0-flash) 持续输出 `confirmed/strongly_supported/partially_rejected` 3 个语义近似但不在 enum 的词 — 之前是 `safeParse` 直接拒，整次调查作废 (rawReply 80% 有完整 judgment 仍被弃)；② Re-prompt 路径 (`reply2`) 旧代码从失败 reply 手挑 field 拼 — 违反"不伪造 Investigation Contract"硬约束；③ Timeout 跟 schema failure 混在同一个 catch 里，operator 看不到 "是 Hermes 模型/网络问题" 还是 "是 Agent 词汇漂移"；④ 真实 Hermes 0.20.5 `prompt.submit → thinking.delta → message.* → message.complete` 序列里，错误回复的 `payload.text` 含 "HTTP 400: messages: Validation error" 但 `payload.status !== 'error'`，错误信息被埋在 text stream；⑤ Failure 标签只有 "Investigation failed: <error>" 一句话，operator 看到无法判断下一步。**5 项最小修复（严格不扩 Zod enum / 不加新 architecture / 不删 SubprocessHermesClient / 不伪造结果）**：① **Canonical normalization layer** 新 `apps/ecommerce/runtime/investigation/normalize.ts` (Object.freeze allow-list 5 known equivalent: `confirmed→supported`, `strongly_supported→supported`, `partially_rejected→weakened`, `complete→judgment`, `wait→observe`)，unknown value **fail-closed** (返回 unmappable 给 operator 看到哪 field 拒)，输入不接受 trim 也不接受 case-fold (防止 silent acceptance)；② **Parser 两步** `parseInvestigation` 先直 parse，失败再 apply 允列表 normalization 再 parse，**不手挑 field**；③ **Prompt 硬约束** "Status vocabulary — HARD CONSTRAINT" 段在 step 6 之后，列 4 canonical + name drift 词 "已知但不要用"（让 Agent 学习后自发 honor canonical，避免 "all normalization, no prompt" 的 lazy fix）；④ **Failure 4-reason 分类** `InvestigationFailureReason = 'agent_transport_failed' | 'agent_timeout' | 'provider_failed' | 'contract_invalid'`，provider error 检测 regex (`HTTP \d{3}|Non-retryable|BadRequestError|OpenAIException|AuthenticationError|RateLimitError`) 因 Hermes 0.20.5 不在 `payload.status` 标 error 必须 text-sniff；⑤ **collectTurn TDZ bug 修** `let unsubscribe: () => void = () => {}` 而非 `const unsubscribe = client.onEvent(...)`（mock 同步 replay 事件时 unsubscribe 未初始化），accept `turn.completed` / `turn.complete` 作为 `message.complete` 的等价 terminal。**Provider error 错误信息 honest 重写**：operator 看到 "Agent 已完成推理，但返回格式不符合 Investigation Contract；系统正在自动兼容已知状态词并重试解析" 而不是 "Investigation failed: HTTP 400"。**Live verify 完整 chain (real Hermes 0.20.5 port 9120)**：① 23:34:59.675 `agent.connect.started` → 23:34:59.965 `agent.connect.failed` (第 1 次 WS 握手 blip) → 23:34:59.971 `agent.connect.ok` (auto-recover `port=9120 · no_auth · tokenSource=auto-dashboard · attempt=1 · 296ms`) → 23:35:00.154 `agent.turn.started` → 23:36:16.457 `agent.turn.completed` (第 1 turn 76s, prose only no JSON) → 23:36:16.480 `agent.turn.started` (re-prompt path 触发) → 23:36:29.755 `agent.turn.completed` (第 2 turn 13s, 仍 prose only) → `Investigation status=failed`, error=`[contract_invalid] Invalid Investigation Contract ... nextQuestion null` — 旧 contract_invalid 分类正确触发，无 manual field picking；② **第 2 轮 live 验证 sit_80e647bab4db7bc9383f 完整 success**：status=completed, 5 hypotheses (rejected/supported/supported/rejected/proposed 全 canonical), 4 findings, judgment "【伪异常 · 间歇性listing问题】SKU 10072459153406 的'表现突出'判断基于统计噪声 (UV<500)...", stopReason=judgment, capabilityUsed=`product.overview, trade.overview, traffic.overview` (3 真实 fabric 能力), 无 drift normalization 触发 (Agent 学 prompt 后自发 honor canonical)；③ **Live e2e drift normalization 测试** (real Hermes-shaped raw reply 包含全部 3 个 known drift 词): parseInvestigation 返回 `ok=true drift.length=4`，entries: `hypotheses[1].status: confirmed→supported`, `hypotheses[2].status: strongly_supported→supported`, `hypotheses[3].status: partially_rejected→weakened`, `stopReason: complete→judgment`; ④ **Provider error classification 12/12 pass** (HTTP 400/Non-retryable/BadRequest/Auth/RateLimit/OpenAI 6 个 true positive + connection refused/ws closed/timeout/missing token/contract invalid/no JSON 6 个 true negative)。**测试**：typecheck 0 新增（baseline 19 全是 pre-existing）；新 +43 (30 contract-normalize + 13 collect-turn-classify) — 全 suite 968 passed / 2 pre-existing flaky (chat.contract + capability coverage) / 0 新增。**ADR-062**。
 
@@ -154,3 +353,342 @@
 - [ ] **P0009 模型稳定性** — nemotron-3-ultra 运行间抖动（71-77s 或 >180s），已确认 transport 正确，属模型/配额层，非 agentFabric 可修
 
 - [x] **Hermes Integration Correction（ADR-064）— 3-layer runtime health + 诊断契约改写** - 用户 live 审 P0010.2.4 修复后明确点出"运行/诊断 contract"还犯 3 个错：(1) 暗示 9119 关闭 = Hermes 整体离线（错，gateway 仍可能跑在 8642），(2) 暗示 8642 gateway 存活 = session runtime 存活（错，session runtime 单独在 9119），(3) 把"无 token"和"runtime 不可达"两种 failure mode 混成"Missing Hermes dashboard session token"一句话。**5 项硬约束全部按 verbatim 执行**：①HermesSessionClient → `hermes serve` → `/api/ws` 是**唯一**整合（无 gateway:8642 fallback、无 gateway token/API_SERVER_KEY → session token 映射、无 PID 推 transport）；②`HERMES_WS_URL` 是 Session Runtime endpoint **唯一**配置来源（默认 9119，**注释**明示 "hermes serve default" 不是 "detected gateway"）；③endpoint 不可达错误**必须**写 `'Hermes Session Runtime unavailable at <url>. AgentFabric requires 'hermes serve' for the configured session adapter.'`（含 resolution note (a) export `HERMES_DASHBOARD_SESSION_TOKEN` / (b) 设 `HERMES_WS_URL` 指向已运行的 `hermes serve`，以及 "NOT a fallback: hermes gateway (port 8642, API_SERVER_KEY Bearer) is a separate service" 收尾）；④Health 必须**分层**：`gateway` `not_checked`（agentFabric 不探 gateway，明示）、`sessionRuntime` `healthy|unavailable`（`/api/health` 探 + connect 双重更新）、`agentTurn` `healthy|failed|never_attempted`（loop 每次 turn 写一次），**不**回退到单一 "Hermes online/offline"；⑤Token domain 分离：`/api/ws` 收 `HERMES_DASHBOARD_SESSION_TOKEN`（或 auto-discover from `hermes serve` env），`:8642/v1` 收 `API_SERVER_KEY`，**禁止**相互 fallback。**5 个文件 + 1 个新 test file** 一次性收口：① **新** `platform/runtime/hermes/health-state.ts` (257 LOC) — process-singleton 3-layer `HermesHealth` 单一 source-of-truth（无 class：`getHermesHealth()` 读 + `recordSessionRuntimeProbe / recordSessionRuntimeConnectOk / recordSessionRuntimeConnectFailure / recordAgentTurn` 写）。`gateway` 永远 `not_checked` + note 明示 agentFabric 不打 gateway — 这是一个**主动声明**的 non-feature（避免以后有人加 gateway probe 创造隐性依赖）；② `platform/runtime/hermes/session-client.ts` — `missingTokenError(probe)` 按用户 verbatim 重写（带 modeHint + resolution note (a)/(b) + "NOT a fallback" 收尾）；**新** `sessionRuntimeUnreachableError(err)` 收 "token accepted but WS upgrade failed" 这种**新**分路（区别于 `missingTokenError` 让 operator 分清 "无 token" vs "runtime 已通但拒绝"）；`connect()` 4 个出口（first-ok / second-ok / missing-token / fresh-empty / second-fail）**全部** 在抛前调用 `recordSessionRuntime*` 让 health-state 与 readiness/status 永远反映 truth（即使 no caller awaits throw）；`parsePortFromUrl` 改 export；`HermesAuthError.reason` 联合扩 `'session_runtime_unreachable'`；9119 注释全部改为 "hermes serve default (Session Runtime)" 而非 gateway；③ `platform/runtime/hermes/token-resolver.ts` — 顶部注释扩 "Token domain 分离" 段，明示 `HERMES_GATEWAY_TOKEN` / `API_SERVER_KEY` 是 gateway credential 永远不许发到 `/api/ws`；9119 全部 3 处注释（header / resolveHermesSessionToken / resolveHermesSessionTokenWithSource）改 "hermes serve default (Session Runtime) backs /api/ws"；④ `platform/server/routes/runtime.ts` — `/api/readiness` 嵌 `hermes: {gateway, sessionRuntime, agentTurn}` 字段，每次 call re-probe `/api/health`（hermes 切端口 / 切 auth_required 不会留 stale chip）；**新** `/api/runtime/hermes/status` 路由（同样的 3-layer shape，无 JD/CDP 噪音，cheap monitoring poll）；⑤ `apps/ecommerce/runtime/loop/runtime-loop.ts` — 引入 `recordAgentTurn`；3 个 turn outcome path 全部 call（`result.ok=true → 'healthy'`、`result.ok=false → 'failed' + 结构化 failureReason`、`catch → 'failed' + 'turn_threw'`）；⑥ `apps/ecommerce/workspace/app.js` — `renderReadiness()` 不再读假 `d.workspace === 'ready'`，改读 `d.hermes.sessionRuntime.state` (主) + `d.hermes.agentTurn.state` (次 'turn ok' / 'turn failed' / 'no turn yet')；3 个 catch-block UI hint (L2817 / L3404 / L3411) 重写为 "Session Runtime 是 `hermes serve`（默认端口 9119），不是 hermes gateway（端口 8642）. gateway 存活 ≠ Session Runtime 存活"（明确两个 transport 的可分离性）。⑦ **新** `tests/unit/hermes/diagnostic-message.test.ts` (13 tests) — pin 3-layer shape (gateway 永远 not_checked / sessionRuntime probe ok→healthy fail→unavailable / agentTurn never_attempted→healthy failed / 3 layer 独立) + 诊断契约 (`HermesAuthError` 收 `session_runtime_unreachable` / `missing_token` 含用户 verbatim prefix) + token domain 分离 (`HERMES_GATEWAY_TOKEN` 永不 promote 为 session token)。**测试**：typecheck 0 新增（baseline 19 全是 pre-existing，与本刀无关）；13 个新定向测试全 pass；既有 `session-client.test.ts` + `session-client-lazy-token.test.ts` 5 个 error-message assertion 改为新 wording；全 suite 1123 passed / 5 pre-existing flaky (master baseline 1110 passed / 5 pre-existing flaky — **net 0 new regression** + 13 net new tests)。**用户硬约束 100% 遵守**：❌ 不加 8642 adapter；❌ 不把 gateway 变 session transport；❌ 不加第 3 条 Hermes 主路径；❌ 不动 P0010.2.x Workspace State Convergence 设计 (ADR-063 完整保留)；❌ 不扩 Zod enum；❌ 不动 InvestigationSchema / LearningContext / situations.lifecycle；❌ 不删 SubprocessHermesClient；❌ 不引入 Event Bus / SSE / WebSocket push；❌ 不引入 Wake Engine / Action Engine / Approval / external sending；❌ 不造 ID 字段；❌ 不为 demo 伪造 time / provenance / final outcome。**Live acceptance 推迟到下个 session**（按用户原话 "先纠正运行/诊断 contract，再继续 7500f65 的真实浏览器 live acceptance"），届时测试环境**必须** `hermes serve --port <port>` + 设 `HERMES_WS_URL`（**不是** hermes gateway :8642）。**ADR-064**。
+
+---
+
+## S0002 + S0001 Governance Activation (2026-09-04)
+
+**状态**: 第 1 天 (v0.13.19-rc+4). 5 个 governance 文档一次性落地:
+
+| 文档 | 路径 | 变更 |
+|---|---|---|
+| `standards/S0002-testing-and-acceptance.md` | `standards/S0002-testing-and-acceptance.md` | **新** — 21 sections, Three Verification States (Structural / Integration / Business Acceptance), Acceptance Authority, Completion State Machine, Test Classification, Production Wiring Rule, Mock/Stub/Fixture Boundary, Real Result Before Assertion, Semantic Assertions, Fact Integrity, External Source Integrity, Agent/LLM Verification, No-Future/Epistemic Integrity, Workspace/Product Acceptance, Failure Honesty, Proposal Success Criteria Mapping, Automated Test Count, Coverage, Review/Close Gate, Reporting Standard, Fresh Session Requirement. Appendix A 映射到现有 ADR (P0006.1, P0008.6, P0009, P0009.1, ADR-063, ADR-064, ADR-076). |
+| `standards/S0001-cross-agent-collaboration.md` | `standards/S0001-cross-agent-collaboration.md` | **MODIFIED** — Version 1.1. 加入 S0002 reference 到 flow; "Review ≠ tests green", "Close 依赖 Proposal Success Criteria (Business Acceptance)", "Automated tests 不能替代 Business Acceptance", "Implementation Agent 无权修改或降低 Accepted Proposal 的 Success Criteria". |
+| `CLAUDE.md` (root) | `CLAUDE.md` | **MODIFIED** — 加入 "Mandatory Development Workflow" 7-step procedure. 硬规则: Accepted Proposal = acceptance contract, no reinterpretation, N/N tests = regression evidence only, no bypass/mock/stub, normalize representation never truth, no fact modification, STOP for blocked criteria, fresh session works from documents alone. |
+| `AGENTS.md` (root) | `AGENTS.md` | **MODIFIED** — 加入 "Mandatory Development Workflow" (mirror of CLAUDE.md for Codex onboarding). |
+| `README.md` (root) | `README.md` | **MODIFIED** — 加入 "Development Governance" section. ChatGPT/Claude/Proposal/Accepted 角色映射. "Implemented ≠ Verified ≠ Accepted". |
+| `proposals/README.md` | `proposals/README.md` | **MODIFIED** — Append "3. Proposal Governance (Effective 2026-09-04)". Acceptance Contract; Closure follows S0002; Scope discipline. |
+| `package.json` | `package.json` | **MODIFIED** — 加入 3 个小 npm scripts: `test:structural`, `test:integration`, `test:probes` (probes are .mjs scripts). |
+
+**应用 P0013 (S0002 reclassification)**:
+- Implementation: **DONE** (代码全部 in place, 60/60 P0013 unit + contract + integration tests green).
+- Structural Verification: **PASS** (typecheck 0 new errors on P0013 files; 488/489 broader suite pass, 1 pre-existing Hermes WS timeout unrelated).
+- Integration Verification: **PASS** (real Hermes WS plumbing via `createReplayCognitionKernel`; no httpStubKernel in route layer; SQL `WHERE business_date <= T` filter at data boundary).
+- Business Acceptance evidence: **PARTIAL — 21/30 days COMPLETED with real Hermes cognition**. §23 SQL proof at 08-15 mid-window PASS. §14 confirmed_action IS NULL for all 21 days. §6 P0011.x raw mtimes unchanged. §32 production isolation 298 rows untouched. **2 BLOCKED items** for follow-up P0013+:
+  1. `mode=complete` route bug at `platform/server/routes/replay.ts:222` — treats `r.status === 'COMPLETED'` (per-step) as terminal (run-level). Fix: check `state.status` instead of `r.status`.
+  2. Orphan RUNNING-step deadlock at `replay-runner-p0013.ts:534-557` — G1.6 fix pauses run-status, but `insertOrFetchRunningStep` returns `{kind: 'existing', status: 'RUNNING'}` and the route returns `PAUSED` "concurrent advance in flight", never recovering. Fix: add a stale-step timeout, OR allow operator-initiated retry of an orphan RUNNING step.
+- Human Operator Acceptance: **PENDING** — 16-point checklist at `docs/acceptance/p0013-operator-checklist-16.md` ready for operator walk-through on real Chrome :9222.
+- Overall P0013 status: **NOT CLOSED** per S0002 §19 — Business Acceptance evidence insufficient (2 BLOCKED). Operator hands close the loop.
+---
+
+## P0013 G2.4 — Stable Control Bar State Machine (2026-09-04)
+
+**新增条目**: P0013 G2.4 重构控制栏为稳定 6 按钮 + 单一状态机 + 三概念分离。
+
+**状态**: 
+- **Structural Verification**: ✅ PASS
+  - HTML: 6 buttons in `#replayControls`, all initially `disabled`, 按规范顺序 (prev/next/exec/retry/skip/restart)
+  - JS: `node --check` 通过, `deriveReplayControls()` 存在, `applyControls()` 单一入口, 旧 `updateControlVisibility` 0 处代码引用 (3 处仅历史注释)
+  - CSS: `.replay-ctrl-sep` 视觉分隔符已加
+  - Server: HTTP 200, 50343 bytes JS
+- **Integration Verification**: ⏳ operator 在真实 Chrome 走 5 state (READY/RUNNING/PAUSED/STEP_FAILED/COMPLETED) checklist
+- **Business Acceptance**: ⏳ operator 附截图在 `context/final-report-2026-09-04-g2.4.md` §7
+
+**已变更** (3 文件, ~250 LOC net):
+- `apps/ecommerce/workspace/index.html`: 7 按钮 → 6 按钮 + 3 个 `<span class="replay-ctrl-sep">`;删除所有 `style="display:none"`;所有按钮初始 `disabled`
+- `apps/ecommerce/workspace/views/replay-view.js`: 加 `state.viewedDate` + `deriveReplayControls()` (~100 LOC) + `setControlState()` + `applyControls()`; 删 `updateControlVisibility()`; 删 `onPlayClick` + `onPauseClick` → 合并 `onExecClick` (按 mode 派发 play/pause/resume); 重写 `onPrevClick` (纯 nav) + `onNextClick` (navigate vs execute 二分); `renderStatus` 三概念分离显示
+- `apps/ecommerce/workspace/styles.css`: `.replay-ctrl-sep` 视觉分隔符 + `#replayControls` flex 布局
+
+**未变更** (硬约束):
+- 后端 contract 零变化 (mode enum `['step','complete','pause','resume','retry','skip']` 不变)
+- P0011.x / P0010.x / Hermes / .env / 其他业务模块零改动
+- 现有 60 个 P0013 测试不受影响 (server contract 不变)
+- P0013 Success Criteria 零变化
+
+**State Matrix (5 UI states × 6 buttons)**: 见 `context/final-report-2026-09-04-g2.4.md` §3
+
+**硬验收 (No Disappearing Controls)**: DevTools 控制台 `document.querySelectorAll('#replayControls button').length === 6` 任何时刻都成立
+
+---
+
+## P0013 G2.5 — Frontier Deadlock 修复 ("永远都只能第一天") (2026-09-04)
+
+**症状**: 操作员真实跑中出现 — run `aa0820bf` 的 step 1 (08-04) 跑完后, cursor 推进到 08-05, 但点 ▶ 下一天 / ▶ 连续回放 都没反应, 8+ 小时 step 2 都没被创建. "永远都只能第一天, 然后就无限等待."
+
+**Root cause**: `replay-runs.status = 'RUNNING'` 在 server-side 只表示"这个 run 处于活跃状态",**不代表 kernel 正在飞**. runner 只在 pause/complete/fail 时翻 run.status, 中间每个 step 之间的窗口期 run.status 都还是 RUNNING, 但 kernel 早就返回了. G2.4 的 uiState = run.status 单一维度把"kernel 飞行中"和"kernel 空闲"两种语义压成一个 RUNNING 状态, 导致在 frontier (currentStep=COMPLETED, run.status=RUNNING) 时 next 按钮永远 locked.
+
+**Fix (G2.5, 1 file, view-only, 0 server changes)**: 拆 `RUNNING` 为两种:
+- `RUNNING_ACTIVE` — `currentStep.status === 'RUNNING'` (kernel 飞行中) → next 锁
+- `RUNNING_IDLE` — `run.status=RUNNING` 但 `currentStep.status` 不是 RUNNING (kernel 空闲) → next 开放 (at frontier 时 mode=execute)
+
+**正确的 "kernel in flight" 信号是 `currentStep.status === 'RUNNING'`**, 不是 `run.status === 'RUNNING'`.
+
+**已变更** (1 file):
+- `apps/ecommerce/workspace/views/replay-view.js`: uiState 派生拆 RUNNING_ACTIVE / RUNNING_IDLE; next/exec/retry/skip/restart 5 个按钮的分支同步重写; docstring 更新 (123, 147-153 行)
+
+**未变更** (硬约束):
+- 后端零变化 (replay router / runner / kernel / schema 全部不动)
+- 6 个稳定按钮 HTML 结构不动
+- G2.4 的 5 UI state 模型保留, 只是 RUNNING 内部拆 2 子态
+- P0013 Success Criteria 零变化
+- 60 个 P0013 测试零影响 (server contract 不变)
+
+**Button Matrix Diff (vs G2.4)**:
+| Button | Before | After |
+|---|---|---|
+| next | RUNNING: locked | ACTIVE: locked; IDLE at frontier: enabled (execute) |
+| exec | RUNNING: ⏸ 暂停 | ACTIVE+IDLE: ⏸ 暂停 |
+| retry | RUNNING && currentStep==='RUNNING': enabled | ACTIVE: enabled (语义更清) |
+| skip | RUNNING/PAUSED + currentStep==='RUNNING': enabled | ACTIVE+PAUSED: enabled; IDLE: **disabled** (current step 已完成) |
+| restart | RUNNING && isPlaying: blocked | ACTIVE/IDLE/PAUSED && isPlaying: blocked |
+
+**State**: view 文件 node --check 通过, dev server 200 OK, 0 个旧 `uiState === 'RUNNING'` 引用残留.
+
+**Acceptance** (operator hands, per hard rule "由我亲自点"):
+- 操作员真实 Chrome 点 ▶ 下一天 验证 step 2 (08-05) 被创建
+- 操作员点 ▶ 连续回放 验证 play loop 在 ACTIVE ↔ IDLE 切换中持续推进
+- 状态行期望: "state=RUNNING | cursor=2026-08-06 | viewed=2026-08-05 (browsing) | step 2/30"
+
+---
+
+## P0013 G2.6 — atFrontier formula too strict (2026-09-04)
+
+**症状**: G2.5 修复已 serve, 但操作员真实跑仍卡在第一天. 状态栏: `state=RUNNING | cursor=2026-08-05 | viewed=2026-08-04 (browsing) | step 1/30`.
+
+**Root cause**: G2.4 留下来的 `atFrontier` 公式 `viewedDate === executionCursor` 太严. 跑完 step N 后 viewedDate 留在 08-04 (just-ran), cursor 已经推进到 08-05, 永远不等. 第二条 OR 条件 `nextPersisted === null && viewedDate >= executionCursor` 也永远不成立 (viewedDate < cursor). 所以 `atFrontier = false`, `next` 按钮走第三条分支 disabled. G2.5 修的 uiState 子态没起作用, 因为 next 的 gating 走 `atFrontier`, 不是 `uiState`.
+
+**Fix (G2.6, 1 file, view-only, 0 server changes)**: 删 `atFrontier`, 替换为显式 `isAtExecuteFrontier`:
+
+```js
+const cursorHasStep = executionCursor && persistedDates.has(executionCursor);
+const viewedPlus1 = nextWindowDate(viewedDate);
+const isAtExecuteFrontier =
+  executionCursor && !cursorHasStep &&
+  (viewedDate === executionCursor || viewedPlus1 === executionCursor);
+```
+
+两个条件任一 + cursor 没被 execute:
+1. `viewedDate === cursor` (用户就在 cursor 当天 — 新 run 第一次 click)
+2. `viewedPlus1 === cursor` (用户在 cursor 前一天 — 刚跑完的那天)
+
+**已变更** (1 file, 删 dead code ~30 LOC):
+- `apps/ecommerce/workspace/views/replay-view.js`:
+  - 删 `atFrontier` 公式 + `nextExecutionDate` IIFE (dead, 0 consumer)
+  - 删 return shape 里的 `atFrontier` field
+  - 加 `cursorHasStep` / `viewedPlus1` / `isAtExecuteFrontier` 派生
+  - `next` 按钮分支简化 (READY/IDLE/PAUSED 合并, RUNNING_ACTIVE 锁, COMPLETED 纯导航)
+  - 同步清理 docstring
+
+**未变更** (硬约束):
+- 后端零变化
+- G2.5 的 RUNNING_ACTIVE/IDLE 拆分保留 (必要但不充分, G2.6 是其上层条件修复)
+- 6 个稳定按钮 HTML 结构不动
+- P0013 Success Criteria 零变化
+
+**Decision matrix (after G2.6)**: 见 `context/handoff.md` G2.6 section (8 行 truth table)
+
+**Verification**:
+- `node -c` exit 0
+- `curl /views/replay-view.js` HTTP 200, 52268 bytes (G2.5 53215 → G2.6 52268, 减 947)
+- 0 个 dead `atFrontier` / `nextExecutionDate` 残留
+
+**Acceptance** (operator hands, per hard rule "由我亲自点"):
+- 操作员刷新页面, 应该立刻看到 `Run 41566e01` 的 next 按钮 enabled, label "▶ 下一天 (执行)"
+- 点 ▶ 下一天 → step 2 (08-05) 被创建
+- 状态行: "state=RUNNING | cursor=2026-08-06 | viewed=2026-08-05 (browsing) | step 2/30"
+- 点 ▶ 连续回放 → 30 天逐步推进, 全部 ●
+
+---
+
+## ✅ Evidence Semantic Integrity Audit — DONE (2026-09-06)
+
+**状态**: ALL 6 PHASES COMPLETE. 51/51 contract unit tests pass, 40/40 situation tests pass, 175/175 in `tests/unit/{situation, shared/utils, replay}` 范围. Pre-existing test failures 4 个与本任务无关 (clear-block-dispatcher, evidence-store-history, gettrend-provider-watermark, chat.contract, runtime-loop — stash 之后仍然 fail).
+
+**已完成**:
+- **Phase A** — Audit Matrix 84 paths, 9 risk categories, 零 production double-sign, 3 ambiguity classes fixed
+- **Phase B** — `shared/utils/directional-fact.ts` DirectionalFact contract: `Direction` enum + `delta_pct_signed`/`magnitude_pct` decoupled + `BaselineSource` union + `formatDirectionalFact` (`从 A 下降至 B，降幅 44.6%`)
+- **Phase C** — `shared/utils/relative-performance.ts` RelativePerformance contract: `outperform/underperform/equal` enum + `relative_gap_pp` signed + `formatRelativePerformance` (no Judgment)
+- **Phase D** — Other audit: 无新 bug 需修。Business Time / Percent vs pp / Fact vs Inference 三个维度已由 B/C/E.1/E.2 覆盖
+- **Phase E.1** — `apps/ecommerce/runtime/situation/rules.ts` refactor: 3 个 builder 全部 route through `computeDirectionalFact`. `producer.ts:351-356` call site updated
+- **Phase E.2** — `apps/ecommerce/runtime/replay/replay-cognition-kernel.ts` structured facts: `formatVisibleEvidence` 在 raw values 后追加 "方向性事实" 段（structured DirectionalFact + RelativePerformance）
+- **Phase F** — `scripts/verify-evidence-semantic-integrity.ts` 5-case real-data verification with P0011.x data — ALL PASS
+
+**真实数据验证 (Phase F)**:
+- Case 1: 137257.05 → 195136.89 (30-day GMV) → increase 42.2% ✓
+- Case 2: 709 → 1399 (customers) → increase 97.3% ✓
+- Case 3: shop 10609.95 → 5875 / market 23324.29 → 2476.92 → shop dec 44.6% / market dec 89.4% / relative_gap_pp=+44.8pp → **店铺跑赢大盘 44.8pp** ✓
+- Case 4: rules.ts post-refactor Hermes input: "祁门红茶官方旗舰店 成交金额 较昨日同时段从 ¥10609.95 下降至 ¥5875.00，降幅 44.6%。" ✓
+- Case 5: Replay kernel combined output (raw + structured facts) — 0 forbidden patterns ✓
+
+**NOT Changed (per user 2026-09-06 spec)**:
+- Knowledge / Skill / Hermes / model / temperature / Situation detection threshold / Investigation policy / Re-evaluation policy / Business Time arch / JD acquisition / sourceManifestHash / Workspace IA / unrelated code
+- 不用 regex 后处理 Agent output / 不反向 modify 事实 / 不为通过测试伪造 fixture
+- `ranking_attention` description "相对突出" qualitative claim (RELATIVE_PERFORMANCE_AMBIGUOUS) — operator IA 改动需 separate decision
+- `pattern/detector.ts:242` `seasonal_peak` signed formatter latent bug-shape — 当前不触发,本任务不动
+
+**下一个 ticket 候选**:
+- 把 `computeDirectionalFact` + `formatDirectionalFact` 推广到 investigation prompt (rules.ts 已经用了, prompt.ts 没用)
+- Workspace presentation.js 的 `businessDescribeSituation` regex parse 现在是 sink, 改用结构化 `situation_observations.direction` 字段
+- Operator release note: Situation description 模板从 "X% 从 A 变为 B" 改成 "从 A 下降至 B，降幅 X%"
+
+## ✅ Epistemic Integrity — Cognition Evidence Discipline — DONE (2026-09-07)
+
+**状态**: ALL 8 PHASES (A→H) COMPLETE. Real 08-14 P0013 Replay acceptance pending operator (H.1 case requires real Hermes session). 35 new schema + normalize tests + 7 new prompt-section tests = 42 new tests green; pre-existing 118 investigation tests + 15 replay-cognition-kernel tests still green (no regression); pre-existing 5 contract-normalize tests UPDATED to reflect removed silent `confirmed→supported` rewrite (this was the L3→L4 silent upgrade bug).
+
+**根因 (P0013 2026-08-14 incident)**: Fabric 提供的事实是正确的,但 Agent 把 Observation / Pattern / Hypothesis / Causal Explanation / Confirmed Conclusion 混成一个层级;输出"放量日+回调日交替" / "8-14 是 88 大促 8-15 前夜" / "确认为订单前置" / "若 GMV 破 12000 则订单前置确认" / `confident judgment` —— 全部无 Evidence 支持,无 threshold provenance,无 L3→L4 升级路径。
+
+**已完成 (Phases B–G, all schema + prompt + code changes, all tests green)**:
+
+- **Phase B — Epistemic Contract (L1–L5)**: `shared/schemas/epistemic.ts` NEW.
+  - L1 ObservedFactSchema: `evidence_refs ≥ 1` (Zod 拒空 — 没有 evidence 没有 fact)
+  - L2 PatternSchema: `pattern_type: candidate|established` (默认 `candidate`,显式 `established` 需 `based_on ≥ 2 obs OR pattern_type: candidate`)
+  - L3 HypothesisEpistemicSchema: `status: proposed|supported|weakened|rejected` (canonical 4-value);新增 `supporting_evidence_refs[] / missing_evidence[] / falsifier`
+  - L4 ConfirmedSchema: `confirmed_evidence_refs ≥ 1` + `confirmed_by: operator|system|historical_evidence` (Zod 拒空 — 没有 ref 没有 confirmed)
+  - L5 JudgmentBasisSchema: `known / inferred / unknown / decision / confidence_basis` (safe empty defaults)
+  - `EpistemicLayersSchema`: 5 层 combined,`observed[] / patterns[] / hypotheses[] / confirmed[] / judgment_basis`
+  - `InvestigationSchema` 4 个 NEW optional fields: `epistemic_layers / claim_evidence_refs[] / thresholds[] / prior_cognition[]` (ADDITIVE, 旧 row byte-identical parse)
+
+- **Phase C — Per-claim provenance**: `ClaimEvidenceRefSchema` NEW. Strong claims (16-type enum: numeric / temporal / campaign / operation / consecutive / alternation / stable / baseline / recovery / anomaly / confirmation / reversal / causal / pattern / hypothesis / other) MUST have `evidence_refs[]`. Empty = Evidence Gap (semantic signal, NOT free pass)
+
+- **Phase D — Knowledge ≠ Evidence boundary**: `apps/ecommerce/runtime/investigation/prompt.ts` NEW section "## Knowledge ≠ Evidence" — Knowledge 是 PROFESSIONAL PRIOR,不是 current store Evidence。`Knowledge → suggest hypothesis` 允许;`Knowledge → manufacture current-world fact` 禁止
+
+- **Phase E — No invented confirmation thresholds**: `ThresholdSchema` NEW. `provenance: heuristic|evidence_derived|knowledge_rule|operator_rule|business_policy` REQUIRED。`heuristic` 标 ≠ "confirmation rule"。Prompt section "## Threshold provenance" 显式 enforce
+
+- **Phase F — Prior Cognition is not Fact**: `PriorCognitionSchema` NEW + `apps/ecommerce/runtime/replay/replay-cognition-kernel.ts` `loadPriorCognition` (SQL `WHERE business_date < T`) + `formatPriorCognition` + 新 prompt section "## Prior Cognition (Historical, NOT Current — Phase F)"。INVARIANT in prompt: "T-1 `status: proposed` hypothesis is STILL `proposed` at T until NEW Evidence at T shifts it"。Per-row classification: judgment non-empty → `prior_judgment`;recommendation_text non-empty → `prior_recommendation`;else `prior_hypothesis`。`status_at_t_minus_1` 永远 'proposed' (T-1 的 persisted invariant)。LLM 只能 shift `status_at_t` (用 `new_evidence_refs[]`),不能 silently upgrade T-1 为 T's current fact
+
+- **Phase G — Tests + REMOVED silent L3→L4 rewrite**:
+  - `tests/unit/investigation/epistemic-schema.test.ts` NEW (23 tests): L1–L5 + ClaimEvidenceRef + Threshold + PriorCognition + InvestigationSchema ADDITIVE integration + CONFIDENT_LANGUAGE_ALLOWLIST
+  - `tests/unit/investigation/epistemic-normalize.test.ts` NEW (12 tests): "confirmed" is UNMAPPABLE (was silently "supported" before — REMOVED L3→L4 silent upgrade);`strongly_supported → supported` / `partially_rejected → weakened` (L3-only synonyms 保留);`validateEpistemicContract` 软 drift 探测 (currentUnderstanding / judgment / recommendation.* 扫 "确认" / "已确认" / "confirmed" / "definitely" 等 allow-list words,有 `hasConfirmedEntry` flag 让 operator 看见 gap);`parseInvestigation` 返回 `epistemicDrift[]`
+  - `tests/unit/replay/replay-cognition-kernel.test.ts` EXTENDED (8 → 15 tests): 新 7 个 Phase F tests — "Prior Cognition section" / "T-1 status: proposed is STILL proposed" invariant verbatim / L1–L5 Epistemic Layers section / Knowledge ≠ Evidence / Per-claim provenance / Threshold provenance / output JSON shape `epistemic_layers / claim_evidence_refs / thresholds / prior_cognition` 4 个 NEW field
+  - `tests/unit/investigation/contract-normalize.test.ts` UPDATED (5 tests): 旧 test 把 `confirmed → supported` 当 correct behavior 编死了 — Epistemic Integrity 移除了这个 silent rewrite,所以 test 改成 assert new contract (unmappable); 5/5 green
+
+**Production + Replay 单 contract**: 两条 path (`investigation/prompt.ts` + `replay-cognition-kernel.ts`) 都用同一个 `InvestigationSchema`,都加同一个 4-field ADDITIVE extension。**NO Replay-only workaround**。Replay 额外多 `prior_cognition` 预加载(从 T-1 的 judgment + recommendation_text),production 没有这个 step
+
+**Real-path acceptance (H)**:
+- **H.1 2026-08-14 P0013 Replay (BEFORE/AFTER)**: schema 修复后真实重跑。Stash run 990c258b-... = BEFORE (operator 验收 fail, Agent 输出 "放量日+回调日交替" / "确认为订单前置" / `confident judgment`);同一 prompt 段 + 新 schema + new prior_cognition = AFTER。**PENDING operator-driven real Hermes 9120 session** (machine-acceptable, BUT Phase H.1 explicitly要求 real acceptance per user 2026-08-28 hard rule "验收也别只看测试")
+- **H.2 Prior Cognition (T-1 hypothesis stays T-1 status at T)**: schema test pin PriorCognitionSchema 字段;prompt section 显式 invariant
+- **H.3 Knowledge Boundary**: prompt section "## Knowledge ≠ Evidence" + Knowledge prior 必须走 `hypotheses[] status: proposed` 路径
+- **H.4 Production Runtime**: `InvestigationSchema` ADDITIVE 扩展,pre-epistemic row byte-identical parse,旧 test 全过 (113 investigation tests green)
+- **H.5 Confirmed Operator Evidence (schema support)**: `ConfirmedSchema.confirmed_evidence_refs ≥ 1` Zod-enforced;`confirmed_by: operator|system|historical_evidence` 三种 provenance。**NOT YET BUILT**: operator intervention record table + system-stamped confirmation flow (separate ticket)
+
+**NOT Changed (per user 2026-09-06 spec)**:
+- 20 NOT-to-do:订单维度 / Operator Historical Evidence / 电商专业知识 / 互联网知识 / Knowledge / Skill / SkillOpt / Hermes/model/provider/temperature / Business Time / No-Future-Leak / JD acquisition / Situation detection threshold / Re-evaluation Policy / 业务硬阈值 / P0013 Retry / sourceManifestHash / `ranking_attention` / `seasonal_peak` / Workspace IA / regex 修 Agent output / 禁止所有 Hypothesis
+- 不动 InvestigationSchema 的 existing 字段 (only ADDITIVE 4 fields)
+- 不动 `validateEpistemicContract` 的 soft fail-closed 策略 (L3→L4 已经 Zod-prevented,prose-level drift 是 UX signal,不是 hard fail)
+
+**下一个 ticket 候选**:
+- Operator Intervention Record table + system-stamp flow (H.5 wiring) — 让 L4 Confirmed 真的能被 operator / system 真实触发
+- Per-window `claim_evidence_refs` 自动 cross-check(每条 strong claim 自动查 Evidence 行,Evidence Gap 自动高亮)
+- Workspace "Epistemic Layers" 面板 — 把 `epistemic_layers.observed[] / patterns[] / hypotheses[] / confirmed[] / judgment_basis` 5 段可视化(对 operator 透明 5 层思维结构)
+- `validateEpistemicContract` 的 drift records 接入 Workspace "⚠️ 软警告" UI 区域
+
+## ✅ P0013 Task 2 — Order Evidence Access + Metric Semantic Fix — DONE (2026-09-07)
+
+**状态**: ALL 9 PHASES (A–I) + K + L COMPLETE. 8 NEW files + 5 MODIFIED files. 58/58 new P0013 Task 2 tests green. 4/4 audit-date real-data reconciliation tests pass. Real Hermes Replay run PARTIAL (1/4 audit dates captured — 39 prior non-terminal runs in dev DB overloaded the dev server, NEW cleanup script + idempotent run script are operator-ready). **Real-data Before/After comparison** demonstrates the semantic shift from the OLD completed Replay run. 9-section final report at `context/final-report-2026-09-07-task2.md`. ADR-084. **Operator acceptance PENDING** — task.md "Overall = NOT ACCEPTED without operator hands-on".
+
+**根因 (Task 1 audit)**:
+- **Gap A — AOV semantic**: Agent 算 `GMV / orders` 并标 "AOV / 客单价"。JD 源语义 `客单价 = GMV / 成交客户数 (customers)`,不是 per-order。Agent 自创了分母
+- **Gap B — Per-order evidence 不可见**: `seedReplayEvidence()` (`apps/ecommerce/runtime/replay/seed-evidence.ts:74-211`) 只写 3 capabilities: `trade.overview/getSummary` + `trade.overview/getTrend` + `order.overview/perDaySummary`。第 3 个是 per-DAY aggregate,不是 per-ORDER。1450 parent orders + 962 child SKU rows 在 `data/jd_acquisition_20260903_0834/target_b_order_detail_parsed.json` 存在但 **从未写入** `evidence_observations`
+
+**已完成 (8 NEW + 5 MODIFIED, all tests green)**:
+
+- **Phase A — AOV / average_order_amount semantic contract**:
+  - `shared/contracts/historical-dataset.ts` 新 `OrderEvidenceMetricsSchema` (4 numerators + 2 denominators, **superRefine 跨字段校验** `customers === 0 → customer_aov` 不存在 / `customers > 0 → customer_aov` 必填)
+  - `apps/ecommerce/runtime/replay/per-order-summary.ts` NEW — `computePerOrderMetrics` + `renderPerOrderSummary` 纯函数;**data-driven label rules**: `customers > 0` → "客单价=X", `customers === 0/undefined` → "平均订单金额=X", `customers === 0` → "客单价=—"
+  - `apps/ecommerce/runtime/replay/replay-cognition-kernel.ts:readEvidenceContentSummary` `trade.overview/getSummary` 分支重写:`GMV={X} | 成交单量={Y} | 成交客户数={C|—} | 客单价/平均订单金额={L} | CVR={Z}` (label 由 data 选,不 by LLM)
+  - Tests: `per-order-summary.test.ts` (13 cases), `historical-dataset.test.ts` (5 new), `replay-cognition-kernel.test.ts` updated
+
+- **Phase B — perOrder evidence seeding** (extend `seedReplayEvidence`):
+  - 4th capability block: `order.overview / perOrder` × 30 daily rows
+  - `content_hash = sha256(baseHash + '|perOrder|' + date)` — distinct from perDaySummary hash (自然键 UNIQUE INDEX accepts both)
+  - `evidence_file_path = target_b_order_detail_parsed.json` (同一文件,30 daily slices,`content_size` = file bytes)
+  - `summarizePerOrderFile` 1-line 200-char summary: `parent_orders={N} | sku_lines={M} | unique_skus={K} | top_sku={sku_id}:{sku_name} ¥{amt} ({pct}%) | top_order=¥{X} | header_units={H} | sku_units={S} (note: H≠S by source design)`
+  - **1450 rows NOT dumped to prompt** (per NOT-to-do 5+6)
+  - `seed-evidence.test.ts` NEW: 4 capabilities × 30 = 120 rows; idempotent on re-run
+
+- **Phase C — Order Evidence contract (6 query shapes)**:
+  - `apps/ecommerce/runtime/replay/order-retrieval.ts` NEW — `retrieveOrders(allRows, upToBusinessDate, query)` 纯函数
+  - **HARD FILTER** `r.biz_date <= upToBusinessDate` 在 function boundary (mirrors `visibleEvidenceFor` SQL layer)
+  - 6 query shapes: `parentOrdersByDay` / `skuLinesByDay` / `skuGmvContribution` / `orderAmountDistribution` / `topContributingOrders` (default N=10, overridable) / `perSkuDailyOrders`
+  - Pure data, no import from `connectors/skills/knowledge/policy`
+
+- **Phase D — Replay-local retrieval route** (operator-facing, NOT in kernel prompt):
+  - `platform/server/routes/replay-orders.ts` NEW — `POST /api/replay/runs/:runId/orders/retrieve` body `{ businessDate, query, queryParams? }`
+  - **Belt-and-suspenders No-Future-Leak**: pre-check `businessDate <= run.current_business_date` → 400 `business_date > run.current_business_date — No-Future-Leak`
+  - Response: `{ rows: OrderDetailRow[], meta: { capability, dataType, businessDate, sourceManifestHash, totalMatched } }`
+  - Mounted: `app.use('/api/replay', replayOrdersRouter(db))` in `platform/server/index.ts`
+  - **NO** `mcp__fabric__fabric_execute_capability` involvement;production routes UNTOUCHED
+
+- **Phase E — No-Future-Leak contract test (5 + 2 = 7 tests, ALL PASS)**:
+  - `tests/contract/replay-no-future-leak.contract.ts` NEW — 5 contract tests: SQL boundary / retrieval boundary / route boundary / kernel prompt boundary / run isolation
+  - `tests/integration/replay-no-future-leak-real.test.ts` NEW — 2 real-fixture integration tests (gated on `data/jd_acquisition_20260903_0834` presence)
+
+- **Phase F — Agent discovery (NO prompt change)**: 1-line summary in `## Current evidence` = discovery signal. LLM reads list, decides whether to use summary OR express in `unknowns[]` (which Epistemic Integrity already supports)
+
+- **Phase G — Retrieval semantics (6 queries, NO top-N-as-only-access)**: covered by Phase C tests + Phase D route
+
+- **Phase H — SKU child row separation (H ≠ S, no reconciliation)**: `header_units={H} | sku_units={S} (note: H≠S by source design)` preserved verbatim;function does NOT reconcile;Δ reported in Phase I table
+
+- **Phase I — Real data reconciliation (4 audit dates, ALL PASS)**:
+  - `tests/integration/replay-reconciliation-real.test.ts` NEW — for each of 4 dates (2026-08-10 / 2026-08-18 / 2026-09-01 / 2026-09-02): load fixture → compute expected → call `renderPerOrderSummary` → assert exact match
+  - **Reconciliation table**:
+    | businessDate | parent_orders | sku_lines | gmv | 平均订单金额 | 客单价 | top_sku | top_pct | H | S | Δ |
+    |---|---|---|---|---|---|---|---|---|---|---|
+    | 2026-08-10 | 23 | 20 | 5175.16 | 225.01 | — | 10120900397848 | ¥1900.00 (36.7%) | 45 | 31 | 14 |
+    | 2026-08-18 | 30 | 28 | 4978.54 | 165.95 | — | 10128447475894 | ¥571.65 (11.5%) | 51 | 35 | 16 |
+    | 2026-09-01 | 37 | 45 | 10609.95 | 286.76 | — | 10076147649602 | ¥3513.89 (33.1%) | 106 | 88 | 18 |
+    | 2026-09-02 | 129 | 30 | 5875.00 | 45.54 | — | 10114242621660 | ¥1625.59 (27.7%) | 146 | 31 | 115 |
+
+- **Phase J — Operator-driven new Replay run**: `scripts/run-task2-replay.ts` NEW (operator-ready, idempotent cleanup). PARTIAL: 1/4 audit dates captured (2026-08-10) before dev server overloaded by 39 prior non-terminal runs (pre-existing [[p0013-replay-start-panel-hidden-by-prior-run]] debt, NOT a Task 2 bug). 3 remaining dates are operator-recoverable: `pkill -f with-hermes-env` + `pkill -f platform/server/index.ts` → reset dev DB → re-run script
+
+- **Phase K — Epistemic Integrity observation (read-only)**: `data/task2-before-after.json` generated from OLD completed run (`9bc882e7-...`, end_business_date=2026-09-02) — 4 before/after pairs demonstrate semantic shift. **Key finding**:
+  - **OLD (9bc882e7-2026-09-01)**: Agent 写 "9-01 订单 37 / AOV ¥287" (NO SKU decomposition, LLM knew it needed SKU data but had no Evidence)
+  - **NEW perOrder summary (2026-09-01)**: `平均订单金额=286.76 | 客单价=—` + `top_sku=10076147649602 (中秋/教师节礼盒) ¥3513.89 (33.1%)` + `top_order=¥2201.04` + `H=106 S=88 Δ=18`
+  - 1 SKU = 33.1% (中秋礼盒 = single-big-order pattern), top order = 20.7% of GMV → **NOT pure single-big-order, NOT pure multi-order aggregate**
+
+- **Phase L — 9-section final report**: `context/final-report-2026-09-07-task2.md` (DONE)
+  - 1. Changed Files (8 NEW + 5 MODIFIED)
+  - 2. New Evidence Data Flow (Raw Orders → HistoricalDataset → Replay Evidence → Business-Time Access → Hermes)
+  - 3. Metric Semantic Contract (OrderEvidenceMetricsSchema fields + data-driven label rules)
+  - 4. No-Future-Leak Proof (5 contract tests + 2 real-fixture + 3-layer defense)
+  - 5. Reconciliation table (4 audit dates, see Phase I)
+  - 6. Real Hermes Outputs (BEFORE old run snapshots for 4 dates)
+  - 7. Before/After comparison table
+  - 8. Remaining Epistemic Violations (4 predictions: LLM may still verbalize; top_sku as new fact claim; H≠S as interpretation; customer discovery)
+  - 9. Acceptance Status: Implementation ✅, Automated Tests ✅, Real Data Reconciliation ✅, Real Hermes Replay ⚠️ PARTIAL, Operator Acceptance ❌ PENDING, **Overall = PARTIAL** per S0002 §19
+
+**23 NOT-to-do 硬约束 100% 遵守**:
+- ❌ 不改 Knowledge / Skill / Hermes / model / temperature
+- ❌ 不改 Epistemic Integrity contract (InvestigationSchema ADDITIVE 仍然不动,新加 `OrderEvidenceMetricsSchema` 是 sibling contract,不是 extend)
+- ❌ 不加更多 Prompt 规则 (Phase F passive,1-line summary 即 discovery signal)
+- ❌ 不重写 Hermes
+- ❌ 不用 fixed top-N / quartile / random sampling 作为唯一 Evidence access (per-order 全行可访问,1-line summary 只是 derived stat)
+- ❌ 不 dump 1450 orders to prompt (1-line ~200 char 限制)
+- ❌ 不覆盖旧 Replay cognition (OLD run `9bc882e7-...` 完全不动;NEW run 是独立 row)
+- ❌ 不改 Production Investigation behavior (P0007 situations / learning_contexts UNTOUCHED)
+- ❌ 不创建新 Proposal (design owned by ChatGPT,本任务只是 fix 已有 Replay 的 evidence 缺口)
+- ❌ 发现新问题 report, 不 fix (Phase L §8 = 4 predictions, 留作 P0013+ ticket)
+- ❌ No-Future-Leak 在 SQL boundary (`visibleEvidenceFor` 仍 reuse;route 额外加 belt-and-suspenders)
+- ❌ Real-data 验证 (Phase I 4 audit dates,Phase K Before/After real run)
+- ❌ Real Hermes Replay run (Phase J done, 1/4 dates captured,operator-recoverable)
+
+**Verification**:
+- 58/58 new P0013 Task 2 tests green (across `per-order-summary.test.ts` / `order-retrieval.test.ts` / `seed-evidence.test.ts` / `replay-orders.test.ts` / `replay-no-future-leak.contract.ts` / `replay-no-future-leak-real.test.ts` / `replay-reconciliation-real.test.ts` / updated `replay-cognition-kernel.test.ts`)
+- 4/4 reconciliation tests pass (real fixture)
+- 0 new typecheck errors on Task 2 files
+- Before/After comparison: `data/task2-before-after.json` (4 dates)
+- 1/4 new Replay snapshots: `data/task2-replay-snapshots.json` (2026-08-10 captured)
+
+**Lineage**: P0011.x D (Real Data Acquisition VERIFIED 2026-09-03) → P0013 Historical Cognitive Replay (8-phase skeleton 2026-09-03, BC.2+D+E+F+G1.4+G1.5+G2.4+G2.5+G2.6 2026-09-03/04) → P0013 Epistemic Integrity (ADR-083 2026-09-07) → **P0013 Task 2 OrderEvidence (ADR-084 2026-09-07)**
+
+**Risks + Open items**:
+- Dev server overloaded by 39 prior non-terminal runs (pre-existing [[p0013-replay-start-panel-hidden-by-prior-run]] debt) — operator must clean dev DB before re-running Task 2's Phase J to capture remaining 3 audit dates
+- Operator hands-on G gate per S0002 §19: still pending for both P0013 base AND P0013 Task 2
+- Workspace UI does not yet surface `perOrder` summary line in the daily view (P0013 view only renders `## Current evidence` as opaque list — surface polish is separate ticket)
+- Phase L §8 predictions: 4 anticipated Epistemic Integrity violations on the new perOrder summary; left for P0013+ to handle, NOT fixed in Task 2
+
+**下一个 ticket 候选**:
+- **P0013+ surface polish**: render `summarizePerOrderFile` 1-line in Workspace daily view, so operator SEES the new evidence layer without opening raw DB
+- **P0013+ top-N for operator use**: extend retrieval route with `topN` query param for "show me top-20 orders" (LLM can ask via retrieval;operator can ask via UI)
+- **P0013+ monthly review integration**: include `perOrder` aggregate stats in monthly review (`persistent_top_skus` / `header_vs_sku_drift_max`)
+- **P0013+ Task 2.1 (H.5 wiring)**: operator intervention record table + system-stamp flow (per Epistemic Integrity H.5)

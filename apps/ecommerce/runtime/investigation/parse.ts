@@ -20,12 +20,15 @@ import { InvestigationSchema } from '#shared/schemas/investigation.js';
 import type { Investigation } from '#shared/schemas/investigation.js';
 import {
   normalizeInvestigationContract,
+  validateEpistemicContract,
   type ContractNormalizationResult,
+  type EpistemicDriftRecord,
 } from './normalize.js';
+import { validateAnalysisObligations } from './analysis-obligations.js';
 
 export type ParseInvestigationResult =
-  | { ok: true; investigation: Investigation; drift: ContractNormalizationResult['drift'] }
-  | { ok: false; error: string; unmappable?: ContractNormalizationResult['driftUnmappable'] };
+  | { ok: true; investigation: Investigation; drift: ContractNormalizationResult['drift']; epistemicDrift?: EpistemicDriftRecord[] }
+  | { ok: false; error: string; unmappable?: ContractNormalizationResult['driftUnmappable']; epistemicDrift?: EpistemicDriftRecord[] };
 
 /** Find the last complete {...} object in arbitrary text (outermost, balanced). */
 export const extractJsonObject = (text: string): string | null => {
@@ -75,17 +78,39 @@ export const parseInvestigation = (reply: string, situationId: string): ParseInv
   // common case where the Agent honored the prompt.
   const direct = InvestigationSchema.safeParse(withId);
   if (direct.success) {
-    return { ok: true, investigation: direct.data, drift: [] };
+    // Epistemic Integrity (2026-09-06) — soft scan for unsourced
+    // confirmation language. Does NOT fail-closed; just surfaces the gap
+    // so the operator can see "Agent used 确认 N times but did not
+    // populate the confirmed[] list".
+    const epistemicDrift = validateEpistemicContract(withId as Record<string, unknown>);
+    // P0013.2 — shared Analysis Contract obligations are fail-closed.
+    const obligationErrors = validateAnalysisObligations(direct.data);
+    if (obligationErrors.length > 0) {
+      return {
+        ok: false,
+        error: `Investigation Contract violates shared Analysis Target obligations:\n- ${obligationErrors.join('\n- ')}`,
+      };
+    }
+    return { ok: true, investigation: direct.data, drift: [], ...(epistemicDrift.length > 0 ? { epistemicDrift } : {}) };
   }
 
   // (2) Normalized parse — apply the allow-list at the raw boundary. This
-  // is for the documented drift cases (`confirmed`, `strongly_supported`,
+  // is for the documented drift cases (`strongly_supported`,
   // `partially_rejected`, `complete`, `wait`).
   const norm = normalizeInvestigationContract(withId);
   if (norm.normalized !== null) {
     const normalized = InvestigationSchema.safeParse(norm.normalized);
     if (normalized.success) {
-      return { ok: true, investigation: normalized.data, drift: norm.drift };
+      const epistemicDrift = validateEpistemicContract(norm.normalized);
+      // P0013.2 — shared Analysis Contract obligations are fail-closed.
+      const obligationErrors = validateAnalysisObligations(normalized.data);
+      if (obligationErrors.length > 0) {
+        return {
+          ok: false,
+          error: `Investigation Contract violates shared Analysis Target obligations:\n- ${obligationErrors.join('\n- ')}`,
+        };
+      }
+      return { ok: true, investigation: normalized.data, drift: norm.drift, ...(epistemicDrift.length > 0 ? { epistemicDrift } : {}) };
     }
     // The vocabulary was mappable but the contract is still invalid for
     // some other reason (e.g. missing required field, wrong type). Fall

@@ -14,12 +14,27 @@
 // function returns, every downstream consumer (Workspace, storeInvestigation,
 // InvestigationPolicy) sees only canonical `proposed | supported | weakened |
 // rejected`.
+//
+// === Epistemic Integrity (2026-09-06, P0013 08-14 incident) ===
+//
+// REMOVED the silent "confirmed" → "supported" rewrite. The Agent MUST use
+// the new `confirmed[]` field with `confirmed_evidence_refs[]` for L4 Confirmed
+// claims; silently rewriting "confirmed" to "supported" hid the epistemic
+// distinction between L3 (data-supported) and L4 (operator/system-stamped).
+//
+// ADDED `validateEpistemicContract` — scans prose fields for unsourced
+// confirmation language ("确认" / "已确认" / "confirmed" / "definitely" / etc.)
+// and reports occurrences as drift so the operator can see the gap. Does NOT
+// fail-closed: prose-level "确认" without a corresponding `confirmed[]` entry
+// is a soft warning, not a contract violation (the L3→L4 upgrade has been
+// structurally prevented; the prose-level drift is a UX signal).
 
 import {
   HypothesisStatusSchema,
   RecommendationKindSchema,
   StopReasonSchema,
 } from '#shared/schemas/investigation.js';
+import { CONFIDENT_LANGUAGE_ALLOWLIST } from '#shared/schemas/epistemic.js';
 
 export type CanonicalHypothesisStatus = 'proposed' | 'supported' | 'weakened' | 'rejected';
 export type CanonicalStopReason = 'judgment' | 'observe' | 'missing_capability' | 'ask_human';
@@ -37,8 +52,13 @@ const HYPOTHESIS_STATUS_NORMALIZATION: Readonly<Record<string, CanonicalHypothes
   supported: 'supported',
   weakened: 'weakened',
   rejected: 'rejected',
-  // known drift — normalize to canonical
-  confirmed: 'supported',
+  // Epistemic Integrity (2026-09-06) — REMOVED silent "confirmed" → "supported"
+  // rewrite. The Agent MUST use `confirmed[]` with explicit
+  // `confirmed_evidence_refs[]` for L4 Confirmed claims, NOT silently
+  // upgrade a `proposed` hypothesis to "supported" by calling it
+  // "confirmed". The previous rewrite masked the epistemic distinction.
+  //
+  // Pure L3-status synonyms (no L3→L4 upgrade):
   strongly_supported: 'supported',
   partially_rejected: 'weakened',
 });
@@ -162,7 +182,17 @@ export const normalizeRecommendationKind = (raw: unknown): NormalizationResult<C
  * "wait / watch"). The derivation is logged as drift so the
  * operator can see the Agent was inconsistent.
  */
-const deriveKindFromStopReason = (stopReason: CanonicalStopReason): CanonicalRecommendationKind => {
+/**
+ * Derive the recommendation kind from the main Investigation's stopReason.
+ * The recommendation sub-turn does NOT ask the Agent for a kind, so this is
+ * the authoritative source: only `judgment` means "act" — everything else
+ * (observe / missing_capability / ask_human, or an absent stopReason) means
+ * "do not act → observe". Exported so `runRecommendationTurn` can reuse the
+ * SAME single mapping (Fix 2 — no second copy, no schema-default drift).
+ */
+export const deriveKindFromStopReason = (
+  stopReason: CanonicalStopReason | undefined,
+): CanonicalRecommendationKind => {
   return stopReason === 'judgment' ? 'act' : 'observe';
 };
 
@@ -314,3 +344,109 @@ export const normalizeInvestigationContract = (raw: unknown): ContractNormalizat
 export const CANONICAL_HYPOTHESIS_STATUSES = HypothesisStatusSchema.options;
 export const CANONICAL_STOP_REASONS = StopReasonSchema.options;
 export const CANONICAL_RECOMMENDATION_KINDS = RecommendationKindSchema.options;
+
+// ─── Epistemic Integrity (2026-09-06) — soft validation ──────────────
+//
+// The Agent may write "确认" / "已确认" / "confirmed" / "definitely" in
+// natural-language fields (currentUnderstanding / judgment / recommendation.
+// recommendation) without populating the new `epistemic_layers.confirmed[]`
+// list. This is unsourced confirmation language at the LLM-output boundary.
+//
+// We do NOT fail-closed: the L3→L4 structural upgrade is already prevented
+// (the schema requires `confirmed_evidence_refs[]` ≥ 1 for any `confirmed[]`
+// entry, so the Agent cannot write a Confirmed claim without a ref). The
+// prose-level scan here is a UX signal so the operator can see "the Agent
+// used 确认 3 times but did not populate the confirmed[] list".
+//
+// The scan walks the prose fields AFTER normalization (so all canonical
+// forms have been applied) and emits one drift record per word occurrence.
+
+const PROSE_FIELDS_FOR_CONFIDENT_SCAN: ReadonlyArray<string> = Object.freeze([
+  'currentUnderstanding',
+  'judgment',
+]);
+
+const RECOMMENDATION_PROSE_FIELDS: ReadonlyArray<string> = Object.freeze([
+  'recommendation',
+  'rationale',
+  'expectedOutcome',
+]);
+
+const countOccurrences = (text: string, word: string): number => {
+  if (!text) return 0;
+  let count = 0;
+  let idx = 0;
+  while ((idx = text.indexOf(word, idx)) !== -1) {
+    count++;
+    idx += word.length;
+  }
+  return count;
+};
+
+export interface EpistemicDriftRecord {
+  /** The field path. */
+  readonly field: string;
+  /** The specific word that triggered the drift. */
+  readonly word: string;
+  /** How many times the word appears. */
+  readonly count: number;
+  /** A 30-char window around the first occurrence (Chinese chars: 30 chars). */
+  readonly context: string;
+  /** Whether the contract has a corresponding `confirmed[]` entry. */
+  readonly hasConfirmedEntry: boolean;
+}
+
+/**
+ * Scan the normalized Investigation Contract for unsourced confirmation
+ * language in natural-language fields. Returns an empty array when the
+ * Agent did not use any of the allow-list words, or when the Agent used
+ * them but the contract has matching `confirmed[]` entries with refs.
+ *
+ * Soft validation — does NOT fail-closed. The caller surfaces the records
+ * in the persisted `drift` list (Workspace + structured log) so the operator
+ * can see the gap between prose-level language and structural confirmation.
+ */
+export const validateEpistemicContract = (
+  normalized: Record<string, unknown>,
+): EpistemicDriftRecord[] => {
+  const records: EpistemicDriftRecord[] = [];
+  const confirmed = normalized['epistemic_layers'];
+  const confirmedList: ReadonlyArray<unknown> =
+    confirmed && typeof confirmed === 'object'
+      ? (confirmed as Record<string, unknown>)['confirmed'] instanceof Array
+        ? ((confirmed as Record<string, unknown>)['confirmed'] as ReadonlyArray<unknown>)
+        : []
+      : [];
+  const hasConfirmedEntry = confirmedList.length > 0;
+
+  const scanField = (fieldPath: string, value: unknown): void => {
+    if (typeof value !== 'string') return;
+    for (const word of CONFIDENT_LANGUAGE_ALLOWLIST) {
+      const n = countOccurrences(value, word);
+      if (n === 0) continue;
+      // Find a context window around the first occurrence.
+      const idx = value.indexOf(word);
+      const start = Math.max(0, idx - 12);
+      const end = Math.min(value.length, idx + word.length + 18);
+      records.push({
+        field: fieldPath,
+        word,
+        count: n,
+        context: value.slice(start, end),
+        hasConfirmedEntry,
+      });
+    }
+  };
+
+  for (const f of PROSE_FIELDS_FOR_CONFIDENT_SCAN) {
+    scanField(f, normalized[f]);
+  }
+  const recommendation = normalized['recommendation'];
+  if (recommendation && typeof recommendation === 'object') {
+    const recObj = recommendation as Record<string, unknown>;
+    for (const f of RECOMMENDATION_PROSE_FIELDS) {
+      scanField(`recommendation.${f}`, recObj[f]);
+    }
+  }
+  return records;
+};

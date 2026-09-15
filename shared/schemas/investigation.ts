@@ -7,6 +7,12 @@
 // Anti-goals: no reasoning tokens, no hidden reasoning, no investigation DSL.
 
 import { z } from 'zod';
+import {
+  EpistemicLayersSchema,
+  ClaimEvidenceRefSchema,
+  ThresholdSchema,
+  PriorCognitionSchema,
+} from './epistemic.js';
 
 /** How a hypothesis fares after new evidence. */
 export const HypothesisStatusSchema = z.enum(['proposed', 'supported', 'weakened', 'rejected']);
@@ -117,6 +123,38 @@ export const RecommendationSchema = z.object({
 export type Recommendation = z.infer<typeof RecommendationSchema>;
 
 /**
+ * P0013.2 Evidence Resolution — Context Missing ≠ Evidence Missing.
+ * Before declaring an Evidence Gap the agent must attempt resolution
+ * against evidence the system already holds. Three results:
+ *   IN_CONTEXT  — prompt already carries enough evidence;
+ *   RETRIEVED   — held evidence was retrieved and answered the need;
+ *   UNAVAILABLE — neither context nor held evidence answers it (true gap).
+ */
+export const EvidenceResolutionResultSchema = z.enum([
+  'IN_CONTEXT',
+  'RETRIEVED',
+  'UNAVAILABLE',
+]);
+export type EvidenceResolutionResult = z.infer<typeof EvidenceResolutionResultSchema>;
+
+export const EvidenceResolutionSchema = z.object({
+  /** The evidence need that triggered resolution. */
+  need: z.string().min(1),
+  /** Which structure dimension the need belongs to (when dimension-specific). */
+  dimension: z.enum(['product', 'orders', 'traffic', 'conversion', 'operations']).optional(),
+  result: EvidenceResolutionResultSchema,
+  /** Where the evidence came from (e.g. 'order_replay_retrieval', 'fabric_capability'). */
+  source: z.string().default(''),
+  /** The specific retrieval query executed (when RETRIEVED / attempted). */
+  query: z.string().default(''),
+  /** Evidence refs obtained — non-empty when RETRIEVED. */
+  retrieved_refs: z.preprocess((v) => v ?? [], z.array(z.string())).default([]),
+  /** Why held evidence cannot answer — required when UNAVAILABLE. */
+  note: z.string().default(''),
+});
+export type EvidenceResolution = z.infer<typeof EvidenceResolutionSchema>;
+
+/**
  * The full Investigation Contract for one situation.
  * Fabric stores this (additively in the situation's Learning Context) and the
  * Workspace renders it so a professional can judge whether the Agent asked the
@@ -216,5 +254,103 @@ export const InvestigationSchema = z.object({
    * `investigate`, so the counter never increments past max). Sidecar
    * pattern parallels `evidenceContentHash` and `consecutiveFailures`. */
   blockedEmittedAt: z.string().optional(),
+  // ─── P0013 §9 / §10 / §14 / §15 / §33 ───
+  // Daily Cognitive Snapshot fields. ADDITIVE — every field is .optional()
+  // or has a default so pre-P0013 records still parse byte-for-byte.
+  // No field here is renamed, removed, or required. The parseInvestigation
+  // caller does NOT need to change; the new defaults are filled in by Zod.
+  /** §9 — Business Date the Agent observed. The replay clock anchor. */
+  business_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+  /** §9 — Raw "what happened today" facts (Evidence-supported only). */
+  observed_facts: z.preprocess((v) => v ?? [], z.array(z.string())).default([]),
+  /** §11 — Evidence the Agent identified it DOES NOT have. A valid output, not a failure. */
+  evidence_gaps: z.preprocess((v) => v ?? [], z.array(z.string())).default([]),
+  /** §3 / §23 — ISO timestamp at which the temporal filter was enforced for this turn. */
+  temporal_boundary_checked_at: z.string().optional(),
+  /** §9 — evidence_observations ids the Agent relied on (the §3 data-boundary proof). */
+  supporting_evidence_refs: z.preprocess((v) => v ?? [], z.array(z.string())).default([]),
+  /**
+   * §7 / §10 / §14 — Defaults to false. P0013 NEVER writes true (Replay
+   * recommendations are PROPOSED, NOT EXECUTED, per §14). A future Action
+   * system can flip this to true when a recommendation is actually executed.
+   */
+  recommendation_executed: z.boolean().default(false),
+  /** §18 / §21 — YYYY-MM. Set when a snapshot is finalized for a month review. */
+  month_anchor: z.string().regex(/^\d{4}-\d{2}$/).optional(),
+  /** §16 / §32 — Partition key. Production rows have no replay_run_id. */
+  replay_run_id: z.string().optional(),
+  // ─── Epistemic Integrity (2026-09-06, P0013 08-14 incident) ───
+  //
+  // The Agent MUST distinguish:
+  //   L1 Observed Fact   — directly supported by visible Evidence
+  //   L2 Pattern         — inductive inference from multiple Observed Facts
+  //                        (Pattern Candidate != Established Pattern)
+  //   L3 Hypothesis      — causal/mechanism explanation with explicit falsifier
+  //   L4 Confirmed       — claim backed by explicit confirmed_evidence_refs
+  //   L5 Judgment        — known / inferred / unknown / decision / confidence_basis
+  //
+  // Production + Replay share the SAME contract. No Replay-only workaround.
+  // All fields are OPTIONAL with safe defaults; pre-epistemic rows still parse.
+  //
+  // The previous InvestigationSchema had NO Fact/Pattern/Confirmed layering.
+  // currentUnderstanding was a free-prose dump where Observation / Pattern /
+  // Hypothesis / Causal Explanation / Confirmed Conclusion all collapsed into
+  // one string. The Agent then had no structural way to mark "this is a
+  // Pattern Candidate" vs "this is a Confirmed fact" — so it verbalized
+  // "10000+ 新常态" as a Fact even though the only Evidence was a 1-day
+  // window. This section is the fix.
+  //
+  // See shared/schemas/epistemic.ts for the layered contract.
+  /** L1-L5 epistemic layering. Optional — default empty. */
+  epistemic_layers: EpistemicLayersSchema.optional(),
+  /** Per-claim provenance for strong claims (numeric, temporal, campaign,
+   *  consecutive-N, alternation, stable, baseline, recovery, anomaly,
+   *  confirmation, reversal, causal). Optional — default empty. */
+  claim_evidence_refs: z.array(ClaimEvidenceRefSchema).default([]),
+  /** Threshold provenance — every quantitative threshold the Agent mentions
+   *  (e.g. "GMV > 12000") MUST carry a provenance. heuristic thresholds
+   *  are allowed but cannot be called "confirmation rules". */
+  thresholds: z.array(ThresholdSchema).default([]),
+  /** Prior cognition (T-1 hypothesis / judgment / recommendation) — the
+   *  Replay layer. At T, T-1's hypothesis is still a hypothesis until
+   *  NEW Evidence shifts it; it MUST NOT auto-upgrade to "current fact"
+   *  just because the run clock advanced. */
+  prior_cognition: z.array(PriorCognitionSchema).default([]),
+  /**
+   * P0013.2 Shared Analysis Contract — mandatory five-dimension business
+   * structure coverage. Fail-closed obligations for these are enforced by
+   * validateAnalysisObligations at parse time (missing/gap/observe rules).
+   */
+  business_structure_coverage: z
+    .array(
+      z
+        .object({
+          dimension: z.enum(['product', 'orders', 'traffic', 'conversion', 'operations']),
+          status: z.enum(['covered', 'gap', 'not_applicable']),
+          note: z.string().min(1),
+          // Models commonly emit explicit null for "not applicable here";
+          // coerce to the empty default rather than rejecting the turn.
+          evidence_refs: z.array(z.string()).nullable().transform((v) => v ?? []).default([]),
+          /** Required (non-empty) when status === 'gap'. */
+          acquisition_need: z.string().nullable().transform((v) => v ?? '').default(''),
+        })
+        .superRefine((c, ctx) => {
+          if (c.status === 'gap' && c.acquisition_need.trim().length === 0) {
+            ctx.addIssue({
+              code: z.ZodIssueCode.custom,
+              message: `business_structure_coverage[${c.dimension}] gap requires acquisition_need`,
+              path: ['acquisition_need'],
+            });
+          }
+        }),
+    )
+    .default([]),
+  /**
+   * P0013.2 Evidence Resolution attempts performed BEFORE declaring gaps.
+   * Fail-closed obligations for these live in analysis-obligations.ts.
+   */
+  evidence_resolutions: z
+    .preprocess((v) => v ?? [], z.array(EvidenceResolutionSchema))
+    .default([]),
 });
 export type Investigation = z.infer<typeof InvestigationSchema>;

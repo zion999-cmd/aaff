@@ -6,6 +6,7 @@ import type { Database as Db } from 'better-sqlite3';
 import { applySchema } from './schema.js';
 import { applyJdSchema } from './jd-persistence.js';
 import { applyP0007Schema } from './p0007-schema.js';
+import { applyP0013Schema } from './p0013-schema.js';
 import { initMemoryStore } from '#app/memory/store.js';
 import { DEFAULT_SIGNAL_WEIGHTS, RANKING_PROFILES } from './seed.js';
 import { nowIso } from '#shared/utils/time.js';
@@ -172,6 +173,7 @@ export const initDatabase = (db: Db): void => {
   applySchema(db);
   applyJdSchema(db);
   applyP0007Schema(db); // P0007.2: situations, learning_contexts, human_interventions
+  applyP0013Schema(db); // P0013: replay_runs, replay_run_steps, replay_run_evidence_refs, replay_run_cognitive_snapshots, replay_monthly_reviews (+ 2 nullable columns on evidence_observations)
   initMemoryStore(db); // P0007.3.1
 
   const seedWeights = db.prepare('SELECT 1 FROM signal_weights LIMIT 1').get();

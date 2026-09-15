@@ -12,6 +12,7 @@ import {
   normalizeStopReason,
   normalizeRecommendationKind,
   normalizeInvestigationContract,
+  deriveKindFromStopReason,
   CANONICAL_HYPOTHESIS_STATUSES,
   CANONICAL_STOP_REASONS,
   CANONICAL_RECOMMENDATION_KINDS,
@@ -48,10 +49,13 @@ describe('normalizeHypothesisStatus (raw → canonical, fail-closed on unknown d
     }
   });
 
-  test('confirmed → supported', () => {
+  // Epistemic Integrity (2026-09-06): "confirmed" is NO LONGER a
+  // raw → canonical mapping. Confirmed is an L4 epistemic layer that
+  // REQUIRES `confirmed_evidence_refs[]`. Silently rewriting
+  // "confirmed" → "supported" hid the L3→L4 distinction. Now unmappable.
+  test('confirmed is UNMAPPABLE (Epistemic Integrity 2026-09-06 — was silently "supported" before)', () => {
     const r = normalizeHypothesisStatus('confirmed');
-    expect(r.ok).toBe(true);
-    if (r.ok) expect(r.status).toBe('supported');
+    expect(r.ok).toBe(false);
   });
 
   test('strongly_supported → supported', () => {
@@ -142,8 +146,8 @@ describe('normalizeInvestigationContract (walk the contract, surface drift)', ()
     const raw = {
       situationId: 'sit-1',
       hypotheses: [
-        { statement: 'a', status: 'confirmed' },
-        { statement: 'b', status: 'strongly_supported' },
+        { statement: 'a', status: 'strongly_supported' },
+        { statement: 'b', status: 'partially_rejected' },
         { statement: 'c', status: 'partially_rejected' },
       ],
       stopReason: 'complete',
@@ -151,8 +155,8 @@ describe('normalizeInvestigationContract (walk the contract, surface drift)', ()
     const norm = normalizeInvestigationContract(raw);
     expect(norm.driftUnmappable).toEqual([]);
     expect(norm.drift).toEqual([
-      { field: 'hypotheses[0].status', original: 'confirmed', canonical: 'supported' },
-      { field: 'hypotheses[1].status', original: 'strongly_supported', canonical: 'supported' },
+      { field: 'hypotheses[0].status', original: 'strongly_supported', canonical: 'supported' },
+      { field: 'hypotheses[1].status', original: 'partially_rejected', canonical: 'weakened' },
       { field: 'hypotheses[2].status', original: 'partially_rejected', canonical: 'weakened' },
       { field: 'stopReason', original: 'complete', canonical: 'judgment' },
     ]);
@@ -160,7 +164,7 @@ describe('normalizeInvestigationContract (walk the contract, surface drift)', ()
       situationId: 'sit-1',
       hypotheses: [
         { statement: 'a', status: 'supported' },
-        { statement: 'b', status: 'supported' },
+        { statement: 'b', status: 'weakened' },
         { statement: 'c', status: 'weakened' },
       ],
       stopReason: 'judgment',
@@ -171,17 +175,19 @@ describe('normalizeInvestigationContract (walk the contract, surface drift)', ()
     const raw = {
       situationId: 'sit-1',
       hypotheses: [
-        { statement: 'a', status: 'confirmed' }, // mappable
+        { statement: 'a', status: 'strongly_supported' }, // mappable L3 synonym
         { statement: 'b', status: 'maybe_true' }, // NOT mappable
+        { statement: 'c', status: 'confirmed' }, // NOT mappable (Epistemic Integrity)
       ],
     };
     const norm = normalizeInvestigationContract(raw);
     expect(norm.normalized).toBeNull();
     expect(norm.drift).toEqual([
-      { field: 'hypotheses[0].status', original: 'confirmed', canonical: 'supported' },
+      { field: 'hypotheses[0].status', original: 'strongly_supported', canonical: 'supported' },
     ]);
     expect(norm.driftUnmappable).toEqual([
       { field: 'hypotheses[1].status', original: 'maybe_true' },
+      { field: 'hypotheses[2].status', original: 'confirmed' },
     ]);
   });
 
@@ -232,6 +238,13 @@ describe('parseInvestigation (raw → normalized → Zod fail-closed on unmappab
       stopReason: 'judgment',
       capabilityUsed: '',
       evidenceAcquired: [],
+      // P0013.2 shared Analysis Contract obligations.
+      observed_facts: ['fact'],
+      supporting_evidence_refs: ['e1'],
+      evidence_gaps: [],
+      business_structure_coverage: (['product', 'orders', 'traffic', 'conversion', 'operations'] as const).map(
+        (dimension) => ({ dimension, status: 'covered', note: `note ${dimension}`, evidence_refs: ['e1'] }),
+      ),
     });
     const result = parseInvestigation(reply, 'sit-1');
     expect(result.ok).toBe(true);
@@ -242,12 +255,16 @@ describe('parseInvestigation (raw → normalized → Zod fail-closed on unmappab
   });
 
   test('drift values are normalized and the contract still parses', () => {
+    // Epistemic Integrity (2026-09-06): "confirmed" is no longer a mappable
+    // L3 synonym — it's an L4 layer that requires `confirmed_evidence_refs[]`.
+    // We use the still-mappable L3 synonyms strongly_supported /
+    // partially_rejected here to exercise the normalization path.
     const reply = JSON.stringify({
       situationId: 'sit-1',
       currentUnderstanding: 'Got it',
       knownEvidence: [],
       hypotheses: [
-        { statement: 'h1', status: 'confirmed' },
+        { statement: 'h1', status: 'strongly_supported' },
         { statement: 'h2', status: 'partially_rejected' },
       ],
       unknowns: [],
@@ -259,6 +276,13 @@ describe('parseInvestigation (raw → normalized → Zod fail-closed on unmappab
       stopReason: 'complete',
       capabilityUsed: '',
       evidenceAcquired: [],
+      // P0013.2 shared Analysis Contract obligations.
+      observed_facts: ['fact'],
+      supporting_evidence_refs: ['e1'],
+      evidence_gaps: [],
+      business_structure_coverage: (['product', 'orders', 'traffic', 'conversion', 'operations'] as const).map(
+        (dimension) => ({ dimension, status: 'covered', note: `note ${dimension}`, evidence_refs: ['e1'] }),
+      ),
     });
     const result = parseInvestigation(reply, 'sit-1');
     expect(result.ok).toBe(true);
@@ -276,8 +300,8 @@ describe('parseInvestigation (raw → normalized → Zod fail-closed on unmappab
     const reply = JSON.stringify({
       situationId: 'sit-1',
       hypotheses: [
-        { statement: 'h1', status: 'confirmed' }, // mappable
-        { statement: 'h2', status: 'whoknows' }, // NOT mappable
+        { statement: 'h1', status: 'whoknows' }, // NOT mappable
+        { statement: 'h2', status: 'confirmed' }, // NOT mappable (Epistemic Integrity 2026-09-06)
       ],
       judgment: 'j',
     });
@@ -285,7 +309,11 @@ describe('parseInvestigation (raw → normalized → Zod fail-closed on unmappab
     expect(result.ok).toBe(false);
     if (!result.ok) {
       expect(result.unmappable).toBeDefined();
-      expect(result.unmappable).toEqual([{ field: 'hypotheses[1].status', original: 'whoknows' }]);
+      // Order: hypotheses are walked in source order, so [0] surfaces first.
+      expect(result.unmappable).toEqual([
+        { field: 'hypotheses[0].status', original: 'whoknows' },
+        { field: 'hypotheses[1].status', original: 'confirmed' },
+      ]);
     }
   });
 
@@ -422,6 +450,29 @@ describe('normalizeRecommendationKind (raw → canonical, fail-closed on unknown
     expect(normalizeRecommendationKind(undefined).ok).toBe(false);
     expect(normalizeRecommendationKind(null).ok).toBe(false);
     expect(normalizeRecommendationKind(42).ok).toBe(false);
+  });
+});
+
+describe('deriveKindFromStopReason — authoritative kind from the Investigation stopReason (P0010.2 Fix 2)', () => {
+  // The recommendation sub-turn does NOT ask the Agent for a kind. The kind
+  // MUST come from the main Investigation's stopReason via this single
+  // shared mapping. Only `judgment` means act; every other stop reason means
+  // observe (do not act). `undefined` → observe (conservative: no confirmed
+  // judgment means no action recommendation).
+  test('judgment → act', () => {
+    expect(deriveKindFromStopReason('judgment')).toBe('act');
+  });
+  test('observe → observe', () => {
+    expect(deriveKindFromStopReason('observe')).toBe('observe');
+  });
+  test('missing_capability → observe', () => {
+    expect(deriveKindFromStopReason('missing_capability')).toBe('observe');
+  });
+  test('ask_human → observe', () => {
+    expect(deriveKindFromStopReason('ask_human')).toBe('observe');
+  });
+  test('undefined stopReason → observe (no judgment means no action)', () => {
+    expect(deriveKindFromStopReason(undefined)).toBe('observe');
   });
 });
 

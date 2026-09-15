@@ -211,13 +211,31 @@
           <div id="replayStartPanel">
             <h3>开始一次回放</h3>
             <div class="replay-info">
-              <div>店铺: <strong>祁门红茶官方旗舰店</strong></div>
+              <div>店铺: <strong id="replayShopName">加载中…</strong></div>
               <div>数据: <span class="replay-dataset-check">✓ 交易概况</span> / <span class="replay-dataset-check">✓ 订单明细</span></div>
-              <div>数据范围: <strong>2026-08-04 → 2026-09-02</strong> (30 天)</div>
-              <div>数据完整性: <strong id="replayCoverageText">30 天 (完整)</strong></div>
+              <div>可用数据范围: <strong id="replayDatasetRange">—</strong></div>
+              <div>回放区间:
+                <input id="replayStartDate" class="input" type="date" disabled style="font-size:0.8rem;width:140px" />
+                →
+                <input id="replayEndDate" class="input" type="date" disabled style="font-size:0.8rem;width:140px" />
+                <span class="muted" id="replayRangeDays"></span>
+              </div>
+              <div>数据完整性: <strong id="replayCoverageText">—</strong></div>
               <div>步长: 每日</div>
+              <div id="replayDatasetNotice" class="muted" style="display:none"></div>
             </div>
-            <button id="replayStartBtn" class="btn btn-primary">开始历史回放</button>
+            <button id="replayStartBtn" class="btn btn-primary" disabled>开始历史回放</button>
+            <!-- P0013.1 — need beyond coverage: dynamic real acquisition, not chat -->
+            <div id="replayGapSection" style="display:none;margin-top:12px;padding:10px;border:1px solid #d9b38c;border-radius:6px;background:#fff8ef">
+              <div id="replayGapText"></div>
+              <div class="muted" style="margin:6px 0">该区间缺少已冻结的真实数据。可发起一次真实历史采集（需要保持商智登录，约 10–30 分钟；结果经完整性对账后冻结为新数据集，再创建回放）。</div>
+              <button id="replayAcquireBtn" class="btn">发起真实历史采集</button>
+              <div id="replayAcquireStatus" class="muted" style="margin-top:6px"></div>
+              <details id="replayAcquireDetail" class="muted" style="margin-top:6px;display:none">
+                <summary style="cursor:pointer">执行轨迹（审计）</summary>
+                <div id="replayAcquireLog" style="max-height:220px;overflow:auto;font-size:0.75rem;margin-top:4px"></div>
+              </details>
+            </div>
           </div>
           <div id="replayControls" style="display:none">
             <!-- P0013 G2.4-fix (2026-09-04): 6 STABLE buttons in fixed order.
@@ -240,6 +258,10 @@
             <button id="replayRestartBtn" class="btn" disabled title="创建一次新的历史回放 Run (旧 Run 保留)">↻ 重新回放</button>
             <span id="replayStatusText" class="muted"></span>
           </div>
+          <div id="replayStaleBanner" style="display:none;margin:8px 0;padding:10px;border:1px solid #d9b38c;border-radius:6px;background:#fff8ef">
+            <span id="replayStaleText" class="muted"></span>
+            <button id="replayRerunStaleBtn" class="btn btn-primary" style="margin-left:10px">▶ 从最早 stale 日期连续重放</button>
+          </div>
           <div id="replayTimeline" style="display:none">
             <h4>时间轴</h4>
             <div id="replayTimelineCells" class="replay-timeline-cells"></div>
@@ -247,6 +269,27 @@
           <div id="replayDailyView" style="display:none">
             <h4 id="replayDailyDate"></h4>
             <div id="replayDailyContent" class="replay-daily-content"></div>
+            <div id="replayEnrichment" class="replay-enrichment-dock" style="display:none">
+              <h5>补充这一天当时发生的情况
+                <span class="muted" style="margin-left:8px;font-weight:400;font-size:0.72rem">Business Date: <strong id="replayEnrichmentDate">—</strong> · 录入时间仅次要 · 只追加不改原始 Evidence</span>
+              </h5>
+              <div id="replayEnrichmentList" class="muted"></div>
+              <div class="replay-enrich-form">
+                <div class="replay-enrich-inputrow">
+                  <select id="replayEnrichmentKind" class="input">
+                    <option value="fact">fact — 客观事实</option>
+                    <option value="action">action — 运营动作</option>
+                    <option value="operator_feedback">operator_feedback — 人的判断（非客观 Evidence）</option>
+                  </select>
+                  <textarea id="replayEnrichmentContent" class="input" rows="3" placeholder="例如：当天上线满 300 减 40，持续 2 天（内容多于此框时内部滚动）"></textarea>
+                </div>
+                <div class="replay-enrich-actions">
+                  <button id="replayEnrichmentSaveBtn" class="btn">保存补充</button>
+                  <button id="replayEnrichmentRerunBtn" class="btn btn-primary">保存并重放这一天</button>
+                  <span id="replayEnrichmentStatus" class="muted"></span>
+                </div>
+              </div>
+            </div>
           </div>
           <div id="replayMonthlyReview" style="display:none">
             <h4>月度总结</h4>

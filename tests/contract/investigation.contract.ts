@@ -31,6 +31,19 @@ const validInvestigation = (): Investigation => ({
   stopReason: 'judgment',
   capabilityUsed: 'traffic.overview',
   evidenceAcquired: ['ev_1'],
+  // P0013.2 shared Analysis Contract formal obligations.
+  observed_facts: ['GMV -24%', 'UV -27%'],
+  supporting_evidence_refs: ['ev_1'],
+  evidence_gaps: [],
+  business_structure_coverage: (['product', 'orders', 'traffic', 'conversion', 'operations'] as const).map(
+    (dimension) => ({
+      dimension,
+      status: 'covered' as const,
+      note: `covered ${dimension}`,
+      evidence_refs: ['ev_1'],
+      acquisition_need: '',
+    }),
+  ),
 });
 
 describe('InvestigationSchema', () => {

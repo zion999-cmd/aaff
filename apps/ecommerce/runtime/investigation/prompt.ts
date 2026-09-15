@@ -7,6 +7,12 @@
 // the professional Knowledge it reads from knowledge/.
 
 import type { LearningContext, Situation } from '#shared/schemas/learning-context.js';
+import {
+  ANALYSIS_TARGET_SECTION,
+  ANALYSIS_OUTPUT_OBLIGATIONS,
+  EVIDENCE_RESOLUTION_SECTION,
+  formatPriorCognitionSection,
+} from './analysis-contract.js';
 
 /** Flatten the situation's current evidence into compact, data-only lines. */
 export const formatSituationEvidence = (ctx: LearningContext | null): string => {
@@ -208,11 +214,52 @@ export const formatPriorHumanGuidance = (ctx: LearningContext | null): string =>
  * Knowledge / Evidence / Fabric separation and zh-CN business output
  * contract are unchanged from P0010.2.5.
  */
+/**
+ * P0013.2 — build prior-cognition entries from the situation's PREVIOUS
+ * completed investigation (the Learning Context is loaded before the new
+ * turn overwrites it). T-1 hypotheses/judgment/recommendations enter as
+ * prior cognition, not current evidence — same semantics as Replay.
+ */
+const buildPriorCognitionEntries = (situation: Situation, ctx: LearningContext | null) => {
+  const prior = ctx?.investigation;
+  if (!prior || prior.status !== 'completed') return [];
+  const businessDate =
+    prior.business_date ?? (situation.temporal?.observedAt ?? '').slice(0, 10);
+  const date = /^\d{4}-\d{2}-\d{2}$/.test(businessDate) ? businessDate : situation.temporal?.observedAt?.slice(0, 10) ?? '';
+  const entries: Array<{ business_date?: string; kind: string; content: string; status_at_t_minus_1: string }> = [];
+  for (const h of prior.hypotheses ?? []) {
+    entries.push({
+      ...(date ? { business_date: date } : {}),
+      kind: 'prior_hypothesis',
+      content: h.statement,
+      status_at_t_minus_1: h.status,
+    });
+  }
+  if (prior.judgment?.trim()) {
+    entries.push({
+      ...(date ? { business_date: date } : {}),
+      kind: 'prior_judgment',
+      content: prior.judgment,
+      status_at_t_minus_1: 'unknown',
+    });
+  }
+  if (prior.recommendation?.recommendation?.trim()) {
+    entries.push({
+      ...(date ? { business_date: date } : {}),
+      kind: 'prior_recommendation',
+      content: prior.recommendation.recommendation,
+      status_at_t_minus_1: 'unknown',
+    });
+  }
+  return entries;
+};
+
 export const buildInvestigationPrompt = (
   situation: Situation,
   ctx: LearningContext | null,
 ): string => {
   const entity = situation.entity?.name ?? situation.entity?.id ?? 'unknown';
+  const priorCognitionEntries = buildPriorCognitionEntries(situation, ctx);
   return [
     `You are investigating ONE business situation in a Fabric Agent Workspace.`,
     ``,
@@ -266,6 +313,15 @@ export const buildInvestigationPrompt = (
     `### ADVISORY — Side-effect tools`,
     `Do NOT use: \`terminal\`, \`execute_code\`, \`run_command\`, \`sleep\`, \`wait\`, \`setTimeout\`. Investigation is read/think/acquire, not execute.`,
     `Do NOT write any file. Workspace presentation is computed by the platform, not by the Agent.`,
+    ``,
+    // ===== P0013.2 Shared Analysis Contract (Production + Replay) =====
+    ANALYSIS_TARGET_SECTION,
+    ``,
+    // ===== P0013.2 Evidence Resolution (shared; production binding = the
+    // live Fabric capability tool already permitted below) =====
+    EVIDENCE_RESOLUTION_SECTION,
+    ``,
+    `Production resolution binding: RETRIEVED means a real \`mcp__fabric__fabric_execute_capability\` call returned the needed evidence (e.g. traffic.overview for traffic structure). A capability that does not exist or returns no answering data is UNAVAILABLE — then, and only then, write evidence_gaps + acquisition_need.`,
     ``,
     // ===== Investigation Workflow — concept-driven =====
     `## Investigation Workflow`,
@@ -350,12 +406,96 @@ export const buildInvestigationPrompt = (
     `Choose based on what the recommendation ACTUALLY is, NOT based on which stopReason you emit. \`stopReason\` describes why the turn stopped; \`recommendation.kind\` describes what the recommendation is. A turn can stop with \`stopReason=judgment\` and still produce a \`kind=observe\` recommendation if the judgment is "no actionable change". Conversely, a turn can stop with \`stopReason=observe\` and produce a \`kind=act\` recommendation only if you have a clear concrete next step (rare).`,
     `If you cannot decide, default to \`observe\` (it is safer to under-promise action than to over-promise).`,
     ``,
-    `## Knowledge guidance`,
-    `Weigh the Prior Human Guidance above as you form your Current Understanding. If a user correction notes a prior judgment was wrong, take that as a strong hint to re-examine that judgment, but verify against the Evidence before finalizing. If a user supplement provided information the system cannot observe, treat it as important context; if the Evidence contradicts it, surface the contradiction in the judgment rather than silently choosing one side.`,
+    // ===== Epistemic Integrity (2026-09-06, P0013 08-14 incident) =====
+    //
+    // P0013 2026-08-14 真实 Replay 暴露: Agent 把 "放量日 + 回调日交替"
+    // (Pattern) 写成 current Fact,把 "8-14 是 88 大促 8-15 前夜" (Knowledge
+    // prior) 写成 current store fact,把 "若 GMV > 12000 则订单前置确认"
+    // (invented threshold) 写成 confirmation rule,把 "10000+ 新常态"
+    // (T-1 hypothesis) 写成 current judgment。
+    //
+    // 整改:Hermes 必须在输入端区分 5 层 epistemic status。禁止 LLM
+    // "from raw value → confident judgment" 的捷径路径。
+    `## Epistemic Layers — DO NOT COLLAPSE`,
     ``,
-    `If the current evidence is insufficient, your next move is to acquire evidence — not to guess. For each unresolved hypothesis, identify the smallest gap and resolve it (either from the Evidence already in this prompt, from a knowledge page you should read, or from a Fabric capability call). Do NOT invent facts. Do NOT speculate beyond what the data supports.`,
+    `Your cognition MUST distinguish these 5 layers. They are NOT synonyms; they are different epistemic states with different Evidence requirements:`,
     ``,
-    `Finally, output ONLY a JSON object with this exact shape (no markdown fences, no prose around it):`,
+    `| Layer | What it is | Required Evidence | Forbidden transforms |`,
+    `|-------|-----------|-------------------|----------------------|`,
+    `| **L1 Observed Fact** | Direct read of current visible Evidence | ≥1 \`evidence_refs[]\` from this situation's visible evidence | Cannot become "Pattern" without multiple observations |`,
+    `| **L2 Pattern** | Inductive form across multiple Observed Facts | \`based_on\` references to ≥2 \`observed[]\` (or marked \`pattern_type: candidate\` if only 1) | Cannot be called "established" without ≥3 observations across ≥2 windows |`,
+    `| **L3 Hypothesis** | Causal/mechanism explanation | \`supporting_evidence_refs[]\` + \`missing_evidence[]\` + \`falsifier\` | Cannot be called "confirmed" without operator/system confirmation |`,
+    `| **L4 Confirmed** | Claim with explicit confirmation | \`confirmed_evidence_refs[]\` ≥1 (operator intervention id, knowledge record id, or system-stamped evidence) | Cannot be Confirmed just because data "fits" |`,
+    `| **L5 Judgment** | Decision grounded in L1-L4 | \`known\` / \`inferred\` / \`unknown\` lists + \`decision\` + \`confidence_basis\` | Cannot claim "confident" without listing what's known |`,
+    ``,
+    `**Hard rules (no escape hatches):**`,
+    `- A \`currentUnderstanding\` paragraph that says "近期存在放量日 + 回调日交替规律" without an \`observed[]\` list backing it is a **Pattern Candidate**, NOT an Established Pattern. Default \`pattern_type: candidate\`.`,
+    `- A \`currentUnderstanding\` paragraph that says "8-14 是 88 大促 8-15 前夜" without operator-confirmed activity records is a **Knowledge Prior**, NOT a current store Fact. It MUST go in \`hypotheses[]\` (status: \`proposed\`, with \`falsifier\`), NOT in \`observed[]\`.`,
+    `- A \`judgment\` that says "确认为订单前置" without an operator intervention record is **NOT Confirmed**. It is a \`hypothesis\` with status \`proposed\`.`,
+    `- "确认" / "已确认" / "证实" / "definitely" / "confirmed" in any natural-language field is an unsourced confirmation language UNLESS paired with a corresponding \`confirmed_evidence_refs[]\` entry. The platform's parser does NOT silently rewrite "confirmed" → "supported" anymore.`,
+    ``,
+    `## Knowledge ≠ Evidence`,
+    ``,
+    `Knowledge (the \`knowledge/\` directory) is **professional prior**, not current store Evidence. The boundary is strict:`,
+    ``,
+    `- **Allowed**: \`Knowledge → suggest hypothesis\` (read knowledge, propose a \`status: proposed\` hypothesis with \`missing_evidence\` listed).`,
+    `- **Forbidden**: \`Knowledge → manufacture current-world fact\` (writing "该店参加了 8-15 活动" because knowledge says "8-15 前后常见大促").`,
+    ``,
+    `If you read a knowledge page that says "8-15 前后通常存在某类大促", the correct cognition is:`,
+    `  - observed[]: (the actual current store metrics) `,
+    `  - patterns[]: (the actual current store form, if any) `,
+    `  - hypotheses[]: {"statement": "本店 8-14 表现可能受 8-15 大促节奏影响", "status": "proposed", "missing_evidence": ["本店 8-15 活动配置", "本店历史 8-15 同期数据"], "falsifier": "若 8-15 当天本店表现与 8-14 类似,假设被削弱"}`,
+    `  - confirmed[]: (empty — no operator/system confirmation)`,
+    ``,
+    `The Knowledge page is a *prior*, not a fact. If you cannot point to a `,
+    `- operator intervention recording the activity, or`,
+    `- system-stamped evidence (e.g. an 活动配置 capability call result), or`,
+    `- historical evidence the shop actually participated (NOT the prior 30-day window, which is too coarse),`,
+    `then the claim belongs in \`hypotheses[]\` with explicit \`missing_evidence\`, NOT in \`observed[]\`.`,
+    ``,
+    `## Per-claim provenance (Phase C)`,
+    ``,
+    `For STRONG claims in \`currentUnderstanding\` / \`judgment\`, you MUST populate \`claim_evidence_refs[]\` with the evidence_observations id that backs the claim. A claim is "strong" if it is any of:`,
+    ``,
+    `- numeric (e.g. "08-14 GMV = 5286.47")`,
+    `- temporal (e.g. "08-14 较 08-13 下降 49.0%")`,
+    `- campaign / operation (e.g. "本店参加了 8-15 活动")`,
+    `- consecutive / alternation (e.g. "连续 3 天下降" / "放量回调交替")`,
+    `- stable / baseline / new-normal / recovery / anomaly`,
+    `- confirmation / reversal / causal explanation`,
+    ``,
+    `Empty \`evidence_refs[]\` on a strong claim is an Evidence Gap, NOT a free pass. The Agent must either (a) supply a real \`evidence_refs[]\`, or (b) explicitly note the claim as a \`missing_evidence[]\`.`,
+    ``,
+    `## Threshold provenance (Phase E)`,
+    ``,
+    `If your \`judgment\` or \`next observation\` mentions a quantitative threshold (e.g. "若 GMV > 12000 则确认", "若落在 5000-7000 则放量见顶"), you MUST populate \`thresholds[]\` with the threshold statement and a provenance:`,
+    ``,
+    `- \`heuristic\` — no Evidence basis, just intuitive. CANNOT be called a "confirmation rule".`,
+    `- \`evidence_derived\` — derived from current evidence statistics (cite the \`evidence_refs[]\`).`,
+    `- \`knowledge_rule\` — derived from a \`knowledge/\` page (cite the knowledge record id in \`basis_refs[]\`).`,
+    `- \`operator_rule\` — operator has given this rule explicitly (cite the human intervention id in \`basis_refs[]\`).`,
+    `- \`business_policy\` — defined by business policy (cite the policy id in \`basis_refs[]\`).`,
+    ``,
+    `A threshold with \`provenance: heuristic\` is honest. A threshold with NO provenance is forbidden.`,
+    `A threshold with \`provenance: heuristic\` MUST NOT be written as "若 X 则确认" — heuristic thresholds are not confirmation rules. They are signals-to-watch, with explicit "no confirmation semantics".`,
+    ``,
+    // ===== P0013.2 Prior cognition — dynamically pre-loaded from this
+    // situation's previous completed investigation (Production) or prior
+    // Replay day. Same semantics on both paths. =====
+    `## Prior Cognition (Historical, NOT Current — P0013.2)`,
+    formatPriorCognitionSection(priorCognitionEntries),
+    ``,
+    `If \`prior_cognition[]\` is non-empty, treat it as PRIOR COGNITION, not current Evidence:`,
+    ``,
+    `- A T-1 \`status: proposed\` hypothesis is STILL \`proposed\` at T until NEW Evidence at T shifts it.`,
+    `- A T-1 \`status: supported\` hypothesis does NOT auto-upgrade to Confirmed at T. It may be \`weakened\` / \`rejected\` at T if new Evidence contradicts.`,
+    `- A T-1 \`judgment\` is HISTORICAL cognition. Do not silently carry its decision forward to T. Re-evaluate against T's Evidence.`,
+    ``,
+    `You may write a fresh \`prior_cognition[]\` entry showing how T's new Evidence shifts the T-1 status. Empty array is acceptable on the first turn.`,
+    ``,
+    ANALYSIS_OUTPUT_OBLIGATIONS,
+    ``,
+    `## Output shape (canonical Investigation Contract + Epistemic Layers, no markdown fences, no prose around it)`,
     `{`,
     `  "situationId": "${situation.situationId}",`,
     `  "currentUnderstanding": "<简中 — 一段话>",`,
@@ -363,15 +503,36 @@ export const buildInvestigationPrompt = (
     `  "hypotheses": [{"statement": "<简中>", "status": "proposed|supported|weakened|rejected"}],`,
     `  "unknowns": ["<简中>"],`,
     `  "nextQuestion": "<简中>",`,
-    `  "requiredEvidence": ["<简中>"],`,
+    `  "requiredEvidence": ["<简中>", "<简中>"],`,
     `  "investigationRequest": "<简中>",`,
     `  "findings": [{"question": "<简中>", "evidenceRefs": ["<evidenceId>"], "answer": "<简中>", "impactOnHypothesis": "<简中>"}],`,
     `  "judgment": "<简中>",`,
     `  "stopReason": "judgment|observe|missing_capability|ask_human",`,
     `  "capabilityUsed": "<capability name> or null",`,
     `  "evidenceAcquired": ["<简中>"],`,
-    `  "recommendation": {"kind": "observe|act", "recommendation": "<简中>", "rationale": "<简中>", "expectedOutcome": "<简中>", "risks": "<简中>", "prerequisites": ["<简中>"], "humanNeeded": ["<简中>"]}`,
+    `  "recommendation": {"kind": "observe|act", "recommendation": "<简中>", "rationale": "<简中>", "expectedOutcome": "<简中>", "risks": "<简中>", "prerequisites": ["<简中>"], "humanNeeded": ["<简中>"]},`,
+    `  "epistemic_layers": {`,
+    `    "observed": [{"statement": "<L1 Observed Fact>", "evidence_refs": ["<ev_id>"]}],`,
+    `    "patterns": [{"statement": "<L2 Pattern>", "pattern_type": "candidate|established", "based_on": ["<ref to observed[]>"]}],`,
+    `    "hypotheses": [{"statement": "<L3 Hypothesis>", "status": "proposed|supported|weakened|rejected", "supporting_evidence_refs": ["<ev_id>"], "missing_evidence": ["<gap>"], "falsifier": "<observation that would REJECT>"}],`,
+    `    "confirmed": [{"statement": "<L4 Confirmed>", "confirmed_evidence_refs": ["<op_intv_id|knowledge_id|ev_id>"], "confirmed_by": "operator|system|historical_evidence", "confirmed_at": "<iso or business_date>"}],`,
+    `    "judgment_basis": {"known": ["<L1+L4>"], "inferred": ["<L2+L3>"], "unknown": ["<Evidence Gaps>"], "decision": "<简中>", "confidence_basis": "<简中 — what supports the confidence>"}`,
+    `  },`,
+    `  "claim_evidence_refs": [{"claim": "<strong claim>", "evidence_refs": ["<ev_id>"], "missing_evidence": ["<gap>"], "claim_type": "numeric|temporal|campaign|operation|consecutive|alternation|stable|baseline|recovery|anomaly|confirmation|reversal|causal|pattern|hypothesis|other"}],`,
+    `  "thresholds": [{"statement": "<若 X > N 则 Y>", "provenance": "heuristic|evidence_derived|knowledge_rule|operator_rule|business_policy", "basis_refs": ["<ref>"]}],`,
+    `  "prior_cognition": [{"business_date": "YYYY-MM-DD", "kind": "prior_hypothesis|prior_judgment|prior_recommendation", "content": "<T-1 statement>", "status_at_t_minus_1": "proposed|supported|weakened|rejected|unknown", "status_at_t": "proposed|supported|weakened|rejected|unknown", "new_evidence_refs": ["<ev_id>"]}],`,
+    `  "observed_facts": ["<L1 fact>"],`,
+    `  "supporting_evidence_refs": ["<ev_id>"],`,
+    `  "evidence_gaps": ["<unresolved structural fact>"],`,
+    `  "business_structure_coverage": [{"dimension": "product|orders|traffic|conversion|operations", "status": "covered|gap|not_applicable", "note": "<structural reading or why unknowable/N-A>", "evidence_refs": ["<ev_id>"], "acquisition_need": "<required when gap: exact fact/capability>"}],`,
+    `  "evidence_resolutions": [{"need": "<the evidence need>", "dimension": "product|orders|traffic|conversion|operations", "result": "IN_CONTEXT|RETRIEVED|UNAVAILABLE", "source": "fabric_capability|in_context", "query": "<capability id or retrieval query>", "retrieved_refs": ["<ev id used>"], "note": "<when UNAVAILABLE: what was tried and why held evidence cannot answer>"}]`,
     `}`,
+    ``,
+    `## Knowledge guidance (post-script)`,
+    ``,
+    `Weigh the Prior Human Guidance above as you form your Current Understanding. If a user correction notes a prior judgment was wrong, take that as a strong hint to re-examine that judgment, but verify against the Evidence before finalizing. If a user supplement provided information the system cannot observe, treat it as important context; if the Evidence contradicts it, surface the contradiction in the judgment rather than silently choosing one side.`,
+    ``,
+    `If the current evidence is insufficient, your next move is to acquire evidence — not to guess. For each unresolved hypothesis, identify the smallest gap and resolve it (either from the Evidence already in this prompt, from a knowledge page you should read, or from a Fabric capability call). Do NOT invent facts. Do NOT speculate beyond what the data supports.`,
     ``,
     `The "recommendation" MUST follow ONLY from your judgment and findings above — never from a single Signal or metric threshold. If your judgment is "observe" (pseudo-anomaly / insufficient evidence), the recommendation should reflect NOT acting (e.g. continue observing, do not intervene). If human verification is required, list the needed facts under "humanNeeded". Do not write an Action — recommendation is what to consider, not an execution order.`,
     ``,

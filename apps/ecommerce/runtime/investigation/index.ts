@@ -8,6 +8,8 @@ export {
   normalizeStopReason,
   normalizeRecommendationKind,
   normalizeInvestigationContract,
+  validateEpistemicContract,
+  deriveKindFromStopReason,
   CANONICAL_HYPOTHESIS_STATUSES,
   CANONICAL_STOP_REASONS,
   CANONICAL_RECOMMENDATION_KINDS,
@@ -18,4 +20,5 @@ export type {
   CanonicalRecommendationKind,
   NormalizationResult,
   ContractNormalizationResult,
+  EpistemicDriftRecord,
 } from './normalize.js';
