@@ -32,6 +32,35 @@ const dimensionLines = BUSINESS_STRUCTURE_DIMENSIONS.map(
 ).join('\n');
 
 /**
+ * P0013.4 — Cognition continuity. The 2026-09-16 audit of a real Replay
+ * trajectory found the Agent had turned continuous business cognition into
+ * a per-day scorecard: every judgment was a hit/miss tally ("严格高客单 2/2",
+ * "软化 3/3 未升稳态", "①命中 ②未命中"), prior cognition was re-scored item by
+ * item each morning, and the reading opened with a metrics dump. The cause
+ * was the contract's silence about what prior cognition IS: standing
+ * understanding to be continued, not a checklist to be graded.
+ *
+ * This section states the role of each input in reasoning. It adds no new
+ * field, no threshold, and no state machine — it removes the pressure that
+ * produced one.
+ */
+export const COGNITION_CONTINUITY_SECTION = `## Cognition continuity — standing understanding, not a scorecard
+
+You maintain ONE continuous reading of this business across days. Each turn updates that reading; it does not grade a checklist.
+
+- \`prior_cognition\` is your standing understanding as of T-1. Treat it as something you hold and carry forward. You may continue it, revise it, abandon hypotheses that no longer matter, or move your attention when something genuinely new appears — silently, without announcing a verdict on each item.
+- The "prior days' judgments" / \`prior_cognition\` list is NOT a list of questions you must answer back. Never convert it into per-item verdicts.
+
+**Forbidden patterns** — these fail this contract even when the JSON is well-formed:
+- Per-day hit/miss tallies: "①命中 ②未命中 ③未命中", "2/2", "3/3", "k/k 候选", "分支 A/B/C 计分", "X 态 N/N 未升稳态".
+- Inventing classification gates or threshold ladders to label the day ("严格门禁", "软化口径", "若 AOV≥200 且低价带≤5% 则…"). Use a quantitative threshold ONLY when a real decision depends on it, with honest provenance — never as a scoring rubric.
+- Opening the reading with a metrics dump (\`n=…, AOV≈…, 低价带…, ex-top1…\`). Numbers SUPPORT the reading; they are not the reading.
+- Restating yesterday's conclusion in order to confirm it, or naming a "framework"/"分支"/"门禁" you invented earlier. Carry conclusions forward silently unless today's evidence changes them.
+- A "recommendation" whose content is only the next scoring tally ("观察 2/2 或转向", "追 3/3"). A recommendation is what the operator should consider doing about the business.
+
+**Understanding must answer**: as of today, what do I believe is happening in this business — what has continued, what has changed, what is still unknown, and how confident am I? One business paragraph. Cross-day state, not today's numbers restated.`;
+
+/**
  * Canonical Analysis Target section. Embedded verbatim in BOTH the
  * production investigation prompt and the replay cognition prompt. Do not
  * fork the wording per path — the whole point is one shared contract.
@@ -46,7 +75,7 @@ Read this ONCE; it governs every field you emit.
 
 ### Mandatory business-structure coverage
 
-You MUST address ALL FIVE dimensions in \`business_structure_coverage[]\`. For each dimension choose exactly one status:
+You MUST address ALL FIVE dimensions in \`business_structure_coverage[]\` — this is a COMPLETENESS check (did you look at the whole business, and where is evidence missing?), NOT a scorecard. Each \`note\` states the structural reading for today in one clause; do not restate yesterday's verdict for the dimension, and do not invent a grading scale. For each dimension choose exactly one status:
   - "covered" — you have Evidence for it; \`note\` states the structural reading and \`evidence_refs[]\` cites the evidence;
   - "gap" — the dimension is relevant but the Evidence is missing; \`note\` says what is unknown and \`acquisition_need\` names the exact fact/capability required;
   - "not_applicable" — explain in \`note\` why the dimension cannot matter for this situation.
@@ -108,7 +137,7 @@ export const ANALYSIS_OUTPUT_OBLIGATIONS = `## Formal output obligations (shared
 The following fields are REQUIRED on every completed turn (they were optional before; they are obligations now):
 - \`observed_facts[]\`: at least one Evidence-supported L1 fact (also populate \`epistemic_layers.observed[]\`).
 - \`supporting_evidence_refs[]\`: the evidence ids each strong claim relies on (same id space shown in the evidence lines / observations).
-- \`business_structure_coverage[]\`: exactly one entry per dimension — product, orders, traffic, conversion, operations (see Analysis Target).
+- \`business_structure_coverage[]\`: exactly one entry per dimension — product, orders, traffic, conversion, operations (see Analysis Target). One clause per note; it is a completeness check, not a per-day score.
 - \`evidence_gaps[]\`: every unresolved structural fact. Non-empty whenever any coverage dimension is "gap".
 A reply missing these obligations fails the Investigation Contract and will be rejected — do not emit an empty placeholder; if a fact is genuinely unknowable, say so in evidence_gaps.`;
 

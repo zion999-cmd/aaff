@@ -1,3 +1,53 @@
+# Handoff — P0013.4 Replay Cognition Continuity（2026-09-16，ADR-091）
+
+> 只改**推理契约**（prompt 文本），不改 runner / Coverage Gate / Acquisition / stale-rerun-enrichment storage / Evidence / schema / Knowledge / Hermes；未新增规则引擎、状态机或经营阈值；未加文案润色层。
+
+## 审计：症状与归因（真实轨迹 run 5babef67，09-04→09-13，10 天）
+
+| 症状 | 度量 | 归因（契约沉默处） |
+|---|---|---|
+| 逐日 N/N 计分 | **8/10 天**（`严格高客单 2/2（未升稳态）`、`软化口径 3/3`、`①命中 ②未命中`） | 契约从未说明 prior_cognition 是"既有理解"还是"待逐条回应的清单" |
+| 自造分类装置 | **6/10 天**（`门禁`/`软化口径`/`升稳态`/`候选`） | threshold provenance 示例 `若 GMV > 12000 则确认` 直接诱导模型自建闸门来给每天贴标签 |
+| Understanding 指标堆开头 | **8/10 天** | 契约要求"强 claim 必须有 refs"，却没有说数字是支撑而非叙述 |
+| Enrichment 每日必答 | **10/10 天** mention（多为例行"不归因"声明） | 旧文案要求"weigh against evidence, cite them explicitly"，等于每日点名 |
+| Recommendation 规则机化 | 多日退化为 `观察 2/2 或转向` | 同上（计分框架的产物） |
+
+## 修改（3 处，均为文本）
+
+1. `apps/ecommerce/runtime/investigation/analysis-contract.ts` — 新增共享 `COGNITION_CONTINUITY_SECTION`（Production + Replay 同一文本，无分叉）：prior cognition = standing understanding；显式禁止 N/N 计分、自造分类闸门/阈值阶梯、指标堆开头、为确认而重述昨日、计分式 recommendation；规定 Understanding 必须回答"什么延续 / 什么改变 / 什么仍未知"。同时把 `business_structure_coverage` 明确为**完整性检查**（五维仍强制，validator 未动）。
+2. `apps/ecommerce/runtime/replay/replay-cognition-kernel.ts` — Enrichment 改为**背景上下文**：不要求回应/解释/验证，**不相关时沉默即正确**（明确禁止每天写"这不构成原因/不归因"），仅在确实影响当日阅读时使用；因果纪律保留并改为"When relevant"前提。prior cognition INVARIANT 补一句"不要逐项打分"；workflow 第 2/4 步删除逐项判定与阈值分类措辞；thresholds 示例改为"仅在真实决策依赖时"。
+3. `apps/ecommerce/runtime/investigation/prompt.ts` — 同一 continuity 节接入 Production prompt（共享契约，不分叉）。
+
+## 真实验收：A/B（同一数据集 `…20260914_0231`，同窗口 09-04→09-12，真实 Hermes）
+
+| 运行 | 天数 | N/N 计分 | 自造装置 | 指标堆开头 | 提及 enrichment | 因果违规 |
+|---|---|---|---|---|---|---|
+| **BEFORE** 5babef67（修复前，有 enrichment） | 10 | **8** | **6** | **8** | **10** | 0 |
+| **A** 无 enrichment（run 920332b4） | 9 | **0** | 1 | 1 | 0 | 0 |
+| **B** 有 enrichment（run 16220625，09-04 action + 09-10 feedback） | 9 | **0** | **0** | **0** | **1** | 0 |
+
+逐条对应 Success Criteria：
+1. ✅ 零 N/N 计分（对照 8/10）；自造装置 A 残留 1 例（09-12 建议"续窗用同一套结构门禁继续读"）——已记录，未追加补丁。
+2. ✅ 无 enrichment 时认知自然延续与修正：A 逐日读作"中间态 → 高客单 → 延续 → 脉冲 → 软化 → 中间态"，09-12 自行归纳"订单结构高频切换生意，极端脉冲不可当增长锚"；无昨日结论复述式确认。
+3. ✅ 有 enrichment 时只相关才用：B 中 09-04（记录优惠当天）对优惠**零提及**，未解释也未声明无关；唯一提及在 09-10。
+4. ✅ 因果未知保持：两天运行 0 处"优惠导致/因券/券带来"；B 09-10 写明"店长判断可作工作假设，不能替代订单证据"。
+5. ✅ Understanding 体现跨日理解：B "截至09-05，店铺从昨日中间态切到…"；指标堆开头 0/9。
+6. ✅ A/B 真实轨迹已存档供人工审核：`context/p0013-4-cognition-ab-trajectories-2026-09-16.md`（逐日 Understanding/Judgment/Recommendation/Unknowns + BEFORE 对照）。
+
+不可变性：frozen manifest hash `87613e01…` 不变；两 run no-future-leak 违规 0；生产 Evidence 858 行（+6 为生产 loop 当日 trade.overview 采集，与 Replay 无关）。
+
+## 测试
+
+新增 `tests/contract/replay-cognition-continuity.contract.ts` **12/12**（禁止模式锚定 + enrichment 非议题 + coverage 非记分卡 + workflow 源码断言）。相关套件 contract/unit replay/investigation 717 passed（1 个既存 live 失败）。全量 **1766 passed / 5 failed**，5 个失败全部为本任务前既存（日期硬编码 fixture、watermark 文案、app.js 按钮、live chat/loop/live-d1）。typecheck 83（基线 84，无新增）。
+
+## 残留 / 建议
+
+- A 的 09-12 出现一次 `门禁` 措辞（模型仍倾向为未来窗口提议分类装置）。未再堆 prompt 规则；若复现增多，考虑在 continuity 节补一条"不要为后续窗口提议框架"。
+- Enrichment 唯一提及日为 09-10（operator_feedback），属预期；若人工审核认为"相关日也必须完全沉默"，需再议（与 criterion 3 的"相关时可用"冲突）。
+- 未做：Knowledge/Skill/Memory 新能力、Production feedback、cognition 输出 schema 变更。
+
+---
+
 # Handoff — P0013 Historical Replay Correctness Patch（2026-09-16，ADR-090，基线 eab6ed4）
 
 > 只修确定性正确性问题：Coverage Gate（核心）、控制状态死路、Enrichment 交互、UI 紧凑度。未改 cognition prompt / analysis obligations / ADR-083 / frozen dataset / 原始 Evidence / Business Time。未处理 checkpoint 后遗留的 77 项历史工作区文件。

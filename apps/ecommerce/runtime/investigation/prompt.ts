@@ -10,6 +10,7 @@ import type { LearningContext, Situation } from '#shared/schemas/learning-contex
 import {
   ANALYSIS_TARGET_SECTION,
   ANALYSIS_OUTPUT_OBLIGATIONS,
+  COGNITION_CONTINUITY_SECTION,
   EVIDENCE_RESOLUTION_SECTION,
   formatPriorCognitionSection,
 } from './analysis-contract.js';
@@ -313,6 +314,9 @@ export const buildInvestigationPrompt = (
     `### ADVISORY — Side-effect tools`,
     `Do NOT use: \`terminal\`, \`execute_code\`, \`run_command\`, \`sleep\`, \`wait\`, \`setTimeout\`. Investigation is read/think/acquire, not execute.`,
     `Do NOT write any file. Workspace presentation is computed by the platform, not by the Agent.`,
+    ``,
+    // ===== P0013.4 Cognition continuity (shared) =====
+    COGNITION_CONTINUITY_SECTION,
     ``,
     // ===== P0013.2 Shared Analysis Contract (Production + Replay) =====
     ANALYSIS_TARGET_SECTION,

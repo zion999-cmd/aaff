@@ -3441,3 +3441,26 @@ Date: 2026-09-16 | Status: ACCEPTED | 基线 eab6ed4 | 依据：P0013 Historical
 - **边界遵守**：未改 cognition prompt、未改 analysis obligations、未改 ADR-083、未改 frozen dataset / 原始 Evidence / Business Time / No-Future-Leak、未做无关重构、未处理 checkpoint 后遗留工作区文件。
 - **真实验收（非单测）**：409 拦截（窗口含 09-13）/ 覆盖窗口放行；run 9a10c8b3 在 09-12 正常运行真实 Hermes 认知、推进到 09-13 时 BLOCKED 且 0 step / 0 认知、BLOCKED 横幅显示缺口；run 9cdb7077 的 FAILED step 经 retry 真实重跑至 COMPLETED；run c7c37f5b 未回放日预置 2 条补充→自然回放自动读取（T+n 可见、无自动因果）；已回放日加 operator_feedback→stale[09-11,09-12]→单日 rerun 后 09-11 fresh / 09-12 仍 stale→连续 stale rerun 全 fresh，且 feedback 未进入 observed[]；frozen manifest hash 87613e01/df8783a7 与文件 mtime 不变、生产 Evidence 852 行不变、No-Future-Leak 违规 0。
 - **已知未解决**：run 5babef67 等本次之前产生的"空日认知"保留为历史记录（不回改）；09-13 的数据在源系统确实不存在（getDealOrders 0 行 / getTrend null），需 provider 侧有数据才能补齐。
+
+## ADR-091 — Replay cognition continuity: inputs define a reading, not a scorecard (P0013.4)
+
+Date: 2026-09-16 | Status: ACCEPTED | 依据：P0013.4 Cognition Quality + 真实 A/B
+
+- **Context**: 对真实轨迹（run 5babef67，09-04→09-13）逐日审计确认四个症状，且都可归因于契约对"输入在推理中的角色"沉默：
+  1. **逐日计分**：8/10 天出现 `严格高客单 2/2（未升稳态）`、`软化口径 3/3 仅作门禁记账`、`①命中 ②未命中` 式 hit/miss 记账；
+  2. **自造装置**：6/10 天出现 `门禁` / `软化口径` / `升稳态` / `候选` —— Agent 自建了一套分类闸门来给每天贴标签（prompt 的 threshold provenance 示例"若 GMV > 12000 则确认"是直接诱因）；
+  3. **Enrichment 变成每日议题**：10/10 天的 judgment 都提及优惠/礼包（多为"不归因"的例行声明）；
+  4. **复读与规则机**：8/10 天 Understanding 以指标堆开头（n=/AOV≈/低价带/ex-top1）；recommendation 退化为"观察 2/2 或转向"。
+- **Decision（只改推理契约，不新增 schema/阈值/状态机）**：
+  1. 新增共享 `COGNITION_CONTINUITY_SECTION`（Production + Replay 同一文本）：prior_cognition 是 Agent 截至 T-1 的**standing understanding**，可延续/修正/放弃/转移关注，**不是待逐条回应的清单**；显式禁止 ①N/N 计分 ②自造分类闸门与阈值阶梯 ③指标堆开头 ④为确认而重述昨日结论 ⑤退化为下一次计分的 recommendation；并规定 Understanding 必须回答"截至今天我认为这家店在发生什么——什么延续、什么改变、什么仍未知"。
+  2. Enrichment 语义从"需要称量的输入"改为**背景上下文**：不要求回应/解释/验证，不相关时**沉默即正确**（明确禁止每天写"这不构成原因"），仅在确实影响当日阅读时才使用；因果纪律保留（相关时 action→outcome 不得写成因果）。
+  3. `business_structure_coverage` 明确为**完整性检查**而非记分卡（五维仍强制，validator 不变）；workflow 第 2/4 步删除"逐项判定 T-1"与"用阈值分类"的措辞。
+- **真实验收（同一 09-04→09-12 真实数据集，真实 Hermes，A/B）**：
+  | 运行 | 天数 | N/N 计分 | 自造装置 | 指标堆开头 | judgment 提及 enrichment |
+  |---|---|---|---|---|---|
+  | BEFORE 5babef67（修复前） | 10 | **8** | **6** | **8** | **10** |
+  | A 无 enrichment | 9 | 0 | 1 | 1 | 0 |
+  | B 有 enrichment | 9 | 0 | **0** | **0** | **1** |
+  B 中唯一提及（09-10）正是 operator_feedback 直接相关之日，且写明"店长判断可作工作假设，不能替代订单证据"；两天运行均 0 因果归因违规；B 的 09-04（记录优惠当天）对优惠**零提及**（不解释也不声明无关）。轨迹存档见 `context/p0013-4-cognition-ab-trajectories-2026-09-16.md`。
+- **残留**：A 的 09-12 仍出现一次 `门禁`（"续窗用同一套结构门禁继续读"），即模型仍倾向为未来窗口提议分类装置 —— 已记录，未再追加 prompt 补丁（避免为单点现象堆规则）。
+- **边界**：未改 runner / Coverage Gate / Acquisition / stale-rerun-enrichment storage / Evidence / schema / Knowledge / Hermes；未新增规则引擎或经营阈值；未加文案润色层。
