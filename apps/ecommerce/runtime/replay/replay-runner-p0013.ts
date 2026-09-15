@@ -43,6 +43,7 @@ import {
   type ReplayClockStatus,
 } from '#shared/utils/replay-clock.js';
 import { tagEvidenceAsReplayVisible } from './temporal-evidence-view.js';
+import { loadHistoricalDataset, businessDateCoverageOf } from './historical-dataset.js';
 // P0013 G1-fix: import the seed module statically. seed-evidence.ts has
 // no circular dep with the runner — it only imports historical-dataset.ts
 // + shared/utils, both leaf-level.
@@ -68,6 +69,9 @@ export interface ReplayRunState {
   readonly shopName: string;
   readonly sourceDatasetPath: string;
   readonly sourceManifestHash: string;
+  /** Coverage Gap detail — set while status === 'BLOCKED'. */
+  readonly blockedBusinessDate: string | null;
+  readonly blockedReason: string | null;
 }
 
 export interface KernelStepResult {
@@ -105,13 +109,17 @@ export interface KernelStepResult {
 }
 
 export interface StepResult {
-  readonly status: 'COMPLETED' | 'FAILED' | 'PAUSED' | 'SKIPPED_NO_DATA';
+  readonly status: 'COMPLETED' | 'FAILED' | 'PAUSED' | 'SKIPPED_NO_DATA' | 'BLOCKED';
   readonly currentBusinessDate?: string;
   readonly error?: string;
+  /** Set when status === 'BLOCKED': the business date with no coverage. */
+  readonly blockedBusinessDate?: string;
+  /** Machine-readable coverage-gap reasons (Evidence Contract violation). */
+  readonly blockedReasons?: readonly string[];
 }
 
 export interface RunCompletionResult {
-  readonly status: 'COMPLETED' | 'FAILED' | 'PAUSED';
+  readonly status: 'COMPLETED' | 'FAILED' | 'PAUSED' | 'BLOCKED';
   readonly totalSteps: number;
   readonly failedSteps: number;
 }
@@ -259,7 +267,7 @@ const loadRun = (db: Database.Database, runId: string): ReplayRunState | null =>
     .prepare(
       `SELECT id, status, current_step, current_business_date, start_business_date,
               end_business_date, shop_id, shop_name, source_dataset_path,
-              source_manifest_hash
+              source_manifest_hash, blocked_business_date, blocked_reason
        FROM replay_runs WHERE id = ?`,
     )
     .get(runId) as
@@ -274,6 +282,8 @@ const loadRun = (db: Database.Database, runId: string): ReplayRunState | null =>
         shop_name: string;
         source_dataset_path: string;
         source_manifest_hash: string;
+        blocked_business_date: string | null;
+        blocked_reason: string | null;
       }
     | undefined;
   if (!row) return null;
@@ -288,6 +298,8 @@ const loadRun = (db: Database.Database, runId: string): ReplayRunState | null =>
     shopName: row.shop_name,
     sourceDatasetPath: row.source_dataset_path,
     sourceManifestHash: row.source_manifest_hash,
+    blockedBusinessDate: row.blocked_business_date ?? null,
+    blockedReason: row.blocked_reason ?? null,
   };
 };
 
@@ -523,6 +535,50 @@ const insertOrFetchRunningStep = (
   return { kind: 'existing', status, error: row.error };
 };
 
+/**
+ * Resolve the Evidence Contract status of one business date for a run.
+ * Returns null when the date is within the dataset window and covered;
+ * a gap descriptor when it is not covered; and a "window" gap when the
+ * date falls outside the dataset window entirely (should be impossible
+ * for a run created through POST /runs, which validates the window).
+ */
+const findCoverageGap = (
+  db: Database.Database,
+  runId: string,
+  businessDate: string,
+): { businessDate: string; reasons: readonly string[] } | null => {
+  const row = db
+    .prepare(`SELECT source_dataset_path FROM replay_runs WHERE id = ?`)
+    .get(runId) as { source_dataset_path: string } | undefined;
+  if (!row?.source_dataset_path) return null; // run row already gone — let caller fail normally
+  let dataset;
+  try {
+    dataset = loadHistoricalDataset(resolve(process.cwd(), row.source_dataset_path));
+  } catch {
+    // Unreadable dataset is a separate failure mode; the kernel path and the
+    // POST /runs validation already surface it. Do not mask it as a gap.
+    return null;
+  }
+  const coverage = businessDateCoverageOf(dataset, businessDate);
+  if (!coverage) {
+    return { businessDate, reasons: ['outside_dataset_window'] };
+  }
+  return coverage.covered ? null : { businessDate, reasons: coverage.reasons };
+};
+
+/** Persist the Coverage Gap on the run so the operator sees an explicit state. */
+const blockRunOnCoverageGap = (
+  db: Database.Database,
+  runId: string,
+  gap: { businessDate: string; reasons: readonly string[] },
+): void => {
+  db.prepare(
+    `UPDATE replay_runs
+        SET status = 'BLOCKED', blocked_business_date = ?, blocked_reason = ?
+      WHERE id = ?`,
+  ).run(gap.businessDate, gap.reasons.join(', '), runId);
+};
+
 const linkEvidenceRefs = (
   db: Database.Database,
   stepId: string,
@@ -559,6 +615,24 @@ export const runReplayRunStep = async (
   const businessDate = clock.currentBusinessDate;
   const stepId = uuid();
   const stepNumber = run.currentStep + 1;
+
+  // ── Coverage Gate (Evidence Contract) ────────────────────────────────
+  // Cognition may only run for a business date the frozen acquisition can
+  // actually answer. A date lacking evidence is a Coverage Gap: it must be
+  // resolved by acquisition (P0013.1) + a new run, never by running the
+  // Agent on an empty day. Checked for EVERY advance path (step / next /
+  // continuous) because they all funnel through this function.
+  const coverageGap = findCoverageGap(db, runId, businessDate);
+  if (coverageGap) {
+    blockRunOnCoverageGap(db, runId, coverageGap);
+    return {
+      status: 'BLOCKED',
+      currentBusinessDate: businessDate,
+      blockedBusinessDate: coverageGap.businessDate,
+      blockedReasons: coverageGap.reasons,
+      error: `Coverage Gap ${coverageGap.businessDate}: ${coverageGap.reasons.join(', ')}`,
+    };
+  }
 
   // Insert a RUNNING step row first. P0013 G1.5-fix: idempotent against
   // concurrent / double-clicked calls. If a step already exists at
@@ -726,13 +800,20 @@ export const runReplayRunToCompletion = async (
       failedSteps += 1;
       return { status: 'FAILED', totalSteps, failedSteps };
     }
+    // Coverage Gap: stop the continuous replay. No further cognition runs
+    // for this run until the gap is resolved by acquisition (new run).
+    if (result.status === 'BLOCKED') {
+      return { status: 'BLOCKED', totalSteps, failedSteps };
+    }
     if (result.status === 'PAUSED') {
       return { status: 'PAUSED', totalSteps, failedSteps };
     }
   }
   const final = getReplayRunState(db, runId);
   return {
-    status: isReplayTerminal(final.status) ? (final.status as 'COMPLETED' | 'FAILED') : 'FAILED',
+    status: isReplayTerminal(final.status)
+      ? (final.status as 'COMPLETED' | 'FAILED' | 'BLOCKED')
+      : 'FAILED',
     totalSteps,
     failedSteps,
   };
@@ -795,6 +876,20 @@ export const rerunHistoricalStep = async (
   assertDateInWindow(run, businessDate);
   const wasTerminal = isReplayTerminal(run.status);
 
+  // Same Coverage Gate as a forward step: a rerun may not run cognition on
+  // a business date the frozen acquisition cannot answer.
+  const rerunGap = findCoverageGap(db, runId, businessDate);
+  if (rerunGap) {
+    blockRunOnCoverageGap(db, runId, rerunGap);
+    return {
+      status: 'BLOCKED',
+      currentBusinessDate: businessDate,
+      blockedBusinessDate: rerunGap.businessDate,
+      blockedReasons: rerunGap.reasons,
+      error: `Coverage Gap ${rerunGap.businessDate}: ${rerunGap.reasons.join(', ')}`,
+    };
+  }
+
   deleteCognitionForDate(db, runId, businessDate);
   db.prepare(`UPDATE replay_runs SET status = 'RUNNING' WHERE id = ?`).run(runId);
 
@@ -828,11 +923,13 @@ export const rerunHistoricalStep = async (
   ).run(nowIso(), stepId);
 
   if (wasTerminal) {
-    // Single-day rerun on a finished run: run returns to COMPLETED; later
-    // steps stay flagged stale for the operator to replay continuously.
+    // Single-day rerun on a finished run: restore the terminal status the
+    // run had before the rerun. A BLOCKED run stays BLOCKED — its coverage
+    // gap is unresolved and is not cleared by rerunning another date.
+    const restored = run.status === 'BLOCKED' ? 'BLOCKED' : 'COMPLETED';
     db.prepare(
-      `UPDATE replay_runs SET status='COMPLETED', last_advanced_at=? WHERE id=?`,
-    ).run(nowIso(), runId);
+      `UPDATE replay_runs SET status=?, last_advanced_at=? WHERE id=?`,
+    ).run(restored, nowIso(), runId);
   }
   return { status: 'COMPLETED', currentBusinessDate: businessDate };
 };
@@ -930,6 +1027,47 @@ export const clearOrphanStep = (db: Database.Database, runId: string): number =>
 // (P0013 §22 append-only) so the operator can revisit skipped days
 // later via a P0013+ follow-up feature. The clock advances to the
 // next business_date, mirroring the natural end-of-step advance.
+/**
+ * Re-arm a run whose current business date has a FAILED step so the operator's
+ * 重试这一天 action can actually re-run it.
+ *
+ * Before this helper, retry only cleared rows carrying the
+ * '[manually retried]' marker written by clearOrphanStep, so a step that
+ * FAILED on its own (e.g. a Hermes turn timeout) blocked retry forever: the
+ * runner saw the existing FAILED row and returned FAILED without running.
+ *
+ * Deletes ONLY the failed cognition row for the run's current business date.
+ * A failed step carries no snapshot and no evidence refs (persistSnapshot is
+ * transactional and linkEvidenceRefs runs after success), so nothing else is
+ * orphaned. Returns the number of rows cleared.
+ */
+export const clearFailedCognitionForCurrentDate = (
+  db: Database.Database,
+  runId: string,
+): number => {
+  const info = db
+    .prepare(
+      `DELETE FROM replay_run_steps
+        WHERE replay_run_id = ? AND status = 'FAILED'
+          AND business_date = (
+            SELECT current_business_date FROM replay_runs WHERE id = ?
+          )`,
+    )
+    .run(runId, runId);
+  return info.changes;
+};
+
+/** Re-arm a FAILED/BLOCKED run so a retry can execute (and re-evaluate the gate). */
+export const rearmRunForRetry = (db: Database.Database, runId: string): number => {
+  const info = db
+    .prepare(
+      `UPDATE replay_runs SET status = 'RUNNING'
+        WHERE id = ? AND status IN ('FAILED', 'BLOCKED')`,
+    )
+    .run(runId);
+  return info.changes;
+};
+
 export const skipCurrentStep = (db: Database.Database, runId: string): void => {
   const run = getReplayRunState(db, runId);
   if (isReplayTerminal(run.status)) return;

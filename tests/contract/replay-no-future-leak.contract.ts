@@ -147,8 +147,10 @@ describe('No-Future-Leak — 5 contract surfaces', () => {
     const sampleRun: ReplayRunState = {
       id: 'rT', status: 'RUNNING', currentStep: 5,
       currentBusinessDate: '2026-08-18', endBusinessDate: '2026-09-02',
+      startBusinessDate: '2026-08-04',
       shopId: 'S', shopName: 'S',
       sourceDatasetPath: 'd', sourceManifestHash: 'h',
+      blockedBusinessDate: null, blockedReason: null,
     };
     // The caller (visibleEvidenceFor) is responsible for pre-filtering; the
     // prompt contract is that the kernel trusts its input. We assert the

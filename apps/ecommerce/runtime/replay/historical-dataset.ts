@@ -48,12 +48,33 @@ export interface HistoricalWindow {
   readonly days: number;
 }
 
+/**
+ * Per-business-date Evidence Contract status.
+ *
+ * A Replay business date is COVERED only when the frozen acquisition can
+ * actually answer for that day. Presence in the trend x-axis alone is NOT
+ * coverage: the source can emit a date whose value is null (no finalized
+ * snapshot) and a per-day order aggregate of zeros with no rows behind it.
+ * Replay must not run cognition on such a day — it is an Evidence Gap.
+ */
+export interface BusinessDateCoverage {
+  readonly businessDate: string;
+  readonly covered: boolean;
+  /** Machine-readable reasons the date is NOT covered (empty when covered). */
+  readonly reasons: readonly string[];
+}
+
 export interface HistoricalCoverage {
   readonly start: string;
   readonly end: string;
   readonly days: number;
   readonly missingBusinessDates: readonly string[];
+  /** Per-date Evidence Contract status for every day in the window. */
+  readonly byBusinessDate: readonly BusinessDateCoverage[];
 }
+
+/** Own-shop GMV field carried by each trend row (source series). */
+const TREND_OWN_GMV_FIELD = 'jdr_sch_trade_deal_ord_ord_amt_sz_trade_deal_snapshot';
 
 export interface HistoricalOrderDetails {
   readonly perDay: Readonly<Record<string, { readonly orders: number; readonly qty: number; readonly amt: number }>>;
@@ -135,6 +156,94 @@ const deepFreeze = <T>(obj: T): T => {
   }
   return obj;
 };
+
+/**
+ * Dates the acquisition itself declared as evidence gaps (manifest `gaps[]`).
+ * The frozen manifest is the acquisition's own per-date evidence statement,
+ * so it is authoritative where present. Datasets written before this field
+ * existed simply contribute nothing here.
+ */
+const readDeclaredGapDates = (manifest: ProvenanceManifest): ReadonlySet<string> => {
+  const raw = (manifest as unknown as Record<string, unknown>)['gaps'];
+  if (!Array.isArray(raw)) return new Set<string>();
+  const dates = new Set<string>();
+  for (const entry of raw) {
+    if (!entry || typeof entry !== 'object') continue;
+    const date = (entry as Record<string, unknown>)['date'];
+    if (typeof date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(date)) dates.add(date);
+  }
+  return dates;
+};
+
+/**
+ * Evidence Contract predicate per business date (pure).
+ *
+ * A date is COVERED iff the frozen dataset can answer for it:
+ *   1. the trend has a row for the date AND — when the dataset carries the
+ *      own-shop GMV series at all — the value is a finite number. A null
+ *      among numeric values means the source had no finalized data for that
+ *      day: the date sits in the x-axis but carries no evidence. Datasets
+ *      whose trend rows do not carry that series at all (minimal fixtures)
+ *      fall back to row presence, so a narrower shape is not mass-flagged;
+ *   2. the order per-day aggregate exists for the date;
+ *   3. the acquisition did not declare an evidence gap for the date.
+ *
+ * Deliberately NOT a criterion: zero orders / zero amount. A genuinely
+ * zero-business day is a real fact; only a missing source value or an
+ * acquisition-declared gap makes a date uncoverable.
+ */
+const computeDateCoverage = (args: {
+  readonly allDays: readonly string[];
+  readonly trend: TrendPerDay;
+  readonly perDay: Readonly<Record<string, { readonly orders: number; readonly qty: number; readonly amt: number }>>;
+  readonly declaredGapDates: ReadonlySet<string>;
+}): BusinessDateCoverage[] => {
+  const { allDays, trend, perDay, declaredGapDates } = args;
+  const trendRowByDate = new Map<string, Record<string, unknown>>();
+  for (const row of trend.rows) {
+    trendRowByDate.set(row.date, row as unknown as Record<string, unknown>);
+  }
+  const xaxisDates = new Set<string>(trend.xaxis);
+  // Strictness only applies when the dataset actually carries the series.
+  const carriesOwnGmvSeries = trend.rows.some((row) =>
+    Object.prototype.hasOwnProperty.call(row, TREND_OWN_GMV_FIELD),
+  );
+
+  return allDays.map((date) => {
+    const reasons: string[] = [];
+    const row = trendRowByDate.get(date);
+    if (!xaxisDates.has(date) || row === undefined) {
+      reasons.push('trend_row_absent');
+    } else if (carriesOwnGmvSeries) {
+      const ownGmv = row[TREND_OWN_GMV_FIELD];
+      if (typeof ownGmv !== 'number' || !Number.isFinite(ownGmv)) {
+        reasons.push('trend_value_missing');
+      }
+    }
+    if (!(date in perDay)) {
+      reasons.push('per_day_summary_absent');
+    }
+    if (declaredGapDates.has(date)) {
+      reasons.push('declared_evidence_gap');
+    }
+    return {
+      businessDate: date,
+      covered: reasons.length === 0,
+      reasons: Object.freeze(reasons),
+    };
+  });
+};
+
+/**
+ * Look up the Evidence Contract status of ONE business date.
+ * Returns `null` when the date is outside the dataset window (the caller
+ * decides whether that is a No-Future-Leak or a No-Past-Coverage error).
+ */
+export const businessDateCoverageOf = (
+  dataset: HistoricalDataset,
+  businessDate: string,
+): BusinessDateCoverage | null =>
+  dataset.coverage.byBusinessDate.find((c) => c.businessDate === businessDate) ?? null;
 
 /**
  * Load a Historical Dataset from an on-disk P0011.x root path.
@@ -248,8 +357,15 @@ export const loadHistoricalDataset = (rootPath: string): HistoricalDataset => {
   }
 
   const allDays = enumerateDays(manifest.time_window.start, manifest.time_window.end);
-  const coveredDates = new Set<string>(trend.xaxis);
-  const missingBusinessDates = allDays.filter((d) => !coveredDates.has(d));
+  const byBusinessDate = computeDateCoverage({
+    allDays,
+    trend,
+    perDay,
+    declaredGapDates: readDeclaredGapDates(manifest),
+  });
+  const missingBusinessDates = byBusinessDate
+    .filter((c) => !c.covered)
+    .map((c) => c.businessDate);
 
   const shop: HistoricalShop = { shopId: manifest.shop.shop_id, shopName: manifest.shop.shop_name };
   const window: HistoricalWindow = {
@@ -262,6 +378,7 @@ export const loadHistoricalDataset = (rootPath: string): HistoricalDataset => {
     end: window.end,
     days: window.days,
     missingBusinessDates,
+    byBusinessDate,
   };
 
   const dataset: HistoricalDataset = {

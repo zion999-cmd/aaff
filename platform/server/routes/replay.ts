@@ -23,6 +23,8 @@ import {
   resumeReplayRun,
   getReplayRunState,
   clearOrphanStep,
+  clearFailedCognitionForCurrentDate,
+  rearmRunForRetry,
   skipCurrentStep,
   type KernelStepResult,
 } from '#app/runtime/replay/replay-runner-p0013.js';
@@ -208,6 +210,29 @@ export const replayRouter = (db: Database.Database, options: ReplayRouterOptions
             `[${dataset.window.start}, ${dataset.window.end}] — No-Future-Leak / No-Past-Coverage`,
         );
       }
+
+      // Coverage Gate (Evidence Contract). A run may only be created for a
+      // window the frozen acquisition can actually answer. Dates inside the
+      // dataset window but without evidence (null source value, absent
+      // per-day aggregate, or an acquisition-declared gap) are an Evidence
+      // Gap: they must go through the P0013.1 acquisition path first, not
+      // through Replay cognition.
+      const uncovered = dataset.coverage.byBusinessDate
+        .filter(
+          (c) =>
+            !c.covered && c.businessDate >= startBusinessDate && c.businessDate <= endBusinessDate,
+        )
+        .map((c) => ({ businessDate: c.businessDate, reasons: c.reasons }));
+      if (uncovered.length > 0) {
+        return fail(
+          res,
+          409,
+          `Evidence Coverage Gap: ${uncovered
+            .map((u) => `${u.businessDate} (${u.reasons.join(', ')})`)
+            .join('; ')} — 该窗口未被冻结数据集覆盖。请先通过 POST /api/replay/acquisitions ` +
+            `对该区间发起真实历史采集，采集成功后再用新数据集创建 Replay run。`,
+        );
+      }
       const run = createReplayRun(db, {
         ...parsed.data,
         sourceDatasetPath: datasetPath,
@@ -234,7 +259,8 @@ export const replayRouter = (db: Database.Database, options: ReplayRouterOptions
         .prepare(
           `SELECT id, shop_id, shop_name, source_dataset_path, source_manifest_hash,
                   start_business_date, end_business_date, current_business_date,
-                  current_step, status, created_at, last_advanced_at, completed_at
+                  current_step, status, created_at, last_advanced_at, completed_at,
+                  blocked_business_date, blocked_reason
            FROM replay_runs
            ORDER BY created_at DESC
            LIMIT 100`,
@@ -288,17 +314,18 @@ export const replayRouter = (db: Database.Database, options: ReplayRouterOptions
       // The route uses the same ensureSession + kernel as step mode.
       if (mode === 'retry') {
         clearOrphanStep(db, runId);
-        // Delete the row we just marked FAILED so the kernel can
-        // re-INSERT a fresh one. (The runner's "existing FAILED"
-        // branch would return FAILED without running, so we must
-        // remove the row first.)
-        db.prepare(
-          `DELETE FROM replay_run_steps
-            WHERE replay_run_id = ? AND status = 'FAILED' AND error LIKE '%[manually retried]%'
-              AND business_date = (
-                SELECT current_business_date FROM replay_runs WHERE id = ?
-              )`,
-        ).run(runId, runId);
+        // P0013 correctness patch — retry must be reachable for ANY failed
+        // step, not only the ones clearOrphanStep just marked. A step that
+        // FAILED on its own (e.g. a Hermes turn timeout) previously blocked
+        // retry forever: the runner sees the existing FAILED row and
+        // returns FAILED without running. Clear the failed cognition row
+        // for the current business date so the kernel can re-INSERT a
+        // fresh one. Failed steps carry no snapshot / refs by construction
+        // (persistSnapshot is transactional), so nothing else is orphaned.
+        clearFailedCognitionForCurrentDate(db, runId);
+        // A BLOCKED run is re-armed so the retry actually executes; the
+        // coverage gate re-evaluates on the way in.
+        rearmRunForRetry(db, runId);
         const active = await ensureSession(runId);
         const result = await runReplayRunStep(db, runId, active.kernel);
         if (result.status === 'FAILED') dropSession(runId);

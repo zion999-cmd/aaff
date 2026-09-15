@@ -14,7 +14,12 @@ export type ReplayClockStatus =
   | 'RUNNING'
   | 'PAUSED'
   | 'COMPLETED'
-  | 'FAILED';
+  | 'FAILED'
+  // The run cannot produce cognition for the date it reached because the
+  // frozen acquisition does not satisfy the Evidence Contract for that
+  // business date (Coverage Gap). Distinct from FAILED (cognition error)
+  // and from PAUSED (operator choice) — no cognition was attempted.
+  | 'BLOCKED';
 
 export interface ReplayBusinessClock {
   readonly startBusinessDate: string;
@@ -27,6 +32,10 @@ export interface ReplayBusinessClock {
 const TERMINAL_STATUSES: ReadonlySet<ReplayClockStatus> = new Set([
   'COMPLETED',
   'FAILED',
+  // BLOCKED is terminal for AUTOMATIC advance: the run is bound to one
+  // frozen dataset, so a coverage gap can never be resolved in-run. The
+  // operator resolves it by acquiring evidence and creating a new run.
+  'BLOCKED',
 ]);
 
 /** Validates a YYYY-MM-DD string. Pure. */

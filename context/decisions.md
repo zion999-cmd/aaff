@@ -3423,3 +3423,21 @@ Date: 2026-09-15 | Status: ACCEPTED | Proposal: P0013.3-historical-evidence-enri
 6. 未来未执行日补充=预置（stale UPDATE 只影响 COMPLETED step，无 step 则零 stale），replay 到 T 自然消费。
 - 真实 Hermes 后端 E2E（run bf740b90）：09-07 预置 action→执行时消费"券与 GMV 只记序列"；09-08 预置 fact→"停券与软化只记序列"；运行中未来日 09-08 预置零死锁；已完成日 09-04 补 fact→stale=[04,05]；mode=stale 从 09-04 连续重放 5 步 COMPLETED、0 stale、hash 87613e01 不变。
 - Headless Chrome（独立 9334 profile，不碰 9222）Workspace E2E 15/15：pending ○ 格可点可预置、Business Date 正确、表单 600px 不遮挡、rerun 按钮按 reached 状态启用/禁用、重新回放无 alert 死路。
+
+## ADR-090 — Historical Replay Coverage Gate: Evidence Contract enforced before cognition
+
+Date: 2026-09-16 | Status: ACCEPTED | 基线 eab6ed4 | 依据：P0013 Historical Replay Correctness Patch
+
+- **Context**: 实测发现 Replay 会对"没有满足 Evidence Contract 的 business_date"正常启动 cognition。run 5babef67（09-04→09-13）对源系统空白日 09-13（getTrend GMV=null、getDealOrders 0 行）产出了 COMPLETED cognition 与快照；用户侧表现为"该日无数据却照常回放，最后 Hermes timeout"。审计定位两个根因，均非 09-13 特有：
+  1. **Coverage 谓词过弱**：`missingBusinessDates` 只由 `trend.xaxis` 是否含该日期推导（historical-dataset.ts），xaxis 里有但值为 null、且订单 per_day 为 0 的日期被判为"已覆盖"。
+  2. **Replay 路径从不查询 coverage**：POST /runs 只校验窗口边界；runner 对游标所指日期无条件调用 kernel；nextDate 无条件推进。SKIPPED_NO_DATA 状态存在但没有任何 coverage 驱动的入口。
+- **Decision**:
+  1. **按日的 Evidence Contract 谓词**（`computeDateCoverage`，纯函数，data-driven）：日期 covered 当且仅当 ①trend 有该日行，且在该数据集确实携带 own-shop GMV 序列时该值有限（null = 源未最终化）；②订单 per_day 汇总存在；③acquisition 未在 manifest `gaps[]` 中声明该日缺口。**明确不把"零订单/零金额"当作缺口**——真实零经营日是事实，只有源缺值或声明缺口才不可回填。数据集未携带该序列时（最小 fixture）退化为行存在性判断，避免误伤。
+  2. **新 run 状态 BLOCKED**（复用现有时序模型，不造平行状态机；REPLAY_RUN_STATUSES / ReplayClockStatus / TERMINAL 集合同步）+ `blocked_business_date` / `blocked_reason` 列，含 SQLite CHECK 无法 ALTER 的就地重建迁移（幂等，行数/外键/索引已用生产库副本验证）。
+  3. **Runner 日级 gate**：`runReplayRunStep` 与 `rerunHistoricalStep` 在 kernel 之前检查该日 coverage；不通过则**不写 step 行、不调 kernel、不产出认知**，run 置 BLOCKED 并记录缺口日期与原因。连续回放（runReplayRunToCompletion）遇 BLOCKED 立即停止，不得越过缺口继续。
+  4. **创建即拦截**：POST /runs 若窗口内存在未覆盖日期，返回 409 + named Coverage Gap，并指向既有 P0013.1 acquisition 路径（POST /api/replay/acquisitions）。缺口日必须经真实采集形成新数据集后，用新 run 回放——一个 run 绑定一个数据集，缺口无法在 run 内补齐。
+  5. **retry 可达性修复**：mode=retry 此前只删除带 `[manually retried]` 标记的 FAILED 行，导致自身 FAILED（如 Hermes timeout）的 step 永远无法重试（UI 的「重试这一天」是死路）。现删除当前业务日的 FAILED 认知行并重置 FAILED/BLOCKED → RUNNING；提取 `clearFailedCognitionForCurrentDate` / `rearmRunForRetry` 便于验证。
+  6. UI：BLOCKED 作为独立 uiState（next/exec 禁用并说明原因，retry/restart 始终可达），新增覆盖缺口横幅（缺口日期+原因+「前往发起真实历史采集」直达 P0013.1 入口）。
+- **边界遵守**：未改 cognition prompt、未改 analysis obligations、未改 ADR-083、未改 frozen dataset / 原始 Evidence / Business Time / No-Future-Leak、未做无关重构、未处理 checkpoint 后遗留工作区文件。
+- **真实验收（非单测）**：409 拦截（窗口含 09-13）/ 覆盖窗口放行；run 9a10c8b3 在 09-12 正常运行真实 Hermes 认知、推进到 09-13 时 BLOCKED 且 0 step / 0 认知、BLOCKED 横幅显示缺口；run 9cdb7077 的 FAILED step 经 retry 真实重跑至 COMPLETED；run c7c37f5b 未回放日预置 2 条补充→自然回放自动读取（T+n 可见、无自动因果）；已回放日加 operator_feedback→stale[09-11,09-12]→单日 rerun 后 09-11 fresh / 09-12 仍 stale→连续 stale rerun 全 fresh，且 feedback 未进入 observed[]；frozen manifest hash 87613e01/df8783a7 与文件 mtime 不变、生产 Evidence 852 行不变、No-Future-Leak 违规 0。
+- **已知未解决**：run 5babef67 等本次之前产生的"空日认知"保留为历史记录（不回改）；09-13 的数据在源系统确实不存在（getDealOrders 0 行 / getTrend null），需 provider 侧有数据才能补齐。

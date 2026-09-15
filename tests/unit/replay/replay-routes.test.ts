@@ -10,6 +10,10 @@ import type { AddressInfo } from 'node:net';
 import Database from 'better-sqlite3';
 import { applyP0013Schema } from '#platform/storage/p0013-schema.js';
 import { replayRouter } from '#platform/server/routes/replay.js';
+import {
+  clearFailedCognitionForCurrentDate,
+  rearmRunForRetry,
+} from '#app/runtime/replay/replay-runner-p0013.js';
 
 let db: Database.Database;
 let server: Server;
@@ -254,5 +258,82 @@ describe('legacy /api/runtime/replay → 410 alias', () => {
     expect(r.status).toBe(410);
     expect(r.body.success).toBe(false);
     expect(r.body.newEndpoint).toBe('/api/replay/runs');
+  });
+});
+
+// ── P0013 correctness — Coverage Gate at run creation ─────────────────
+//
+// A run may only be created for a window the frozen acquisition can
+// actually answer. `data/jd_acquisition_20260914_0231` declares (and
+// structurally contains) a source-empty business date: 2026-09-13.
+describe('POST /api/replay/runs — Evidence Coverage Gate', () => {
+  const GAPPED_DATASET = 'data/jd_acquisition_20260914_0231';
+
+  it('rejects a window that includes an uncovered business date (409 + named gap)', async () => {
+    const r = await post('/api/replay/runs', {
+      shopId: '11855009',
+      shopName: '祁门红茶官方旗舰店',
+      sourceDatasetPath: GAPPED_DATASET,
+      startBusinessDate: '2026-09-04',
+      endBusinessDate: '2026-09-13',
+    });
+    expect(r.status).toBe(409);
+    expect(r.body.success).toBe(false);
+    expect(String(r.body.error)).toContain('Evidence Coverage Gap');
+    expect(String(r.body.error)).toContain('2026-09-13');
+    expect(String(r.body.error)).toContain('/api/replay/acquisitions');
+  });
+
+  it('accepts the same dataset when the window ends before the gap', async () => {
+    const r = await post('/api/replay/runs', {
+      shopId: '11855009',
+      shopName: '祁门红茶官方旗舰店',
+      sourceDatasetPath: GAPPED_DATASET,
+      startBusinessDate: '2026-09-04',
+      endBusinessDate: '2026-09-12',
+    });
+    expect(r.status).toBe(200);
+    expect(r.body.success).toBe(true);
+  });
+});
+
+// ── P0013 correctness — retry reachability for a FAILED step ──────────
+//
+// Before: mode=retry only deleted a FAILED row that carried the
+// '[manually retried]' marker written by clearOrphanStep, so a step that
+// FAILED on its own (e.g. a Hermes turn timeout) could never be retried —
+// the runner saw the existing FAILED row and returned FAILED forever.
+// The UI offers 重试这一天; that action must be reachable. The DB effect is
+// asserted through the exported helpers the route calls (the HTTP path
+// additionally requires a live Hermes session, which is not what this
+// test is about).
+describe('retry reachability — clearing a genuinely FAILED step', () => {
+  it('clears a FAILED step with no manual-retry marker and re-arms the run', async () => {
+    const created = await post('/api/replay/runs', {
+      shopId: 'jd', shopName: 'T',
+      sourceDatasetPath: REAL_DATASET, sourceManifestHash: 'h',
+      startBusinessDate: '2026-08-04', endBusinessDate: '2026-09-02',
+    });
+    const id = (created.body.data as { runId: string }).runId;
+    const ds = db.prepare(`SELECT current_business_date FROM replay_runs WHERE id = ?`).get(id) as {
+      current_business_date: string;
+    };
+
+    db.prepare(
+      `INSERT INTO replay_run_steps
+         (id, replay_run_id, step_number, business_date, status, error, started_at, completed_at)
+       VALUES ('step-failed-1', ?, 1, ?, 'FAILED', 'Turn timed out waiting for message.complete', '2026-09-15T00:00:00Z', '2026-09-15T00:10:00Z')`,
+    ).run(id, ds.current_business_date);
+    db.prepare(`UPDATE replay_runs SET status = 'FAILED' WHERE id = ?`).run(id);
+
+    expect(clearFailedCognitionForCurrentDate(db, id)).toBe(1);
+    expect(rearmRunForRetry(db, id)).toBe(1);
+
+    const remaining = db
+      .prepare(`SELECT COUNT(*) AS n FROM replay_run_steps WHERE replay_run_id = ? AND status = 'FAILED'`)
+      .get(id) as { n: number };
+    expect(remaining.n).toBe(0);
+    const run = db.prepare(`SELECT status FROM replay_runs WHERE id = ?`).get(id) as { status: string };
+    expect(run.status).toBe('RUNNING');
   });
 });

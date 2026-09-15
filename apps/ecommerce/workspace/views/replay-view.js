@@ -176,6 +176,9 @@
     const uiState = (() => {
       const s = run.status;
       if (s === 'COMPLETED') return 'COMPLETED';
+      // Coverage Gap: cognition must not run for this business date. It is
+      // NOT a step failure and NOT "ready" — it needs acquisition.
+      if (s === 'BLOCKED') return 'BLOCKED';
       if (s === 'FAILED') return 'STEP_FAILED';
       if (s === 'READY') return 'READY';
       if (s === 'PAUSED') {
@@ -245,6 +248,9 @@
         // Mid-execution: next is locked (kernel is the only driver).
         return { enabled: false, reason: '当前 step 正在执行' };
       }
+      if (uiState === 'BLOCKED') {
+        return { enabled: false, reason: '覆盖缺口: 该业务日缺少证据, 需先采集' };
+      }
       if (uiState === 'STEP_FAILED') {
         return { enabled: false, reason: '当前 step 失败, 请重试或跳过' };
       }
@@ -290,6 +296,9 @@
       if (uiState === 'PAUSED') {
         return { enabled: !isAdvancing, label: '▶ 继续', mode: 'resume' };
       }
+      if (uiState === 'BLOCKED') {
+        return { enabled: false, label: '连续回放', reason: '覆盖缺口未解决, 无法继续回放' };
+      }
       if (uiState === 'STEP_FAILED') {
         return { enabled: false, label: '连续回放', reason: '当前 step 失败, 无法自动执行' };
       }
@@ -312,6 +321,9 @@
     // recover. RUNNING_IDLE's current step is COMPLETED and doesn't
     // need a retry.
     const retry = (() => {
+      if (uiState === 'BLOCKED') {
+        return { enabled: !isAdvancing, reason: '重新检查该日覆盖情况并重试' };
+      }
       if (uiState === 'STEP_FAILED') {
         return { enabled: !isAdvancing, reason: '重新执行当前失败的 step' };
       }
@@ -813,6 +825,7 @@
         state.enrichmentsLoadedFor = state.runId;
       }
       renderTimeline();
+      renderCoverageBanner();
       renderStaleBanner();
       renderStatus();
       applyControls();
@@ -879,6 +892,23 @@
     if (skipBtn) skipBtn.onclick = onSkipClick;
     if (restartBtn) restartBtn.onclick = onRestartClick;
     // P0013.3 — enrichment + stale continuous replay (bound once).
+    // P0013 correctness — coverage-gap banner action: hand off to the
+    // existing P0013.1 acquisition flow (start panel + gap section), which
+    // owns the "发起真实历史采集" button and job polling.
+    const covAcquire = document.getElementById('replayCoverageAcquireBtn');
+    if (covAcquire) {
+      covAcquire.onclick = () => {
+        const run = state.run;
+        const startInput = document.getElementById('replayStartDate');
+        const endInput = document.getElementById('replayEndDate');
+        if (run && startInput && endInput) {
+          startInput.value = run.startBusinessDate;
+          endInput.value = run.endBusinessDate;
+        }
+        showStartPanel();
+        if (run) showGapSection(run.startBusinessDate, run.endBusinessDate);
+      };
+    }
     const enrSave = document.getElementById('replayEnrichmentSaveBtn');
     const enrRerun = document.getElementById('replayEnrichmentRerunBtn');
     const rerunStale = document.getElementById('replayRerunStaleBtn');
@@ -1496,6 +1526,29 @@
   };
 
   // ── P0013.3 Historical Evidence Enrichment ────────────────────────────
+
+  // P0013 correctness — Evidence Coverage Gap banner. Shown while the run is
+  // BLOCKED: cognition was NOT run for the business date the run reached
+  // because the frozen acquisition cannot answer for it.
+  const renderCoverageBanner = () => {
+    const banner = document.getElementById('replayCoverageBanner');
+    if (!banner) return;
+    const run = state.run;
+    const blockedDate = run && run.blockedBusinessDate;
+    if (!run || run.status !== 'BLOCKED' || !blockedDate) {
+      banner.style.display = 'none';
+      return;
+    }
+    banner.style.display = '';
+    const text = document.getElementById('replayCoverageText');
+    if (text) {
+      text.textContent =
+        '业务日 ' + blockedDate + ' 未被当前冻结数据集覆盖' +
+        (run.blockedReason ? '（' + run.blockedReason + '）' : '') +
+        '。未对该日执行 cognition。解决路径：先对该区间发起真实历史采集（P0013.1），' +
+        '采集成功后再用新数据集创建新的 Replay run（一个 run 绑定一个数据集，无法在 run 内补齐）。';
+    }
+  };
 
   const renderStaleBanner = () => {
     const banner = document.getElementById('replayStaleBanner');

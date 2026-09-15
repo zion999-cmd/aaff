@@ -258,6 +258,15 @@
             <button id="replayRestartBtn" class="btn" disabled title="创建一次新的历史回放 Run (旧 Run 保留)">↻ 重新回放</button>
             <span id="replayStatusText" class="muted"></span>
           </div>
+          <!-- P0013 correctness — Evidence Coverage Gap (run status BLOCKED).
+               Cognition was NOT run for this business date: the frozen
+               acquisition cannot answer for it. Resolution is the P0013.1
+               acquisition path, then a new run. -->
+          <div id="replayCoverageBanner" style="display:none;margin:8px 0;padding:10px;border:1px solid #f0a4a4;border-radius:6px;background:#fef2f2">
+            <strong style="color:#991b1b">BLOCKED — 证据覆盖缺口</strong>
+            <div id="replayCoverageText" class="muted" style="margin:4px 0 6px"></div>
+            <button id="replayCoverageAcquireBtn" class="btn btn-primary">前往发起真实历史采集</button>
+          </div>
           <div id="replayStaleBanner" style="display:none;margin:8px 0;padding:10px;border:1px solid #d9b38c;border-radius:6px;background:#fff8ef">
             <span id="replayStaleText" class="muted"></span>
             <button id="replayRerunStaleBtn" class="btn btn-primary" style="margin-left:10px">▶ 从最早 stale 日期连续重放</button>

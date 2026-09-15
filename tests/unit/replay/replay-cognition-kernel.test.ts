@@ -28,6 +28,8 @@ const sampleRun: ReplayRunState = {
   shopName: '祁门红茶官方旗舰店',
   sourceDatasetPath: 'data/jd_acquisition_20260903_0834',
   sourceManifestHash: 'manifest-hash-abc',
+  blockedBusinessDate: null,
+  blockedReason: null,
 };
 
 const sampleEvidence: VisibleEvidence[] = [

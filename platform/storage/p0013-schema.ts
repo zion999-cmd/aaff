@@ -22,6 +22,9 @@ export const REPLAY_RUN_STATUSES = [
   'PAUSED',
   'COMPLETED',
   'FAILED',
+  // Coverage Gap: the frozen acquisition cannot satisfy the Evidence
+  // Contract for the business date the run reached. No cognition ran.
+  'BLOCKED',
 ] as const;
 export type ReplayRunStatus = typeof REPLAY_RUN_STATUSES[number];
 
@@ -68,10 +71,14 @@ const STATEMENTS: readonly string[] = [
     current_business_date TEXT,
     current_step INTEGER NOT NULL DEFAULT 0,
     status TEXT NOT NULL DEFAULT 'READY'
-      CHECK (status IN ('READY','RUNNING','PAUSED','COMPLETED','FAILED')),
+      CHECK (status IN ('READY','RUNNING','PAUSED','COMPLETED','FAILED','BLOCKED')),
     created_at TEXT NOT NULL,
     last_advanced_at TEXT,
-    completed_at TEXT
+    completed_at TEXT,
+    -- Coverage Gap detail (status = 'BLOCKED'): which business date could
+    -- not be answered by the frozen acquisition, and why.
+    blocked_business_date TEXT,
+    blocked_reason TEXT
   )`,
 
   `CREATE INDEX IF NOT EXISTS idx_replay_runs_shop_created
@@ -246,6 +253,80 @@ export const applyP0013Schema = (db: Database.Database): void => {
   const stepCols = db.prepare(`PRAGMA table_info(replay_run_steps)`).all() as Array<{ name: string }>;
   if (!stepCols.some((r) => r.name === 'enrichment_stale_at')) {
     db.exec(`ALTER TABLE replay_run_steps ADD COLUMN enrichment_stale_at TEXT`);
+  }
+
+  // P0013 correctness patch — replay_runs gained the BLOCKED status and the
+  // coverage-gap columns. SQLite cannot ALTER a CHECK constraint, so an
+  // existing table is rebuilt in place (create-copy-drop-rename). Idempotent:
+  // skipped entirely once the table already allows 'BLOCKED'.
+  migrateReplayRunsForBlockedStatus(db);
+};
+
+/** True when an existing replay_runs CHECK already permits 'BLOCKED'. */
+const replayRunsAllowsBlocked = (db: Database.Database): boolean => {
+  const row = db
+    .prepare(`SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'replay_runs'`)
+    .get() as { sql: string | null } | undefined;
+  return typeof row?.sql === 'string' && row.sql.includes("'BLOCKED'");
+};
+
+const replayRunsHasColumn = (db: Database.Database, column: string): boolean => {
+  const cols = db.prepare(`PRAGMA table_info(replay_runs)`).all() as Array<{ name: string }>;
+  return cols.some((c) => c.name === column);
+};
+
+/**
+ * Bring an existing replay_runs table up to the current contract:
+ *   - status CHECK gains 'BLOCKED'
+ *   - blocked_business_date / blocked_reason columns
+ * Rows are preserved verbatim. Runs inside a transaction; FK enforcement is
+ * disabled for the swap only (replay_run_steps references replay_runs).
+ */
+const migrateReplayRunsForBlockedStatus = (db: Database.Database): void => {
+  const needsStatus = !replayRunsAllowsBlocked(db);
+  const needsColumns =
+    !replayRunsHasColumn(db, 'blocked_business_date') || !replayRunsHasColumn(db, 'blocked_reason');
+  if (!needsStatus && !needsColumns) return;
+
+  const foreignKeysWereOn = (db.pragma('foreign_keys', { simple: true }) as number) === 1;
+  if (foreignKeysWereOn) db.pragma('foreign_keys = OFF');
+  try {
+    const tx = db.transaction(() => {
+      db.exec(`CREATE TABLE replay_runs_migrated (
+        id TEXT PRIMARY KEY,
+        shop_id TEXT NOT NULL,
+        shop_name TEXT NOT NULL,
+        source_dataset_path TEXT NOT NULL,
+        source_manifest_hash TEXT NOT NULL,
+        start_business_date TEXT NOT NULL,
+        end_business_date TEXT NOT NULL,
+        current_business_date TEXT,
+        current_step INTEGER NOT NULL DEFAULT 0,
+        status TEXT NOT NULL DEFAULT 'READY'
+          CHECK (status IN ('READY','RUNNING','PAUSED','COMPLETED','FAILED','BLOCKED')),
+        created_at TEXT NOT NULL,
+        last_advanced_at TEXT,
+        completed_at TEXT,
+        blocked_business_date TEXT,
+        blocked_reason TEXT
+      )`);
+      const carried = needsColumns
+        ? `id, shop_id, shop_name, source_dataset_path, source_manifest_hash,
+           start_business_date, end_business_date, current_business_date, current_step,
+           status, created_at, last_advanced_at, completed_at`
+        : `id, shop_id, shop_name, source_dataset_path, source_manifest_hash,
+           start_business_date, end_business_date, current_business_date, current_step,
+           status, created_at, last_advanced_at, completed_at, blocked_business_date, blocked_reason`;
+      db.exec(`INSERT INTO replay_runs_migrated (${carried}) SELECT ${carried} FROM replay_runs`);
+      db.exec(`DROP TABLE replay_runs`);
+      db.exec(`ALTER TABLE replay_runs_migrated RENAME TO replay_runs`);
+      db.exec(`CREATE INDEX IF NOT EXISTS idx_replay_runs_shop_created
+                 ON replay_runs (shop_id, created_at DESC)`);
+      db.exec(`CREATE INDEX IF NOT EXISTS idx_replay_runs_status ON replay_runs (status)`);
+    });
+    tx();
+  } finally {
+    if (foreignKeysWereOn) db.pragma('foreign_keys = ON');
   }
 };
 
