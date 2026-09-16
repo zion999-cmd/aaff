@@ -15,6 +15,20 @@
 //      need (observe is NOT a legal exit when the structure question was
 //      never examined); sufficient evidence => a business Judgment.
 //
+// P0013.5 — Knowledge obligation moved into the shared contract.
+//
+// Before this, the two paths disagreed on professional Knowledge: the
+// production prompt carried a three-layer `knowledge/INDEX.md` navigation
+// step plus "form hypotheses from Knowledge + Evidence"; the replay prompt
+// carried only the `Knowledge ≠ Evidence` prohibition. The 2026-09-16 audit
+// measured the consequence: in the current contract era 2/28 real replay
+// sessions read any knowledge page and 0/12 did on the day of the audit,
+// while production was instructed to read one every turn. Replay cognition
+// therefore ran on Evidence + five-dimension structure + continuity alone.
+//
+// The obligation below is now the SINGLE wording both prompt builders embed.
+// Do not fork it per path, and do not restate it elsewhere in a prompt.
+//
 // Enforcement is in ./analysis-obligations.ts (fail-closed at parse).
 
 export const BUSINESS_STRUCTURE_DIMENSIONS = [
@@ -61,6 +75,27 @@ You maintain ONE continuous reading of this business across days. Each turn upda
 **Understanding must answer**: as of today, what do I believe is happening in this business — what has continued, what has changed, what is still unknown, and how confident am I? One business paragraph. Cross-day state, not today's numbers restated.`;
 
 /**
+ * Canonical Knowledge section. Embedded verbatim in BOTH the production
+ * investigation prompt and the replay cognition prompt.
+ */
+export const KNOWLEDGE_ANALYSIS_SECTION = `## Knowledge — professional prior, used to read the business
+
+Professional Knowledge lives in \`knowledge/\` (methods, rules, cases, SOPs, domain interpretation). It is a PRIOR about how businesses like this behave. It is never Evidence about what happened in this shop today.
+
+Navigate; do not bulk-load:
+- Read \`knowledge/INDEX.md\` (the semantic router), follow its route for this situation's metric to the matching domain \`INDEX.md\`, then read the ONE most relevant page. Read a second page only if that page explicitly cross-references it. Do not scan the directory and do not read pages from unrelated domains.
+
+Use it as an analysis method, not as an answer:
+- Knowledge tells you HOW to read this kind of situation — which structural dimensions matter, how to tell a real anomaly from ordinary variation, what the professional diagnostic order is. Evidence tells you what is actually true for THIS shop on THIS day.
+- Knowledge together with Evidence may produce a \`hypotheses[]\` entry: status \`proposed\`, with \`missing_evidence[]\` and a \`falsifier\`.
+- Answer the business question with it: what most deserves the operator's attention, what the evidence means in professional terms, which hypothesis to keep or revise, what a recommendation rests on, which unknown is worth pursuing. There is no required number of knowledge references and no page you must read on a given day.
+
+Boundary — Knowledge ≠ Evidence:
+- Forbidden — \`Knowledge → manufacture current-world fact\`: a page saying "大促常见于此时段" does not make "该店参加了 8-15 活动" true. That claim belongs in \`hypotheses[]\` with explicit \`missing_evidence[]\`, never in \`observed[]\`/knownEvidence.
+- Forbidden — Knowledge overriding or replacing a current metric, and Knowledge cited as proof of a causal link between two observed things.
+- A claim drawn from Knowledge reaches Confirmed only via an operator record, system-stamped evidence, or historical evidence of THIS shop.`;
+
+/**
  * Canonical Analysis Target section. Embedded verbatim in BOTH the
  * production investigation prompt and the replay cognition prompt. Do not
  * fork the wording per path — the whole point is one shared contract.
@@ -104,7 +139,7 @@ Context Missing ≠ Evidence Missing. Before writing any entry into \`evidence_g
 
 Hard rules:
 - A question answerable from held evidence MUST NOT appear in \`evidence_gaps[]\`. "Not in my prompt" is a retrieval need (RETRIEVED), not an evidence gap (UNAVAILABLE).
-- Do NOT read arbitrary files or bypass the retrieval surface. Use only the retrieval tools named in this prompt.
+- Do NOT bypass the retrieval surface to obtain EVIDENCE: use only the retrieval tools named in this prompt for it. (Reading \`knowledge/\` under the shared Knowledge section is a separate, allowed action.)
 - Historical Replay retrieval still obeys business_time <= T (the server enforces it; future data is never returned).
 - Every "gap" coverage dimension and every \`evidence_gaps[]\` entry MUST have a matching UNAVAILABLE \`evidence_resolutions[]\` record. Every RETRIEVED record MUST have non-empty \`retrieved_refs\` and the retrieved evidence reflected in the analysis.`;
 

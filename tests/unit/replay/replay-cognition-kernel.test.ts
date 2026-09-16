@@ -255,7 +255,11 @@ describe('buildReplayInvestigationPrompt — Epistemic Integrity (Phase F) Prior
     expect(prompt).toContain('L5 Judgment');
   });
 
-  it('includes the "Knowledge ≠ Evidence" boundary section', () => {
+  // P0013.5: the replay-only "Knowledge ≠ Evidence (Phase D)" block was
+  // replaced by the SHARED Knowledge obligation (navigation + method + the
+  // same boundary). The boundary is still asserted — it is no longer the
+  // whole of replay's Knowledge contract.
+  it('includes the shared Knowledge obligation, boundary included', () => {
     const prompt = buildReplayInvestigationPrompt({
       run: sampleRun,
       businessDate: '2026-08-08',
@@ -263,7 +267,11 @@ describe('buildReplayInvestigationPrompt — Epistemic Integrity (Phase F) Prior
       priorSnapshots: [],
       priorCognition: [],
     });
-    expect(prompt).toMatch(/## Knowledge.*Evidence/i);
+    expect(prompt).toContain('## Knowledge — professional prior, used to read the business');
+    expect(prompt).toMatch(/Knowledge ≠ Evidence/);
+    expect(prompt).toMatch(/manufacture current-world fact/i);
+    // navigation, not boundary-only
+    expect(prompt).toContain('knowledge/INDEX.md');
   });
 
   it('includes per-claim provenance + threshold provenance sections', () => {

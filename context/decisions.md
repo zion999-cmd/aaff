@@ -3464,3 +3464,31 @@ Date: 2026-09-16 | Status: ACCEPTED | 依据：P0013.4 Cognition Quality + 真�
   B 中唯一提及（09-10）正是 operator_feedback 直接相关之日，且写明"店长判断可作工作假设，不能替代订单证据"；两天运行均 0 因果归因违规；B 的 09-04（记录优惠当天）对优惠**零提及**（不解释也不声明无关）。轨迹存档见 `context/p0013-4-cognition-ab-trajectories-2026-09-16.md`。
 - **残留**：A 的 09-12 仍出现一次 `门禁`（"续窗用同一套结构门禁继续读"），即模型仍倾向为未来窗口提议分类装置 —— 已记录，未再追加 prompt 补丁（避免为单点现象堆规则）。
 - **边界**：未改 runner / Coverage Gate / Acquisition / stale-rerun-enrichment storage / Evidence / schema / Knowledge / Hermes；未新增规则引擎或经营阈值；未加文案润色层。
+
+---
+
+## ADR-092 — Knowledge obligation promoted into the shared Analysis Contract (P0013.5)
+
+Date: 2026-09-16 | Status: ACCEPTED | 依据：P0013.5 Knowledge-Grounded Business Analysis + 真实 Replay A/B + Production provenance probe
+
+- **Context**: 2026-09-16 的 Knowledge & Business Analysis 审计（只读）确认了 Production / Replay 在 Knowledge 上的**契约分叉**：Production prompt 把"三层 Knowledge 导航"写进编号 workflow（read `knowledge/INDEX.md` → domain INDEX → 相关页）并把它作为假设来源；Replay prompt 只有一段 `Knowledge ≠ Evidence` **禁止**semantics，没有任何检索义务，共享的 `analysis-contract.ts` 里也不含 Knowledge 条款。实测后果（69 个真实 Replay 会话）：现行契约时代 **28 个会话里只有 2 个**读过 knowledge 页；审计当日 09-16 的 **12 个会话为 0**。被强制的内核实际是 Evidence 引用 + 五维结构分类 + gap/stop-rule + 连续性 —— 专业运营解释只是模型偶发行为。
+- **Decision（只统一契约文本，不新建 Knowledge 系统、不改 schema）**：
+  1. 在 `analysis-contract.ts` 新增共享 `KNOWLEDGE_ANALYSIS_SECTION`，Production 与 Replay **逐字同一份文本**（禁止分叉）：①**Index-first 导航**——`knowledge/INDEX.md`（semantic router）→ 匹配域的 `INDEX.md` → **最相关的一页**，只有该页显式交叉引用时才读第二页，**禁止扫描目录**；②**作为方法而非答案**——Knowledge 说"这类情况该怎么读"，Evidence 说"这家店今天实际是什么"；③Knowledge + Evidence 可共同产生 `hypotheses[]`（`proposed` + `missing_evidence` + `falsifier`）；④**回答经营问题**（最值得经营者关注什么 / Evidence 在专业语境下意味着什么 / 哪个假设该保留或修正 / 建议的依据 / 哪个未知值得追）；⑤**不设引用数量、不设必读页面**；⑥边界保持：禁止 Knowledge 制造 current fact、禁止覆盖或替代当前 metric、禁止作为因果证明，只有 operator record / system-stamped evidence / 本店历史证据才能升到 Confirmed。
+  2. **Production 改为消费 shared contract**：删除其专属的 `### ALLOWED — Business Knowledge retrieval` 三层导航段与整段自有的 `## Knowledge ≠ Evidence`（含示例），改为嵌入共享节；workflow 第 2 步缩为指向共享节；Three Concepts 表 Knowledge 行的 "ALWAYS read first" 改为指向共享节。净效果是生产 prompt **变短**，规则只有一处。
+  3. **Replay 接入同一义务**：删除 replay-only 的 `## Knowledge ≠ Evidence (Phase D)`，嵌入共享节；workflow 新增第 2 步"Read relevant Knowledge（INDEX → domain INDEX → 最相关一页）"，原第 3 步改为 "Form at most 3 hypotheses **from Knowledge + Evidence**"（与 Production 同形）。
+  4. **消除与既有措辞的冲突**（否则新义务会被同一 prompt 禁止）：Replay 边界原写 "The ONE permitted tool call is the read-only `fabric_replay_retrieve_orders`" → 改为 "The only permitted **ACQUISITION** tool …"，并明确 `knowledge/` 是"你读它、从不写它"；共享 `EVIDENCE_RESOLUTION_SECTION` 的 "Do NOT read arbitrary files" → 收紧为 "…to obtain **EVIDENCE**…（读 `knowledge/` 是另一件被允许的事）"。
+  5. **不新增 fail-closed validator**：Knowledge 读取无法从 Investigation JSON 观测，且任务明确禁止把 Knowledge 变成 checklist（"不要要求固定数量 Knowledge refs"）。义务停留在共享契约文本层，不进 `analysis-obligations.ts`。
+- **真实验收 A（Replay A/B，同一 frozen 数据集 / 同一窗口 09-02→09-12 / 同一两条 enrichment，真 Hermes）**：
+  | | BEFORE `1bbc1239` | AFTER `993070af` |
+  |---|---|---|
+  | 天数 | 11/11 COMPLETED | 11/11 COMPLETED |
+  | 读取的 knowledge 文件 | **0** | **5**（INDEX → operations/product INDEX → true-vs-false-anomaly / atp-drop-diagnosis） |
+  | `provenance:"knowledge_rule"` | **0** | **3** |
+  | `basis_refs` 点名 knowledge 文件 | 0 | 有（`knowledge/operations/true-vs-false-anomaly.md`） |
+  | `observed[]` 中的 Knowledge 文案 | 0 | **0（无升格）** |
+  | 因果越权 | — | 0（优惠→结果记为 `missing_evidence:["核销"]` 的待证 claim，finding 明写"禁止写成优惠导致高客单"） |
+  **如实记录**：导航集中在 09-02/09-03 两天，其后各日引用的是本 run 内已读页而非重复读取 —— 符合"index-first、按需、不 bulk"，但不是"每天读一次"。
+- **真实验收 B（Production provenance probe，只读抽样）**：最近 15 个真实 Production investigation 会话 **15/15** 都执行了真实 Knowledge 导航（`read_file` + `search_files`：根 INDEX → operations/traffic/conversion INDEX → 相关页，3–5 个文件，非 bulk）；抽样的原始输出把 Knowledge 明确用于分析并区分于 Evidence，例：`recommendation` 引用"真伪异常判定门（UV<500…）"与 "Case-008"，并写明"当前证据不支持"升级。**Production 路径 PASS**。
+- **测试**：新增 `tests/contract/knowledge-analysis-contract.contract.ts` **11/11**（共享节逐条语义锚定 + 两条 prompt 逐字包含 + Production 无重复导航段 + Replay 单工具规则已限定为 acquisition + Evidence Resolution 措辞已限定为 evidence）；`tests/unit/replay/replay-cognition-kernel.test.ts` 的旧断言（钉旧标题 `## Knowledge → Evidence`）更新为钉新共享节。全套件 **1778 passed / 4 failed + 1 file error**，5 项失败全部为本任务之前既存（`p0010.2.4-live-d1` 缺 live token、`chat.contract` CDP 超时、`clear-block-dispatcher` app.js 按钮漂移、`evidence-store-history` 日期硬编码、`gettrend-provider-watermark` 文案漂移），**0 新增**；typecheck 83（= 基线 83，触碰文件 0 错误）。
+- **边界**：未改 Knowledge 内容 / 未新增知识文件 / 无 embedding 或 RAG / 未改 Evidence schema / 未改 Replay coverage、clock、runner、acquisition / 未实现 gap 自动调查 / 未修 A–G 债务 / 未改 Hermes、模型或 provider / 未针对具体输出写禁词或规则 / Claude 未对认知业务质量下结论。
+- **Artifact**：`context/p0013-5-knowledge-ab-2026-09-16.md`（A/B provenance 对照 + 原始证据片段）；两侧 run `1bbc1239` / `993070af` 均在 Workspace 可直接对比。

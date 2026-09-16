@@ -1,3 +1,44 @@
+# Handoff — P0013.5 Knowledge-Grounded Business Analysis（2026-09-16，ADR-092）
+
+> 只把 Knowledge 义务**提升为 shared analysis contract**，未新建 Knowledge 系统，未改 schema / Evidence / runner / coverage / clock / acquisition / Hermes / 模型。
+
+## 改动（4 处文件）
+
+1. `apps/ecommerce/runtime/investigation/analysis-contract.ts` — 新增共享 `KNOWLEDGE_ANALYSIS_SECTION`（Index-first 导航 / 作为方法 / Knowledge+Evidence→hypothesis / 回答经营问题 / 不设引用数量与必读页面 / Knowledge≠Evidence 边界与因果禁止）；`EVIDENCE_RESOLUTION_SECTION` 的 "Do NOT read arbitrary files" 收紧为 "…to obtain **EVIDENCE**…"。
+2. `apps/ecommerce/runtime/investigation/prompt.ts` — **改为消费共享节**：删除 Production 专属的三层导航段与自有 `## Knowledge ≠ Evidence` 段落，workflow 第 2 步缩为指针，Three Concepts 表 Knowledge 行改为指向共享节（净效果：production prompt 变短、规则单点）。
+3. `apps/ecommerce/runtime/replay/replay-cognition-kernel.ts` — 删除 replay-only `## Knowledge ≠ Evidence (Phase D)`，嵌入同一共享节；workflow 新增第 2 步（Knowledge 导航），第 3 步改为 "Form at most 3 hypotheses **from Knowledge + Evidence**"；Trust Boundary 的 "The ONE permitted tool call" → "The only permitted **ACQUISITION** tool"（否则新义务被同一 prompt 禁止）。
+4. `tests/...` — 新增 `knowledge-analysis-contract.contract.ts`（11 项）；`replay-cognition-kernel.test.ts` 旧标题断言更新为新共享节。
+
+## 真实 A/B（同一 frozen 数据集 / 同窗口 09-02→09-12 / 同两条 enrichment，真 Hermes）
+
+| | BEFORE `1bbc1239` | AFTER `993070af` |
+|---|---|---|
+| 天数 | 11/11 COMPLETED | 11/11 COMPLETED |
+| 读到的 knowledge 文件 | **0** | **5**（INDEX → operations/product INDEX → true-vs-false-anomaly / atp-drop-diagnosis） |
+| `provenance:"knowledge_rule"` | 0 | **3**（`basis_refs` 点名 `knowledge/operations/true-vs-false-anomaly.md`） |
+| Knowledge 升格进 `observed[]` | 0 | **0** |
+| 因果越权 | — | 0（优惠→结果记为 `missing_evidence:["核销"]` 的待证 claim） |
+
+**如实记录**：After 的导航集中在 09-02/09-03，其后各日引用本 run 内已读页而非重复读取 —— index-first、按需、不 bulk，但**不是**每天读一次。
+
+## Production provenance probe（只读抽样）
+
+最近 15 个真实 Production investigation 会话 **15/15** 都执行 Knowledge 导航（`read_file` + `search_files`，根 INDEX → 域 INDEX → 相关页，3–5 文件非 bulk）；抽样原始输出把 Knowledge 用于分析并与 Evidence 区分（引用"真伪异常判定门（UV<500…）"与 "Case-008"，并写明"当前证据不支持"升级）。**PASS**。
+
+## 测试
+
+新增 contract 11/11；全套件 **1778 passed / 4 failed + 1 file error**，5 项失败全部既存（live-d1 缺 token、chat.contract CDP 超时、clear-block-dispatcher 按钮漂移、evidence-store-history 日期硬编码、gettrend-provider-watermark 文案漂移），0 新增；typecheck 83（= 基线）。
+
+## Artifact
+
+`context/p0013-5-knowledge-ab-2026-09-16.md`；两侧 run 在 Workspace「历史回放」可直接对比。AFTER run 09-09 步触发 ADR-085 已知 compression（仍 COMPLETED），按边界未处理。
+
+## 未触碰
+
+Knowledge 内容 / 新增知识文件 / embedding 或 RAG / Evidence schema / Replay coverage, clock, runner, acquisition / gap 自动调查 / A–G 债务 / Enrichment timeline icon / compression-deadline / Hermes / 模型与 provider。Claude 未对认知业务质量下结论（留给 Operator）。
+
+---
+
 # Handoff — P0013.4 Replay Cognition Continuity（2026-09-16，ADR-091）
 
 > 只改**推理契约**（prompt 文本），不改 runner / Coverage Gate / Acquisition / stale-rerun-enrichment storage / Evidence / schema / Knowledge / Hermes；未新增规则引擎、状态机或经营阈值；未加文案润色层。
