@@ -80,3 +80,50 @@ export const tagEvidenceAsReplayVisible = (
   }
   return updated;
 };
+
+/** One capability/data_type the run's frozen dataset holds. */
+export interface HeldEvidenceKind {
+  readonly capability: string;
+  readonly data_type: string;
+  readonly rows: number;
+  readonly firstDate: string;
+  readonly lastDate: string;
+  /** How many of those rows are visible at the clock date T. */
+  readonly visibleAtT: number;
+}
+
+/**
+ * P0013.5 cognition-path audit (2026-09-16) — the run's Evidence Universe.
+ *
+ * Production hands the Agent a catalog of everything Fabric can observe
+ * (`capabilities/INDEX.md`), so it can tell "this fact is not in my prompt
+ * but the system holds it" apart from "this fact was never collected".
+ * Replay had no equivalent: the Agent saw only what happened to be rendered,
+ * so every need it could not see looked equally like an Evidence Gap.
+ *
+ * This returns the inventory of what the run's FROZEN dataset actually
+ * holds — counts and business_date coverage per capability/data_type, plus
+ * how many rows are visible at T. It is a description of the run's
+ * holdings, never of a value, and it does not widen the visual slice:
+ * visibleEvidenceFor stays the only authority on what the Agent may read.
+ */
+export const heldEvidenceFor = (
+  db: Database.Database,
+  replayRunId: string,
+  businessDate: string,
+): HeldEvidenceKind[] => {
+  return db
+    .prepare(
+      `SELECT capability,
+              data_type,
+              COUNT(*)                       AS rows,
+              MIN(business_date)             AS firstDate,
+              MAX(business_date)             AS lastDate,
+              SUM(CASE WHEN business_date <= ? THEN 1 ELSE 0 END) AS visibleAtT
+         FROM evidence_observations
+        WHERE replay_run_id = ?
+        GROUP BY capability, data_type
+        ORDER BY capability ASC, data_type ASC`,
+    )
+    .all(businessDate, replayRunId) as HeldEvidenceKind[];
+};

@@ -31,7 +31,12 @@
 
 import type Database from 'better-sqlite3';
 import { readFileSync } from 'node:fs';
-import { visibleEvidenceFor, type VisibleEvidence } from './temporal-evidence-view.js';
+import {
+  visibleEvidenceFor,
+  heldEvidenceFor,
+  type VisibleEvidence,
+  type HeldEvidenceKind,
+} from './temporal-evidence-view.js';
 import { collectTurn } from '#platform/server/routes/situation-chat.js';
 import type { SituationChatClient } from '#platform/server/routes/situation-chat.js';
 import { parseInvestigation } from '#app/runtime/investigation/index.js';
@@ -118,17 +123,34 @@ const readEvidenceContentSummary = (
   if (typeof parsed !== 'object' || parsed === null) return null;
   const obj = parsed as Record<string, unknown>;
 
-  // trade.overview / getSummary — extract all_kpis_readable (the 6 KPIs
-  // the dataset decoded: GMV / orders / customers / sku_pieces / AOV / CVR).
+  // trade.overview / getSummary — the acquisition's KPI block.
+  //
+  // P0013.5 cognition-path audit (2026-09-16): this used to render a
+  // hardcoded 4 of the file's KPIs (its comment claimed "the 6 KPIs the
+  // dataset decoded", which was also wrong). The frozen file decodes 12
+  // readable KPIs including 访客数(UV) / 浏览量(PV) / 加购 — the exact
+  // traffic block an operator reading "traffic is unavailable" would ask
+  // for. Render every KPI that is actually in the file, and state the
+  // window it aggregates over: this file is ONE aggregate over the whole
+  // acquisition window, so it must never be readable as a single-day fact.
   if (capability === 'trade.overview' && dataType === 'getSummary') {
     const kpis = obj['all_kpis_readable'];
     if (kpis && typeof kpis === 'object') {
       const k = kpis as Record<string, unknown>;
-      const gmv = String(k['GMV 成交金额'] ?? '—');
-      const orders = String(k['orders 成交单量'] ?? '—');
-      const customers = String(k['customers 成交客户数'] ?? '—');
-      const cvr = String(k['CVR 转化率'] ?? '—');
-      return `GMV=${gmv} | 成交单量=${orders} | 成交客户数=${customers} | CVR=${cvr}`;
+      const parts = Object.entries(k).map(([label, v]) => {
+        const rec = v && typeof v === 'object' ? (v as Record<string, unknown>) : null;
+        const value = rec ? rec['value'] : v;
+        const cmp = rec ? rec['compare_pct'] : undefined;
+        if (cmp === undefined || cmp === null || Number.isNaN(Number(cmp))) {
+          return `${label}=${String(value)}`;
+        }
+        const pct = (Number(cmp) * 100).toFixed(1);
+        return `${label}=${String(value)} (${Number(cmp) >= 0 ? '+' : ''}${pct}% 对比期)`;
+      });
+      const range = obj['date_range'];
+      const r = range && typeof range === 'object' ? (range as Record<string, unknown>) : null;
+      const covers = r ? ` — 覆盖 ${String(r['start'])}..${String(r['end'])}（整段窗口聚合，非单日值）` : '';
+      return `${parts.join(' | ')}${covers}`;
     }
   }
 
@@ -416,6 +438,32 @@ const computeRelativePerformanceForFile = (
   return null;
 };
 
+/**
+ * P0013.5 — render the run's holdings. Describes only what exists (kind,
+ * count, business_date coverage, how many rows are visible at T). It never
+ * describes a value, and it does not widen what the Agent may read:
+ * "Current evidence" remains the only visible slice.
+ */
+const formatHeldEvidence = (
+  kinds: readonly HeldEvidenceKind[],
+  businessDate: string,
+): string => {
+  if (kinds.length === 0) {
+    return '(the run holds no evidence rows)';
+  }
+  return kinds
+    .map((k) => {
+      const coverage =
+        k.firstDate === k.lastDate ? k.firstDate : `${k.firstDate}..${k.lastDate}`;
+      const availability =
+        k.visibleAtT === 0
+          ? `0 visible at T=${businessDate} (not available today)`
+          : `${k.visibleAtT}/${k.rows} visible at T=${businessDate}`;
+      return `- ${k.capability}/${k.data_type} — ${k.rows} rows, business_date ${coverage} — ${availability}`;
+    })
+    .join('\n');
+};
+
 const formatVisibleEvidence = (rows: readonly VisibleEvidence[]): string => {
   if (rows.length === 0) {
     return '(no visible evidence yet — this is the first day of the run, or no data was acquired for any prior business_date)';
@@ -550,9 +598,19 @@ export const buildReplayInvestigationPrompt = (
     }>;
     /** P0013.3 operator enrichments visible at business time T. */
     readonly enrichments?: readonly EnrichmentRow[];
+    /** P0013.5 — inventory of what the run's frozen dataset holds. */
+    readonly heldEvidence?: readonly HeldEvidenceKind[];
   },
 ): string => {
-  const { run, businessDate, visibleEvidence, priorSnapshots, priorCognition, enrichments = [] } = args;
+  const {
+    run,
+    businessDate,
+    visibleEvidence,
+    priorSnapshots,
+    priorCognition,
+    enrichments = [],
+    heldEvidence = [],
+  } = args;
   return [
     `You are running P0013 Historical Cognitive Replay. The business day is ${businessDate}.`,
     ``,
@@ -586,6 +644,21 @@ export const buildReplayInvestigationPrompt = (
     ``,
     `## Current evidence (already observed, business_date <= ${businessDate})`,
     formatVisibleEvidence(visibleEvidence),
+    ``,
+    // ===== P0013.5 — the run's Evidence Universe =====
+    // Production can read `capabilities/INDEX.md` to learn what Fabric is
+    // able to observe; Replay had no equivalent, so a need the Agent could
+    // not see was indistinguishable from a need the system never collected.
+    // This inventory is generated from the run's own frozen rows.
+    `## Evidence Universe of this run (complete inventory — the dataset is frozen)`,
+    formatHeldEvidence(heldEvidence, businessDate),
+    ``,
+    `How to read this inventory: Replay cannot acquire anything, so this list IS the `,
+    `whole world available to this run. When you need a fact:`,
+    `- if its capability/data_type is listed AND has visible rows at T, it is in "Current evidence" above — use it;`,
+    `- if it is listed with 0 rows visible at T, the run holds it but not yet at T — it is NOT available today;`,
+    `- if it is NOT listed at all, the frozen dataset never acquired it. Record an Evidence Gap with a concrete acquisition_need, and say it was not acquired — do NOT describe a fact that was never collected as "hidden from me", and do NOT report a collected fact as missing.`,
+    `Do not treat this inventory as an agenda: it lists what exists, not what you must use.`,
     ``,
     // ===== P0013.3 Historical Evidence Enrichment =====
     `## Operator enrichments (human-provided, append-only, business_date <= ${businessDate})`,
@@ -823,6 +896,10 @@ export const createReplayCognitionKernel = (
     // P0013.3 — operator enrichments visible at T (business_date <= T).
     const enrichments = visibleEnrichmentsAt(db, _runId, businessDate);
 
+    // P0013.5 — the run's Evidence Universe, so "not collected" and "not in
+    // my prompt" stop looking identical to the Agent.
+    const heldEvidence = heldEvidenceFor(db, _runId, businessDate);
+
     const prompt = buildReplayInvestigationPrompt({
       run,
       businessDate,
@@ -830,6 +907,7 @@ export const createReplayCognitionKernel = (
       priorSnapshots,
       priorCognition,
       enrichments,
+      heldEvidence,
     });
 
     // REUSE the production turn collector. Same WS plumbing, same

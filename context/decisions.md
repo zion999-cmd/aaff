@@ -3492,3 +3492,24 @@ Date: 2026-09-16 | Status: ACCEPTED | 依据：P0013.5 Knowledge-Grounded Busine
 - **测试**：新增 `tests/contract/knowledge-analysis-contract.contract.ts` **11/11**（共享节逐条语义锚定 + 两条 prompt 逐字包含 + Production 无重复导航段 + Replay 单工具规则已限定为 acquisition + Evidence Resolution 措辞已限定为 evidence）；`tests/unit/replay/replay-cognition-kernel.test.ts` 的旧断言（钉旧标题 `## Knowledge → Evidence`）更新为钉新共享节。全套件 **1778 passed / 4 failed + 1 file error**，5 项失败全部为本任务之前既存（`p0010.2.4-live-d1` 缺 live token、`chat.contract` CDP 超时、`clear-block-dispatcher` app.js 按钮漂移、`evidence-store-history` 日期硬编码、`gettrend-provider-watermark` 文案漂移），**0 新增**；typecheck 83（= 基线 83，触碰文件 0 错误）。
 - **边界**：未改 Knowledge 内容 / 未新增知识文件 / 无 embedding 或 RAG / 未改 Evidence schema / 未改 Replay coverage、clock、runner、acquisition / 未实现 gap 自动调查 / 未修 A–G 债务 / 未改 Hermes、模型或 provider / 未针对具体输出写禁词或规则 / Claude 未对认知业务质量下结论。
 - **Artifact**：`context/p0013-5-knowledge-ab-2026-09-16.md`（A/B provenance 对照 + 原始证据片段）；两侧 run `1bbc1239` / `993070af` 均在 Workspace 可直接对比。
+
+---
+
+## ADR-093 — Replay Evidence Universe + honest KPI representation (P0013.5 cognition-path audit)
+
+Date: 2026-09-16 | Status: ACCEPTED | 依据：Production vs Replay cognition path audit + 真实 Hermes 验收
+
+- **Context**: Operator 报告 Replay「退化成订单/商品数据复述，并错误声称 Traffic/CVR 等 Evidence 不可见」。审计（代码 + persistence + `~/.hermes/state.db` 真实 trace）结论：
+  1. **「两套 cognition pipeline」不成立**：两者共用 WS client、`collectTurn`、`parseInvestigation`、`validateAnalysisObligations` 与同一份共享 contract；未发现第二套实现。
+  2. **真正的分叉在 Evidence Universe 层**：Production 的 runtime loop 按**业务日**采集 `trade.overview`（每日有 UV/CVR）；Replay 的 frozen 数据集对 KPI **只采到一个整窗口聚合**——8 次抓取全部用 `startDate=2026-09-02 & endDate=2026-09-13`，`getTrend` 有按日行但只有 GMV 三序列，`getSummary` 只有一组 12 项 KPI。**按日 traffic/CVR 从未存在**。
+  3. **第一次丢失点**：`seed-evidence.ts` 把该聚合戳成 `business_date = dataset.window.end (2026-09-13)`（id=5837），而 `visibleEvidenceFor` 过滤 `business_date <= T` → run 窗口到 09-12 时**永不可见**。该戳记**符合 No-Future-Leak**（聚合覆盖全窗口，提前可见即泄露未来），但没有任何标注说明它是什么。
+  4. **第二次丢失点**：`readEvidenceContentSummary` 的 getSummary 分支**只渲染 4/12 KPI**（注释还误称 "the 6 KPIs"），UV/PV/加购即使可见也不会被渲染。
+  5. **能力缺口**：Production 可读 `capabilities/INDEX.md`（12 个 capability 规格）并调 `fabric_list_capabilities`；Replay **没有任何对位物**，Agent 分不清「本 run 从未采集」与「采了但没进 prompt」，两者都变成 Evidence Gap。
+- **Decision（只修表示/认知面，不新增数据）**：
+  1. **KPI 渲染完整化 + 覆盖窗口标注**：getSummary 渲染文件里实际存在的全部 KPI（带对比期 %），并显式写明「覆盖 2026-09-02..2026-09-13（整段窗口聚合，非单日值）」，使聚合行永不可能被读成单日事实。
+  2. **Replay 获得 Evidence Universe**：新增 `heldEvidenceFor(db, runId, T)`（`temporal-evidence-view.ts`）——按 `capability/data_type` 汇总 run 持有的行数、`business_date` 覆盖、T 处可见行数；**只描述持有情况，不描述任何值**，且不放宽可见切片（`visibleEvidenceFor` 仍是唯一权威）。`buildReplayInvestigationPrompt` 新增 `## Evidence Universe of this run` 段（`heldEvidence` 为可选参数，既有调用方不受影响），规定三种读法（列了且可见／列了但今日不可用／**完全没列 = 从未采集**），并明确禁止把「从未采集」说成「被隐藏」、禁止把已采集的报成缺失，同时写明「Do not treat this inventory as an agenda」以防退化成 checklist。
+- **真实验收**：
+  - **Replay 09-02→09-03**（run `6bcfbaf5`，2/2 COMPLETED）：真实 prompt 含完整 inventory（`trade.overview/getSummary — 1 rows … 0 visible at T=2026-09-02 (not available today)`）；raw cognition 把 traffic/conversion 记为 gap 并写明「**当前证据与冻结库存无 traffic**」（是"未采集"，不是"看不见"）+ 具体 acquisition_need；3 个 `RETRIEVED` resolution 带真实订单/SKU id；**No-Future 0 违规**（step 09-02 refs max=09-02，09-03 refs max=09-03）。**按日 traffic/CVR 未被持久化**，故「已持久化则能 retrieve」一项按契约退化为如实记 gap，非失败。
+  - **Production probe**（真 Hermes，`sit_7a844c4ba80c3305a399`）：`stopReason=judgment`，`traffic:covered` / `conversion:covered`（因有按日 UV/CVR），7 hypotheses / 4 obs facts / 6 gaps，judgment 引用真实 `uv=390、cvr≈6.9%`。**Production lifecycle 无回归**。
+- **测试**：新增 `tests/contract/replay-evidence-universe.contract.ts` **9/9**（含对**真实 frozen 文件**的两项断言：UV/PV/CVR 必须被渲染、必须标注覆盖窗口）。全套件 **1786 passed / 5 failed + 1 file error**；其中 4 项为本任务前既存（live-d1 缺 token、chat.contract CDP 超时、clear-block-dispatcher 按钮漂移、evidence-store-history 日期硬编码、gettrend-provider-watermark 文案漂移），另 1 项 `executor.test.ts` 为并行测试的 `trg_situations_lifecycle_guard already exists` schema 竞态（**单独运行通过**）。typecheck 83（= 基线）。
+- **边界**：未为 Replay 硬编码 UV/CVR；未新建第二套 Replay investigation framework；未向 prompt 塞更多固定字段；未改 Knowledge 内容；未实现自动 Evidence Gap acquisition；未改 runner / clock / coverage / dataset / schema / Hermes / 模型。Artifact：`context/p0013-5-cognition-path-audit-2026-09-16.md`。

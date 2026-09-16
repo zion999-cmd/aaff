@@ -1,3 +1,34 @@
+# Handoff — P0013.5 Cognition Path Audit: Production vs Replay（2026-09-16，ADR-093）
+
+> 先审计后修复。结论与 Operator 的初始假设**部分不同**，已按证据如实报告，未强行套设计。
+
+## 审计结论
+
+1. **「两套 cognition pipeline」不成立**：两者共用 WS client / `collectTurn` / `parseInvestigation` / `validateAnalysisObligations` 与同一份共享 contract。
+2. **分叉在 Evidence Universe 层**：Production runtime loop **按业务日**采 `trade.overview`（每天有 UV/CVR）；Replay 的 frozen 数据集对 KPI **只有整窗口聚合**——8 次抓取全部 `startDate=09-02 & endDate=09-13`，`getTrend` 有按日行但仅 GMV 三序列。
+3. **第一次丢失点**：`seed-evidence.ts` 把聚合戳成 `business_date = window.end (09-13)`（id=5837）→ `business_date <= T` 过滤下，run 窗口到 09-12 时**永不可见**。（该戳记本身符合 No-Future-Leak：聚合覆盖全窗口，提前可见即泄露未来。）
+4. **第二次丢失点**：getSummary 渲染器**只输出 4/12 KPI**，UV/PV/加购即使可见也不渲染。
+5. **能力缺口**：Production 有 `capabilities/INDEX.md`；Replay 没有对位物，Agent 分不清「从未采集」与「没进 prompt」。
+
+**因此 Agent 说「Traffic/CVR 不可见」是事实正确的**，不是幻觉，也不是「已有 persisted Evidence 被声称为缺失」——按日 traffic/CVR **从未被采集**。
+
+## 修复（2 处，只在表示/认知面）
+
+- `replay-cognition-kernel.ts`：getSummary 渲染**全部** KPI + 显式标注 `覆盖 …（整段窗口聚合，非单日值）`；新增 `## Evidence Universe of this run` 段（三种读法：列了且可见 / 列了但今日不可用 / **完全没列 = 从未采集**），并禁止把「未采集」说成「被隐藏」、把已采集的报成缺失。
+- `temporal-evidence-view.ts`：新增 `heldEvidenceFor(db, runId, T)` —— 只汇总持有情况，不描述值，不放宽可见切片。
+
+## 真实验收
+
+- **Replay 09-02→09-03**（run `6bcfbaf5`，2/2 COMPLETED）：prompt 含完整 inventory（getSummary 标 `0 visible at T=...`）；cognition 写「当前证据与冻结库存无 traffic」+ acquisition_need；3 个 RETRIEVED 带真实订单/SKU id；**No-Future 0 违规**。
+- **Production probe**（`sit_7a844c4ba80c3305a399`）：`stopReason=judgment`，`traffic:covered` / `conversion:covered`（因有按日 UV/CVR），judgment 引用真实 `uv=390、cvr≈6.9%`。**无回归**。
+- 测试：新增契约 **9/9**（含真实 frozen 文件断言）；全套件 1786 passed / 5 failed + 1 error，**无本任务引入的失败**（`executor.test.ts` 一项是并行 schema 竞态，单独跑通过）。artifact：`context/p0013-5-cognition-path-audit-2026-09-16.md`。
+
+## 保留的已知缺陷
+
+按日 traffic/CVR 在该数据集中不存在（需重新采集，属**采集粒度**问题，非 cognition path bug）；聚合行 id=5837 在 run 窗口内不可见（正确行为）；Replay 无 Situation 层 / 无 WorkItem materialization；以及 A–G 债务、compression/deadline、Enrichment icon。
+
+---
+
 # Handoff — P0013 连续回放暂停不可用修复（2026-09-16）
 
 > Operator 实测：连续回放跑到中途按「⏸ 暂停」完全没反应，11 天永远从头跑到尾。只改 `replay-view.js`，未碰 runner / route / schema。
