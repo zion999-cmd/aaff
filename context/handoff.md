@@ -1,3 +1,29 @@
+# Handoff — P0013 Workspace UI Regression Repairs（2026-09-16）
+
+> Operator Acceptance 被 Historical Replay 页面布局回归阻塞。两处修复均为**恢复既有正确行为**，非新设计、非重构；未改 cognition / prompt / contract / Evidence / schema / Hermes / 数据。
+
+## 1. 布局回归 — `apps/ecommerce/workspace/styles.css`（+19/−2）
+
+**根因**：`eab6ed4` 新增的 `#replayDailyView > .replay-daily-content { max-height: none }` 以 `#id > .class`(1,1,0) 压制了 G2.3-fix 的 `.replay-daily-content { max-height: 60vh; overflow-y: auto }`(0,1,0) → 每日 cognition 内容**无界增长**；而 `#view-replay` 是 `.view-container { overflow: hidden }`，且是**全仓唯一没有 `.view-scroll` 子容器**的视图 → 超出部分被裁剪且不可滚动，底部 Enrichment 框完全掉出视口（实测 `top 1761` / 视口 900）。
+
+**修复**：删除 `max-height: none`（保留该规则的 flex 尺寸意图）；新增 `#view-replay { overflow-y: auto }`（等价其他视图的 `.view-scroll`）。
+
+**真实浏览器验证**（700 / 900 / 1080 三档，隔离 headless，未触碰 operator `:9222`）：视图独立滚动（900px 档 `scrollH 984 > clientH 796`，`scrollTop 0→188`）；每日内容 60vh 内部滚动；**滚动到底 dock 完整可见且可操作**（选择器/文本框/按钮可见，实测可输入）；页面不增高（`scrollH = clientH`）；其他 5 个视图容器未受影响。
+
+## 2. Control bar stale state — `apps/ecommerce/workspace/views/replay-view.js`（+14）
+
+**根因**：`refreshRunState()` 在 `isAdvancing === true` 时调用 `applyControls()`，而 `onNextClick` / `onRetryClick` 的 `finally` 只清 flag **不重推控制栏** → 连续回放中「⏸ 暂停」长期渲染为禁用，run 不可中断。（`onSkipClick` 早已有 P1-4 正确模式，这两处漏了。）
+
+**修复**：两处 `finally` 各补 `applyControls();`。未改其他控制状态逻辑、未重构。
+
+**真实验证**：Next 飞行结束后控制栏恢复（`step 1/4 → 2/4`，next/exec/restart 均可用）；连续回放中一步飞行结束后「⏸ 暂停」**已启用**，点击后 run 状态 `RUNNING → PAUSED`（真中断）。**Retry 分支仅代码对称，未端到端实测** —— 该按钮仅在 `STEP_FAILED` / `BLOCKED` / 卡住 `RUNNING_ACTIVE` 下启用，三者当前都不可非破坏性构造（`POST /runs` 对含缺口日的窗口返 409，造不出 BLOCKED）。
+
+## 边界
+
+未触碰：审计 A–G 债务、Enrichment timeline icon、compression/deadline、Replay cognition/prompt/contract、Evidence/Coverage/Enrichment 语义、DB/schema、其他页面。探针 run 已按 ID 精确清理（生产 Evidence 870 行未变，`foreign_key_check` 无输出）。
+
+---
+
 # Handoff — P0013.5 Knowledge-Grounded Business Analysis（2026-09-16，ADR-092）
 
 > 只把 Knowledge 义务**提升为 shared analysis contract**，未新建 Knowledge 系统，未改 schema / Evidence / runner / coverage / clock / acquisition / Hermes / 模型。

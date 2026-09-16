@@ -1225,6 +1225,16 @@ body.has-situation-chat-composer #decisionPanel.open .decision-rail {
    card-shaped block in the daily view; .replay-execution is the §14
    boundary banner (literal "Replay Recommendation — Not Executed"). */
 
+/* P0013 layout-regression fix (2026-09-16): #view-replay is a
+   .view-container, which is `overflow: hidden`. Replay has no
+   .view-scroll child (unlike every other view), so anything taller
+   than the panel was clipped and unreachable — including the §P0013.3
+   enrichment dock at the bottom. Give the replay view its own
+   vertical scroll region, exactly like the other views' .view-scroll. */
+#view-replay {
+  overflow-y: auto;
+}
+
 /* P0013 G2.4-fix (2026-09-04): visual group separators between the
    3 control groups (Navigation / Execution / Recovery+Reset). The
    6 buttons themselves are NEVER removed from the DOM (only enabled
@@ -1406,7 +1416,15 @@ body.has-situation-chat-composer #decisionPanel.open .decision-rail {
 
 /* P0013.3 compact dock — the daily view is CONTENT-SIZED. It must not
    grow to fill the flex parent (that stretched the enrichment dock to
-   half-screen). Step cognition keeps its own capped scroll region. */
+   half-screen). Step cognition keeps its own capped scroll region —
+   i.e. the `max-height: 60vh; overflow-y: auto` set on
+   .replay-daily-content by the G2.3-fix below.
+   P0013 layout-regression fix (2026-09-16): this rule previously also
+   declared `max-height: none`. Because `#id > .class` outranks
+   `.class`, that silently disabled the G2.3 cap, the daily content
+   grew without bound, and the whole view overflowed its clipped
+   container. Only the flex sizing belongs here; the height cap stays
+   with the base rule. */
 #replayDailyView {
   flex: 0 0 auto;
   min-height: 0;
@@ -1417,7 +1435,6 @@ body.has-situation-chat-composer #decisionPanel.open .decision-rail {
 #replayDailyView > .replay-daily-content {
   flex: 0 0 auto;
   min-height: 0;
-  max-height: none;
 }
 .replay-enrichment-dock {
   flex: 0 0 auto;

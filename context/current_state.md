@@ -2,6 +2,13 @@
 
 |**版本**: v0.13.28 | **Hermes**: v0.20.5 | **S0002 + S0001 governance activated (2026-09-04)** | **2026-09-13 P0013.1 管道建成（IMPLEMENTED — BUSINESS VERIFICATION PENDING）**：Need/Result/Candidate 三合同 + gap/resolution + BLIND goal + freezer（机器 manifest v2.0、对账门控）+ acquisition_jobs + 真 Hermes turn runner + /api/replay/acquisitions + Workspace gap UX；67/67 新测试；真实采集待值守场次。| **2026-09-12 P0013+ Replay 时间区间选择**: 去 5 处硬编码；新增 `GET /api/replay/datasets` 发现端点（dataset-catalog.ts）；POST /runs 服务端读盘校验覆盖区间（越界 400 named error）+ 真 manifest 哈希落库（placeholder 假哈希缺陷修复，ADR-086）；loadRun 补 start_business_date（越界导航修复）；月度评审按 run 实际跨月渲染。追加 UX 修复：「重新回放」改为回到日期选择面板（不再直接建 run），消除面板闪现。134/134 replay 套件（含新 restart-panel 契约 4）+ 真实对账 integration 绿；真实路径全验（子窗口 08-20→09-02 真 Hermes step，51 refs 0 future，探针已清理）。⏳ 待 operator 硬刷新后亲手 Workspace 验收。| **2026-09-12 Task 2 Phase J — Real Replay Acceptance Closure**: run 16468bd3 真实 30/30 日 COMPLETED、30 快照、1396 refs；4/4 验收日（08-10/08-18/09-01/09-02）正式 wiring 真实 Hermes 认知；§2 双粒度对账（header 订单锚定 ¥3932.08/37.1% vs child SKU 行级 ¥3513.89/33.1%，Task 2 无错）；§5 Evidence Access / 指标语义 / No-Future-Leak（SQL+HTTP 400+文本 0 未来事实）/ Evidence Gap 全 PASS（机检 13 PASS 0 FAIL，7 WARN 全部人工裁定）；ADR-085（Hermes 长会话 compression 撞 600s deadline，5/30 日 operator fresh-session 恢复，非接线替代）。**§6 当前 PARTIAL（6/7），唯一未关门项 = operator 真实浏览器 Workspace 亲手验收**；点完即 ACCEPTED。报告 `context/phasej-final-report-2026-09-12.md`，原始认知 `context/phasej-cognition-raw-2026-09-12.md`。OPERATOR ACCEPTANCE ⏳ PENDING（dev server :3000 保持运行至验收完成）。
 
+## ✅ P0013 Workspace UI Regression Repairs（2026-09-16，恢复既有行为，未新增 ADR）
+
+两处 Operator Acceptance 阻塞项，均为**恢复**而非新设计：
+
+1. **布局回归**（`styles.css` +19/−2）：`eab6ed4` 的 `#replayDailyView > .replay-daily-content { max-height: none }`（`#id > .class` 优先级）压制了 G2.3-fix 的 `60vh + overflow-y:auto`，每日 cognition 无界增长；而 `#view-replay` 是全仓唯一没有 `.view-scroll` 的视图且 `overflow:hidden` → 内容被裁剪不可滚动、Enrichment 框掉出视口。修复＝删除该覆盖 + 给 `#view-replay` 自己的纵向滚动区。700/900/1080 三档真实浏览器实测：可滚动、dock 到底完整可见可操作、页面不增高。
+2. **Control bar stale state**（`replay-view.js` +14）：`refreshRunState` 在 `isAdvancing=true` 时渲染控制栏，而 `onNextClick`/`onRetryClick` 的 finally 不重推 → 连续回放中暂停按钮长期禁用、不可中断。修复＝两处 finally 补 `applyControls()`（与既有 `onSkipClick` P1-4 模式一致）。实测：Next 飞行后恢复；连续回放飞行后「⏸ 暂停」启用并点击真中断（RUNNING→PAUSED）。Retry 分支仅代码对称，未端到端实测（该按钮启用条件当前不可非破坏性构造）。
+
 ## ✅ P0013.5 Knowledge-Grounded Business Analysis（2026-09-16，ADR-092，真实 A/B + Production probe 已验收）
 
 修复 Production / Replay 的 **Knowledge 契约分叉**：把 Production 独有的 Knowledge 导航与"结合 Evidence 形成假设"提升为 **shared analysis contract**（`analysis-contract.ts` 新增 `KNOWLEDGE_ANALYSIS_SECTION`，两条 prompt 逐字嵌入）；Production 删除自有重复段落改为消费共享节；Replay 删除 boundary-only 的 `Knowledge ≠ Evidence (Phase D)`，接入同一义务（workflow 新增 Knowledge 导航步，假设来源改为 "from Knowledge + Evidence"）。

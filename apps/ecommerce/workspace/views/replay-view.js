@@ -1019,6 +1019,15 @@
       alert('回放下一天异常: ' + (err instanceof Error ? err.message : String(err)));
     } finally {
       setIsAdvancing(false);
+      // P0013 stale-control-bar fix (2026-09-16): once the flight ends,
+      // re-derive the control bar from the state machine. refreshRunState()
+      // calls applyControls() WHILE isAdvancing is still true, so without
+      // this the bar keeps rendering the mid-flight state (exec disabled)
+      // after the step returns — during continuous replay that left
+      // "⏸ 暂停" greyed out and the run uninterruptible. Same P1-4
+      // discipline as onSkipClick: derive from state, never trust the
+      // button's own disabled flag.
+      applyControls();
     }
   };
 
@@ -1188,6 +1197,11 @@
     } finally {
       if (btn) btn.disabled = false;
       setIsAdvancing(false);
+      // P0013 stale-control-bar fix (2026-09-16): same P1-4 discipline as
+      // onSkipClick — re-derive the control bar from the state machine
+      // after the flight ends, instead of trusting button.disabled (which
+      // desyncs, and which refreshRunState() overwrites mid-flight).
+      applyControls();
     }
   };
 
