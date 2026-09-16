@@ -1,3 +1,36 @@
+# Handoff — P0013 连续回放暂停不可用修复（2026-09-16）
+
+> Operator 实测：连续回放跑到中途按「⏸ 暂停」完全没反应，11 天永远从头跑到尾。只改 `replay-view.js`，未碰 runner / route / schema。
+
+## 根因（两层）
+
+1. **点击被静默吞掉**：`onExecClick` 首行 `if (!ctrls || !ctrls.exec.enabled) return;`，而暂停分支是 `enabled: !isAdvancing` —— 飞行中 `isAdvancing === true`，于是**连请求都没发出**就 return。而 `stopPlay()`（清 playTimer，即"不再排下一天"）在该 return 之后，所以定时器一直在跑。
+2. **按钮谎报可用**：`setIsAdvancing(true)` 只重画状态行、不重推控制栏，DOM 保留上一次渲染的"可用"外观 → 看起来可点实际无效。
+
+**附带发现**：飞行中那一步结束时，runner 会用 `next.status` 覆写 `replay_runs.status`（[replay-runner-p0013.ts:766](apps/ecommerce/runtime/replay/replay-runner-p0013.ts#L766)），所以若在飞行中立刻写 PAUSED，会被覆盖回 RUNNING。
+
+## 修复
+
+- 暂停分支去掉 `!isAdvancing`（该闸门是**推进类**操作的 single-flight 锁，pause 不是 advance），`enabled: true`；
+- `setIsAdvancing()` 末尾同步 `applyControls()`，按钮状态不再欺骗；
+- 新增 `state.pausePending`：按暂停时**立刻** `stopPlay()`（立即停止排下一天），若正有 step 在飞行则把服务端 PAUSE 推迟到该飞行结束——由 `setIsAdvancing(false)` 这一唯一出口 `flushPendingPause()` 落库，此时 step 已写完不会再被覆写；
+- 暂停等待期按钮显示 `⏸ 暂停中…`（disabled），落地后变 `▶ 继续`。
+
+## 真实验收（真 Hermes，探针 run 05af6048，窗口 09-02→09-05）
+
+| 时刻 | exec 按钮 | run 状态 |
+|---|---|---|
+| 点「连续回放」 | `⏸ 暂停` 可用 | READY |
+| 飞行中（🌀 思考中） | `⏸ 暂停` 可用（**修复前此处点击被吞**） | READY |
+| 飞行中点暂停 | `⏸ 暂停中…` disabled | 仍思考中 |
+| 当天跑完后 | `▶ 继续` 可用 | **PAUSED**，cursor 09-03 |
+
+DB 复核：该 run **只有 09-02 一步 COMPLETED**，未继续到 09-03/04/05 —— 后续日期确实停止。No-future / coverage 语义未受影响。
+
+**边界（如实说明）**：正在飞行的那一天**无法中断**（该 API 没有取消 Hermes turn 的能力），它会跑完并落库；暂停停住的是"之后的日期"。这是能力边界，不是缺陷。探针 run 已按 ID 精确清理。
+
+---
+
 # Handoff — P0013 Workspace UI Regression Repairs（2026-09-16）
 
 > Operator Acceptance 被 Historical Replay 页面布局回归阻塞。两处修复均为**恢复既有正确行为**，非新设计、非重构；未改 cognition / prompt / contract / Evidence / schema / Hermes / 数据。

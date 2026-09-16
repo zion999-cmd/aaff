@@ -89,6 +89,13 @@
     isAdvancing: false,
     advancingSince: null, // ms timestamp when the current advance started
     indicatorTimer: null, // setInterval that re-renders the elapsed counter
+    // P0013 pause fix (2026-09-16): the operator asked to pause while a step
+    // was in flight and nothing happened. `stopPlay()` runs first and takes
+    // effect immediately (no further day is scheduled), but the server-side
+    // PAUSED is deferred: the runner writes its own status when the in-flight
+    // step finishes (replay-runner-p0013.ts:766), which would overwrite a
+    // PAUSED written now. This flag carries the request across that flight.
+    pausePending: false,
   };
 
   // ── Concurrency lock + visible indicator ─────────────────────────────
@@ -113,8 +120,18 @@
         clearInterval(state.indicatorTimer);
         state.indicatorTimer = null;
       }
+      // P0013 pause fix (2026-09-16): every flight ends here, so this is the
+      // one place a pause requested mid-flight can be persisted. By now the
+      // step has been written and its status update can no longer clobber the
+      // PAUSED. Idempotent — flushPendingPause clears the flag first.
+      void flushPendingPause();
     }
     renderStatus();
+    // P0013 pause fix (2026-09-16): re-derive the control bar when the
+    // in-flight flag flips. Without this the button keeps whatever it last
+    // rendered — it looked enabled ("⏸ 暂停" in normal text) while
+    // onExecClick's `!ctrls.exec.enabled` guard silently swallowed the click.
+    applyControls();
   };
 
   const elapsedSeconds = () => {
@@ -288,10 +305,21 @@
     // re-derives to "⏸ 暂停" enabled, so the operator can stop the
     // first scheduled advance.
     const exec = (() => {
+      // P0013 pause fix (2026-09-16): a pause request that arrived while a
+      // step was in flight is waiting for that flight to return.
+      if (state.pausePending) {
+        return { enabled: false, label: '⏸ 暂停中…', reason: '当天分析完成后停止' };
+      }
       if (isPlaying) {
         // Continuous play is active. Always offer to pause it, no
         // matter what run.status is.
-        return { enabled: !isAdvancing, label: '⏸ 暂停', mode: 'pause' };
+        //
+        // P0013 pause fix (2026-09-16): `!isAdvancing` used to gate this too,
+        // which made pause impossible for the entire length of every turn —
+        // exactly when the operator wants it. `!isAdvancing` is the
+        // single-flight lock for ADVANCE actions; pause is not an advance,
+        // so it stays available and takes effect immediately (stopPlay).
+        return { enabled: true, label: '⏸ 暂停', mode: 'pause' };
       }
       if (uiState === 'PAUSED') {
         return { enabled: !isAdvancing, label: '▶ 继续', mode: 'resume' };
@@ -1036,6 +1064,33 @@
   //   mode === 'play'   → start the local playTimer
   //   mode === 'pause'  → stop local timer + flip DB to PAUSED
   //   mode === 'resume' → flip DB to RUNNING + start local playTimer
+  // P0013 pause fix (2026-09-16): persist PAUSED for the run. Callers must
+  // ensure no step is in flight — the runner overwrites the run's status when
+  // an in-flight step finishes, so a PAUSED written earlier would be lost.
+  const postPause = async () => {
+    if (!state.runId) return;
+    try {
+      const result = await apiPost('/api/replay/runs/' + state.runId + '/advance', { mode: 'pause' });
+      if (result.status === 200 && result.body.success) {
+        await refreshRunState();
+      } else {
+        // eslint-disable-next-line no-console
+        console.error('[replay] server pause failed:', result.status, result.body);
+      }
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error('[replay] server pause threw:', err);
+    }
+  };
+
+  // Reached from setIsAdvancing(false) — the single exit every flight passes
+  // through, whatever triggered it (next / retry / skip).
+  const flushPendingPause = async () => {
+    if (!state.pausePending) return;
+    state.pausePending = false;
+    await postPause();
+  };
+
   const onExecClick = async () => {
     // eslint-disable-next-line no-console
     console.log('[replay] control clicked: exec', 'runId=', state.runId, 'status=', state.run && state.run.status);
@@ -1043,20 +1098,20 @@
     if (!ctrls || !ctrls.exec.enabled) return;
     const mode = ctrls.exec.mode;
     if (mode === 'pause') {
+      // stopPlay() is the effective part: it clears the play timer, so no
+      // further business day is ever scheduled. It runs unconditionally and
+      // immediately.
       stopPlay();
       if (!state.runId) return;
-      try {
-        const result = await apiPost('/api/replay/runs/' + state.runId + '/advance', { mode: 'pause' });
-        if (result.status === 200 && result.body.success) {
-          await refreshRunState();
-        } else {
-          // eslint-disable-next-line no-console
-          console.error('[replay] server pause failed:', result.status, result.body);
-        }
-      } catch (err) {
-        // eslint-disable-next-line no-console
-        console.error('[replay] server pause threw:', err);
+      if (state.isAdvancing) {
+        // A step is in flight. Its runner writes the run's status when it
+        // finishes, which would overwrite a PAUSED persisted now. Carry the
+        // request across the flight; onNextClick's finally flushes it.
+        state.pausePending = true;
+        applyControls();
+        return;
       }
+      await postPause();
       return;
     }
     if (mode === 'resume') {
