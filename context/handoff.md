@@ -1,3 +1,44 @@
+# Handoff — P0013 Hermes Contamination Isolation + Control Experiment（2026-09-20）
+
+> 隔离 Hermes **profile 级** Memory/Skill 污染后重跑 09-02→09-12。只提交 agentFabric 侧实验记录；Hermes 私有备份未入库。
+
+## 隔离（备份在 repo 之外：`~/.hermes/_p0013-contamination-backup-20260920/`，含 sha256+mtime）
+
+- `MEMORY.md`：仅删 P0013 条目（2173→1976 字符）
+- `investigation-contract-output/SKILL.md`：删 `## Historical Cognitive Replay Mode (P0013-style)` 整节 61 行 + 4 条 P0013 引用索引（223→159 行）
+- 移出 5 个 P0013 reference 文件；移出 `uv-cvr-noise-rule` 整目录
+- **未动** agentFabric code/prompt/contract/knowledge、Hermes 源码、模型、provider；learning/memory 机制保持开启
+- 复核后**保留** 2 个生产期文件（`aov-collapse-pattern.md` 等）——其中的「高客单」只是普通名词，非同类污染
+
+## 静态验证
+
+skills 树扫描干净；MEMORY.md P0013 = 0；删除陈旧 `.skills_prompt_snapshot.json` 并冷启动 `hermes serve` 重建 → 新快照中 `uv-cvr-noise-rule` = 0、`p0013-order-structure-states` = 0。
+
+## 控制实验结果（真 Hermes，三方对照）
+
+| | BEFORE `993070af` | REFERENCE `6bcfbaf5`（同代码，2 天） | AFTER `0e86bec5` |
+|---|---|---|---|
+| 托量 | 218 | **87** | **0** |
+| 中间态 | 149 | **6** | **0** |
+| 严格高客单 | 117 | 0 | **0** |
+| 软化 | 127 | 0 | 1 |
+| 四分支 | 6 | 0 | **0** |
+| 门禁 | 29 | 0 | 5 |
+| `p0013-order-structure-states.md` 加载 | **1** | — | **NONE** |
+
+- `脉冲`/`高客单` 仍在（55/30），但抽检为**普通业务名词**，非带 gate 的状态标签
+- unknowns 相邻日 Jaccard 0.21→**0.06**；evidence_gaps 0.43→0.37（重复度未升高）
+- **未变**：recommendation kind 两侧均 observe 11/11；No-Future 两侧均 0
+- 我自己的一个 `N/N` 正则指标经核实只匹配**日期对/证据 id/数值比**，非计分 → **已剔除，未用于结论**
+
+## 运行期事件（如实记录）
+
+重启 `hermes serve` 使 operator 原 session token 失效（Fabric 报 `loopback mode still requires ?token=`）。按 Fabric 错误信息给出的官方路径恢复：**两端显式导出同一 token**，新 token 存于 `~/.hermes/.p0013-experiment-session-token`（0600，未打印、未提交）。若需回退：删除该文件并按原方式重启 `hermes serve` 与 dev server。
+
+artifact：`context/p0013-5-contamination-isolation-2026-09-20.md`
+
+---
+
 # Handoff — P0013.5 Cognition Path Audit: Production vs Replay（2026-09-16，ADR-093）
 
 > 先审计后修复。结论与 Operator 的初始假设**部分不同**，已按证据如实报告，未强行套设计。
