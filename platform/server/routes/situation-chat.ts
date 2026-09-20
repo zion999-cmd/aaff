@@ -32,7 +32,12 @@ import {
   storeInvestigationInLearningContext,
   recordInterventionInLearningContext,
 } from '#app/experience/learning-context-producer.js';
-import { buildInvestigationPrompt, parseInvestigation, extractJsonObject } from '#app/runtime/investigation/index.js';
+import {
+  buildInvestigationPrompt,
+  parseInvestigation,
+  extractJsonObject,
+  deriveKindFromStopReason,
+} from '#app/runtime/investigation/index.js';
 import { writeRecommendationResult } from '#app/runtime/loop/recommendation-to-output.js';
 import { traceBuffer, makeTraceEvent } from '#app/runtime/loop/trace-ring-buffer.js';
 import { uuid } from '#shared/utils/crypto.js';
@@ -695,7 +700,19 @@ export const runRecommendationTurn = async (
   try {
     const parsed = RecommendationSchema.safeParse(JSON.parse(candidate));
     if (!parsed.success) return { ok: false, error: 'Invalid recommendation JSON' };
-    return { ok: true, recommendation: parsed.data };
+    // Fix 2 — recommendation.kind is derived from the main Investigation's
+    // stopReason, NOT the schema default ('act'). The sub-turn prompt does not
+    // ask the Agent for a kind, so without this derive every observe
+    // recommendation ("保持观察…") would be stamped 'act' and materialize as a
+    // yellow-chip to-do instead of a grey observe pill. `deriveKindFromStopReason`
+    // is the single shared mapping (judgment → act, everything else → observe).
+    return {
+      ok: true,
+      recommendation: {
+        ...parsed.data,
+        kind: deriveKindFromStopReason(existing?.stopReason),
+      },
+    };
   } catch {
     return { ok: false, error: 'Invalid recommendation JSON' };
   }
