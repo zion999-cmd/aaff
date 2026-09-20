@@ -38,11 +38,21 @@ const completedInvestigation = (): ReturnType<typeof InvestigationSchema.parse> 
       { statement: '真实业务机会', status: 'proposed' },
       { statement: '统计噪声', status: 'rejected' },
     ],
+    unknowns: ['转化率提升是否由访客结构变化引起？'],
+    nextQuestion: '转化率提升是否伴随商品结构调整？',
+    findings: [
+      {
+        question: '访客下降 26.5% 是否异常？',
+        answer: '属于业务波动，非系统故障。',
+        impactOnHypothesis: '弱化噪声假设',
+      },
+    ],
     judgment: '值得持续观察 — UV<500 不能单独判噪声，需要看后续趋势。',
     stopReason: 'observe',
     capabilityUsed: 'product.overview',
     evidenceAcquired: ['trade.overview 2026-08-21'],
     recommendation: {
+      kind: 'observe',
       recommendation: '继续观察 1-2 天再判断。',
       rationale: '小样本需更多数据。',
       risks: '若真为机会，延迟观察可能损失窗口期。',
@@ -123,6 +133,68 @@ describe('markInvestigation — lifecycle REPAIR (P0010.1)', () => {
     expect(after?.currentUnderstanding).toBe(completed.currentUnderstanding);
     expect(after?.judgment).toBe(completed.judgment);
     expect(after?.recommendation?.recommendation).toContain('继续观察');
+  });
+
+  test('completed marker preserves existing cognition (regression: must not replace with schema defaults)', () => {
+    // Regression for the RuntimeLoop audit bug: `runInvestigationTurn` fully
+    // persisted a completed investigation (cognition + recommendation), then
+    // the Loop stamped a `status:'completed'` marker with sidecars on top.
+    // Before this fix, `markInvestigation` only merged for
+    // `investigating`/`failed`; `completed` fell through to the fresh-marker
+    // branch and REPLACED every cognition field with schema defaults.
+    // Arrange — a full completed investigation with cognition.
+    const completed = completedInvestigation();
+    storeInvestigationInLearningContext(db, baseSituation, completed);
+    const before = loadInvestigationFromLearningContext(db, baseSituation.situationId);
+    expect(before?.status).toBe('completed');
+    expect(before?.currentUnderstanding).toBe(completed.currentUnderstanding);
+
+    // Act — the RuntimeLoop success path stamps a completed marker with sidecars.
+    markInvestigation(db, baseSituation, {
+      status: 'completed',
+      evidenceContentHash: '5ca8e2ecdd45603a0000',
+      consecutiveFailures: 0,
+    });
+    const after = loadInvestigationFromLearningContext(db, baseSituation.situationId);
+
+    // Assert — every cognition field is preserved verbatim.
+    expect(after?.status).toBe('completed');
+    expect(after?.currentUnderstanding).toBe(completed.currentUnderstanding);
+    expect(after?.knownEvidence).toEqual(completed.knownEvidence);
+    expect(after?.hypotheses).toEqual(completed.hypotheses);
+    expect(after?.unknowns).toEqual(completed.unknowns);
+    expect(after?.nextQuestion).toBe(completed.nextQuestion);
+    expect(after?.findings).toEqual(completed.findings);
+    expect(after?.judgment).toBe(completed.judgment);
+    expect(after?.stopReason).toBe(completed.stopReason);
+    expect(after?.capabilityUsed).toBe(completed.capabilityUsed);
+    expect(after?.evidenceAcquired).toEqual(completed.evidenceAcquired);
+    expect(after?.recommendation).toEqual(completed.recommendation);
+    // Only marker/sidecar fields are updated.
+    expect(after?.evidenceContentHash).toBe('5ca8e2ecdd45603a0000');
+    expect(after?.consecutiveFailures).toBe(0);
+    expect(after?.updatedAt).not.toBe(completed.updatedAt);
+  });
+
+  test('completed marker over a preserved failed marker also preserves (Loop re-stamp after recovery)', () => {
+    // A failed attempt already preserved the prior cognition (minimum merge).
+    // The next successful turn stamps a completed marker — cognition must
+    // survive that too, not be re-defaulted.
+    const completed = completedInvestigation();
+    storeInvestigationInLearningContext(db, baseSituation, completed);
+    markInvestigation(db, baseSituation, { status: 'failed', error: '[agent_timeout] slow turn' });
+    const afterFailed = loadInvestigationFromLearningContext(db, baseSituation.situationId);
+    expect(afterFailed?.status).toBe('failed');
+    expect(afterFailed?.judgment).toBe(completed.judgment);
+
+    markInvestigation(db, baseSituation, { status: 'completed', evidenceContentHash: 'abc', consecutiveFailures: 0 });
+    const after = loadInvestigationFromLearningContext(db, baseSituation.situationId);
+    expect(after?.status).toBe('completed');
+    expect(after?.judgment).toBe(completed.judgment);
+    expect(after?.currentUnderstanding).toBe(completed.currentUnderstanding);
+    expect(after?.recommendation).toEqual(completed.recommendation);
+    expect(after?.evidenceContentHash).toBe('abc');
+    expect(after?.consecutiveFailures).toBe(0);
   });
 
   test('failed marker after a prior failed marker does NOT preserve (no valid cognition to keep)', () => {

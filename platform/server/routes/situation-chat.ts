@@ -564,10 +564,17 @@ export interface InvestigationTurnResult {
  *                   valid cognition.
  *   pending       → no prior completed content expected; write the marker as
  *                   a fresh investigation.
- *   completed     → not used here (full Investigation is written via
- *                   storeInvestigationInLearningContext after a successful
- *                   parse, which is the only place the situation's cognition
- *                   should be fully replaced).
+ *   completed     → when a prior investigation already carries valid cognition
+ *                   (status=completed / judgment / currentUnderstanding), the
+ *                   marker MERGES: only status + updatedAt + sidecars
+ *                   (evidenceContentHash / consecutiveFailures /
+ *                   blockedEmittedAt / error) are stamped, cognition is
+ *                   preserved verbatim. The RuntimeLoop success path relies on
+ *                   this — it stamps a completed marker AFTER
+ *                   `runInvestigationTurn` already persisted the full
+ *                   investigation. Only when there is NO prior cognition does
+ *                   the completed marker fall through to a fresh marker
+ *                   (a first-ever completion or an empty contract).
  */
 export const markInvestigation = (
   db: Db,
@@ -603,11 +610,18 @@ export const markInvestigation = (
     (existing.status === 'completed' || !!existing.judgment || !!existing.currentUnderstanding);
 
   let next: LearningContext['investigation'];
-  if (priorHasCognition && (marker.status === 'investigating' || marker.status === 'failed')) {
+  if (priorHasCognition && (marker.status === 'investigating' || marker.status === 'failed' || marker.status === 'completed')) {
     // Minimum merge: only the lifecycle fields are updated. The previous
     // currentUnderstanding / judgment / recommendation / knownEvidence /
     // findings / hypotheses / capabilityUsed / evidenceAcquired are all
     // preserved verbatim. We do NOT track per-attempt history.
+    //
+    // `completed` is included in the merge because the RuntimeLoop success
+    // path stamps a `status:'completed'` marker AFTER `runInvestigationTurn`
+    // already persisted the full investigation (cognition + recommendation).
+    // Without this, the completed marker fell through to the fresh-marker
+    // branch and replaced the cognition with schema defaults — the exact
+    // "output exists but cognition is empty" audit bug.
     next = {
       ...existing,
       status: marker.status,
