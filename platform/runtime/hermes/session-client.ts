@@ -9,6 +9,8 @@
 //   events          {"jsonrpc":"2.0","method":"event","params":{"type":"message.delta",...}}
 //
 // Turn lifecycle events: turn.start → message.start → message.delta* → message.complete
+// Tool lifecycle events: tool.start → tool.complete (result is INSIDE the event payload;
+//                       the model never asks the client to execute a tool).
 //
 // Token lifecycle (P0010.2):
 //   Resolution is LAZY — happens inside connect(), not at module load. This makes
@@ -53,6 +55,38 @@ export interface HermesEvent {
     [key: string]: unknown;
   };
   [key: string]: unknown;
+}
+
+/** One tool call observed within a turn. `result` is null until `tool.complete`. */
+export interface TurnToolCall {
+  toolId: string;
+  name: string;
+  args: unknown;
+  result: unknown;
+  duration_s?: number;
+}
+
+/** Result of one `submitTurnAndCollect` invocation. Pure collector output. */
+export interface TurnResult {
+  messageText: string;
+  toolCalls: TurnToolCall[];
+  turnStartedAt: number | null;
+  durationMs: number | null;
+  /** Set when the collector timed out or saw a `message.error`. */
+  error?: string;
+}
+
+/**
+ * P0011.x — passive observer callbacks. Implementations MUST NOT dispatch
+ * tool results, drive loops, or make decisions; the model is the sole
+ * reasoner. These callbacks exist only to let the caller stream progress.
+ */
+export interface TurnObserver {
+  onTurnStart?(): void;
+  onMessageDelta?(text: string): void;
+  onToolStart?(toolId: string, name: string, args: unknown): void;
+  onToolComplete?(toolId: string, name: string, result: unknown, duration_s: number): void;
+  onTurnComplete?(): void;
 }
 
 export interface HermesSessionClientOptions {
@@ -671,6 +705,154 @@ export class HermesSessionClient {
   /** Submit a user prompt to a session. */
   async submitPrompt(sessionId: string, text: string): Promise<void> {
     await this.request('prompt.submit', { session_id: sessionId, text });
+  }
+
+  /**
+   * P0011.x — submit a prompt and COLLECT the full turn transcript as a
+   * passive observer. No dispatch, no tool-result injection, no reasoning
+   * loop. The model remains the sole reasoner; we just collect every
+   * `message.*` + `tool.*` event Hermes broadcasts until `turn.complete`
+   * (or `turn.timeout` / `message.error`) signals the end of the turn.
+   *
+   * Use this when the model is expected to call MCP-loaded tools
+   * (e.g. `fabric_browser_*`) inside one turn. The returned `TurnResult`
+   * is the canonical, replayable record of what the model did.
+   */
+  async submitTurnAndCollect(
+    sessionId: string,
+    text: string,
+    options?: { timeoutMs?: number; onProgress?: TurnObserver },
+  ): Promise<TurnResult> {
+    const timeoutMs = options?.timeoutMs ?? 10 * 60_000;
+    const observer = options?.onProgress;
+
+    type RecordedToolCall = TurnResult['toolCalls'][number];
+    const toolCalls: RecordedToolCall[] = [];
+    let lastMessageText = '';
+    let turnStartedAt: number | null = null;
+    let turnCompleted = false;
+    let lastError: string | null = null;
+
+    const timer = setTimeout(() => {
+      if (!turnCompleted) {
+        // We do NOT decide what to do here. The collector times out and
+        // returns the partial transcript. The caller decides next step.
+        lastError = `submitTurnAndCollect timed out after ${timeoutMs}ms (turn.complete not observed)`;
+        // Resolve the inner promise; main flow reads `lastError`.
+        finalize();
+      }
+    }, timeoutMs);
+
+    const finishOnce = (() => {
+      let called = false;
+      return () => {
+        if (called) return;
+        called = true;
+        clearTimeout(timer);
+        turnCompleted = true;
+      };
+    })();
+
+    let resolveFinal: () => void = () => {};
+    const final = new Promise<void>((r) => { resolveFinal = r; });
+    const finalize = () => { resolveFinal(); };
+
+    const unsubscribe = this.onEvent((event) => {
+      if (event.session_id && event.session_id !== sessionId) return;
+      const type = String(event['type'] ?? '');
+      const payload = (event['payload'] ?? {}) as Record<string, unknown>;
+
+      switch (type) {
+        case 'turn.start': {
+          turnStartedAt = Date.now();
+          observer?.onTurnStart?.();
+          break;
+        }
+        case 'message.delta': {
+          const text = String(payload['text'] ?? '');
+          if (text) {
+            lastMessageText += text;
+            observer?.onMessageDelta?.(text);
+          }
+          break;
+        }
+        case 'message.complete': {
+          const text = String(payload['text'] ?? '');
+          if (text) lastMessageText = text;
+          break;
+        }
+        case 'message.error': {
+          lastError = String(payload['error'] ?? payload['text'] ?? 'message.error');
+          break;
+        }
+        case 'tool.start': {
+          const tc: RecordedToolCall = {
+            toolId: String(payload['tool_id'] ?? ''),
+            name: String(payload['name'] ?? ''),
+            args: payload['args'] ?? null,
+            result: null,
+          };
+          toolCalls.push(tc);
+          observer?.onToolStart?.(tc.toolId, tc.name, tc.args);
+          break;
+        }
+        case 'tool.complete': {
+          const toolId = String(payload['tool_id'] ?? '');
+          const idx = toolCalls.findIndex((c) => c.toolId === toolId);
+          const result = payload['result'] ?? null;
+          if (idx >= 0) {
+            const completed: RecordedToolCall = {
+              ...toolCalls[idx]!,
+              result,
+              ...(typeof payload['duration_s'] === 'number'
+                ? { duration_s: payload['duration_s'] as number }
+                : {}),
+            };
+            toolCalls[idx] = completed;
+            observer?.onToolComplete?.(completed.toolId, completed.name, completed.result, completed.duration_s ?? 0);
+          } else {
+            // tool.complete arrived without a prior tool.start; record it anyway.
+            const tc: RecordedToolCall = {
+              toolId,
+              name: String(payload['name'] ?? ''),
+              args: payload['args'] ?? null,
+              result,
+              ...(typeof payload['duration_s'] === 'number'
+                ? { duration_s: payload['duration_s'] as number }
+                : {}),
+            };
+            toolCalls.push(tc);
+            observer?.onToolComplete?.(tc.toolId, tc.name, tc.result, tc.duration_s ?? 0);
+          }
+          break;
+        }
+        case 'turn.complete':
+        case 'turn.timeout': {
+          observer?.onTurnComplete?.();
+          finishOnce();
+          finalize();
+          break;
+        }
+        default:
+          break;
+      }
+    });
+
+    try {
+      await this.submitPrompt(sessionId, text);
+      await final;
+    } finally {
+      unsubscribe();
+      finishOnce();
+    }
+
+    return {
+      messageText: lastMessageText,
+      toolCalls,
+      turnStartedAt,
+      durationMs: turnStartedAt ? Date.now() - turnStartedAt : null,
+      ...(lastError ? { error: lastError } : {}),
+    };
   }
 
   /** Respond to a pending approval request (choice: 'approve' | 'deny'). */
