@@ -28,7 +28,10 @@ import {
   skipCurrentStep,
   type KernelStepResult,
 } from '#app/runtime/replay/replay-runner-p0013.js';
-import { createReplayCognitionKernel } from '#app/runtime/replay/replay-cognition-kernel.js';
+import {
+  createReplayCognitionKernel,
+  DEFAULT_REPLAY_TURN_TIMEOUT_MS,
+} from '#app/runtime/replay/replay-cognition-kernel.js';
 import {
   appendEnrichment,
   listEnrichmentsForRun,
@@ -123,6 +126,36 @@ const defaultClientFactory = (hermesUrl: string): SituationChatClient => {
   return new HermesSessionClient(hermesUrl ? { url: hermesUrl } : {}) as unknown as SituationChatClient;
 };
 
+/**
+ * P0013.4 acceptance — resolve the Replay turn wait ceiling from the
+ * environment, falling back to the kernel's own 600s default.
+ *
+ * This is a WAIT CEILING ONLY. It does not touch the prompt, the contract, the
+ * evidence slice, the parser, or the model/provider — a turn that completes
+ * inside the ceiling produces identical input and output regardless of this
+ * value. It is configurable because measured turn durations straddle 600s
+ * (526s completed, 603s lost), so the ceiling decided which days produced
+ * cognition at all.
+ *
+ * A malformed value is surfaced rather than silently ignored, and the default
+ * is used — a typo should not silently change acceptance timing, and it should
+ * not stop the server either.
+ */
+export const resolveReplayTurnTimeoutMs = (
+  raw: string | undefined = process.env['REPLAY_TURN_TIMEOUT_MS'],
+): number => {
+  if (raw === undefined || raw.trim() === '') return DEFAULT_REPLAY_TURN_TIMEOUT_MS;
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed) || !Number.isInteger(parsed) || parsed <= 0) {
+    process.emitWarning(
+      `REPLAY_TURN_TIMEOUT_MS="${raw}" is not a positive integer of milliseconds; ` +
+        `falling back to ${DEFAULT_REPLAY_TURN_TIMEOUT_MS}ms.`,
+    );
+    return DEFAULT_REPLAY_TURN_TIMEOUT_MS;
+  }
+  return parsed;
+};
+
 export const replayRouter = (db: Database.Database, options: ReplayRouterOptions = {}): Router => {
   const router = Router();
   const hermesUrl = options.hermesUrl ?? process.env['HERMES_WS_URL'] ?? 'ws://localhost:9120/api/ws';
@@ -148,6 +181,7 @@ export const replayRouter = (db: Database.Database, options: ReplayRouterOptions
     const kernel = createReplayCognitionKernel(db, {
       client,
       sessionId: created.sessionId,
+      turnTimeoutMs: resolveReplayTurnTimeoutMs(),
     });
     const active: ActiveReplaySession = { client, hermesSessionId: created.sessionId, kernel };
     sessions.set(runId, active);

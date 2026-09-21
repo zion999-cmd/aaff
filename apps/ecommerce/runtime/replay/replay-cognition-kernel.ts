@@ -820,11 +820,33 @@ const loadPriorSnapshots = (
 
 // ── Kernel factory ──────────────────────────────────────────────────────
 
+/**
+ * P0013.4 acceptance — how long one Replay cognition turn may take before
+ * `collectTurn` gives up.
+ *
+ * This is a WAIT CEILING ONLY. It changes nothing about what the Agent is
+ * asked, what evidence it is given, how the reply is parsed, or which model
+ * and provider serve it — a turn that finishes inside the ceiling produces
+ * byte-identical input and output either way. It exists because measured turn
+ * durations straddle the old fixed value: a 2026-09-21 11-day run completed
+ * 2026-09-02 in 526s and then lost 2026-09-03 twice at 603s, so the deadline
+ * decided which days produced cognition at all.
+ *
+ * 600_000 remains the default; raising it is opt-in per environment.
+ */
+export const DEFAULT_REPLAY_TURN_TIMEOUT_MS = 600_000;
+
 export interface ReplayCognitionKernelOptions {
   /** Open SituationChatClient. Lifetime: the entire Replay run. */
   readonly client: SituationChatClient;
   /** Hermes session id (created once per Replay run, reused across days). */
   readonly sessionId: string;
+  /**
+   * Turn wait ceiling in milliseconds. Defaults to
+   * `DEFAULT_REPLAY_TURN_TIMEOUT_MS` (600s) when omitted, so existing callers
+   * keep the previous behaviour exactly.
+   */
+  readonly turnTimeoutMs?: number;
 }
 
 /**
@@ -852,6 +874,9 @@ export const createReplayCognitionKernel = (
   options: ReplayCognitionKernelOptions,
 ): ((runId: string, stepId: string, businessDate: string) => Promise<KernelStepResult>) => {
   const { client, sessionId } = options;
+  // Wait ceiling only — see DEFAULT_REPLAY_TURN_TIMEOUT_MS. Everything the turn
+  // is asked and everything it returns is unaffected by this value.
+  const turnTimeoutMs = options.turnTimeoutMs ?? DEFAULT_REPLAY_TURN_TIMEOUT_MS;
 
   return async (
     _runId: string,
@@ -915,7 +940,7 @@ export const createReplayCognitionKernel = (
     // The kernel awaits BOTH the submit AND the collected reply (mirrors
     // the production runInvestigationTurn pattern at
     // platform/server/routes/situation-chat.ts:790-797).
-    const replyPromise = collectTurn(client, sessionId, 600_000);
+    const replyPromise = collectTurn(client, sessionId, turnTimeoutMs);
     const submitP = client.submitPrompt(sessionId, prompt);
     const reply = await replyPromise;
     await submitP;
