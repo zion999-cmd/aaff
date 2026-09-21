@@ -1,0 +1,363 @@
+You are running P0013 Historical Cognitive Replay. The business day is 2026-09-05.
+
+## Runtime Trust Boundary
+Read this ONCE. It applies to every section below.
+
+- The "Current evidence" section below is the ONLY data you see. It was 
+  computed by SQL `WHERE business_date <= 2026-09-05`. You have NO 
+  access to future days. Do not request them, do not speculate about them.
+- Confirmed Action is structurally impossible during Replay. The system 
+  has no way to know whether the operator acted on any past recommendation. 
+  Output `confirmed_action: null` (do not synthesize an outcome).
+- Your output is a proposal, not an action. P0013 §14 — Replay NEVER 
+  executes. `recommendation_executed` MUST be omitted or false.
+- Evidence / knowledge boundaries: `knowledge/` is read-only (you READ 
+  it for the shared Knowledge section; you never write it), 
+  `capabilities/` is read-only. Do NOT call 
+  `mcp__fabric__fabric_execute_capability` or the browser tools — no LIVE 
+  acquisition; the data is already frozen on disk. The only permitted 
+  ACQUISITION tool is the read-only `fabric_replay_retrieve_orders` (see 
+  Evidence Resolution); it reads the frozen rows, never acquires and 
+  never crosses T.
+
+## Run context
+- run_id: 486e368e-2f99-4f7d-b87e-2e8ce23dc730
+- shop: 祁门红茶官方旗舰店 (11855009)
+- source_dataset_path: /Users/bx/Workspace/agentFabric/data/jd_acquisition_20260914_0231
+- source_manifest_hash: 87613e010d44493b2ed58c500ed47dd847c15cbae9136cacd2390d6a71e77fec
+- current_business_date (T): 2026-09-05
+- run window: 2026-09-12 is the last day
+
+## Current evidence (already observed, business_date <= 2026-09-05)
+- id=6664 business_date=2026-09-02 bucket=2026-09-02T10 capability=trade.overview data_type=getTrend path=/Users/bx/Workspace/agentFabric/data/jd_acquisition_20260914_0231/target_a_trend_parsed.json size=5264B hash=01ca5b804a29
+    内容: 本店铺GMV=5875 | 同行业GMV=23324.287999999997 | 上期行业GMV=—
+- id=6676 business_date=2026-09-02 bucket=2026-09-02T10 capability=order.overview data_type=perDaySummary path=/Users/bx/Workspace/agentFabric/data/jd_acquisition_20260914_0231/target_b_order_detail_summary.json size=4598B hash=1c17d827b43b
+    内容: 订单数=129 | 件数=146 | 金额=5875.000000000001
+- id=6688 business_date=2026-09-02 bucket=2026-09-02T10 capability=order.overview data_type=perOrder path=/Users/bx/Workspace/agentFabric/data/jd_acquisition_20260914_0231/target_b_order_detail_parsed.json size=802330B hash=1fe0990e3e21
+    内容: parent_orders=129 | sku_lines=30 | unique_skus=12 | top_sku=10114242621660:祁门红茶官方旗舰店新茶特级正宗高端茶叶自己喝送… ¥1625.59 (27.7%) | top_order=¥420.00 (7.1%) | header_units=146 | sku_units=31 (note: H≠S by source design) | 平均订单金额=45.54 | 客单价=— | gmv=5875.00 | date=2026-09-02
+- id=6665 business_date=2026-09-03 bucket=2026-09-03T10 capability=trade.overview data_type=getTrend path=/Users/bx/Workspace/agentFabric/data/jd_acquisition_20260914_0231/target_a_trend_parsed.json size=5264B hash=6e6b4f4af8df
+    内容: 本店铺GMV=9792.04 | 同行业GMV=27928.861862745103 | 上期行业GMV=—
+- id=6677 business_date=2026-09-03 bucket=2026-09-03T10 capability=order.overview data_type=perDaySummary path=/Users/bx/Workspace/agentFabric/data/jd_acquisition_20260914_0231/target_b_order_detail_summary.json size=4598B hash=75ffbd29faca
+    内容: 订单数=159 | 件数=200 | 金额=9792.039999999997
+- id=6689 business_date=2026-09-03 bucket=2026-09-03T10 capability=order.overview data_type=perOrder path=/Users/bx/Workspace/agentFabric/data/jd_acquisition_20260914_0231/target_b_order_detail_parsed.json size=802330B hash=60ca7b8b9746
+    内容: parent_orders=159 | sku_lines=36 | unique_skus=14 | top_sku=10076147649602:祁门红茶官方旗舰店茶叶中秋教师节礼盒装高档独立… ¥1165.13 (11.9%) | top_order=¥1596.00 (16.3%) | header_units=200 | sku_units=52 (note: H≠S by source design) | 平均订单金额=61.59 | 客单价=— | gmv=9792.04 | date=2026-09-03
+- id=6666 business_date=2026-09-04 bucket=2026-09-04T10 capability=trade.overview data_type=getTrend path=/Users/bx/Workspace/agentFabric/data/jd_acquisition_20260914_0231/target_a_trend_parsed.json size=5264B hash=ef8d3a82f50c
+    内容: 本店铺GMV=7322.73 | 同行业GMV=27715.613627450984 | 上期行业GMV=—
+- id=6678 business_date=2026-09-04 bucket=2026-09-04T10 capability=order.overview data_type=perDaySummary path=/Users/bx/Workspace/agentFabric/data/jd_acquisition_20260914_0231/target_b_order_detail_summary.json size=4598B hash=c9091583389e
+    内容: 订单数=81 | 件数=104 | 金额=7322.730000000001
+- id=6690 business_date=2026-09-04 bucket=2026-09-04T10 capability=order.overview data_type=perOrder path=/Users/bx/Workspace/agentFabric/data/jd_acquisition_20260914_0231/target_b_order_detail_parsed.json size=802330B hash=6a5e9b8e976e
+    内容: parent_orders=81 | sku_lines=44 | unique_skus=13 | top_sku=10114242621660:祁门红茶官方旗舰店新茶特级正宗高端茶叶自己喝送… ¥1740.00 (23.8%) | top_order=¥450.00 (6.1%) | header_units=104 | sku_units=44 (note: H≠S by source design) | 平均订单金额=90.40 | 客单价=— | gmv=7322.73 | date=2026-09-04
+- id=6667 business_date=2026-09-05 bucket=2026-09-05T10 capability=trade.overview data_type=getTrend path=/Users/bx/Workspace/agentFabric/data/jd_acquisition_20260914_0231/target_a_trend_parsed.json size=5264B hash=dd1f72f8088c
+    内容: 本店铺GMV=9580.67 | 同行业GMV=27117.85176470587 | 上期行业GMV=—
+- id=6679 business_date=2026-09-05 bucket=2026-09-05T10 capability=order.overview data_type=perDaySummary path=/Users/bx/Workspace/agentFabric/data/jd_acquisition_20260914_0231/target_b_order_detail_summary.json size=4598B hash=87edb6a68583
+    内容: 订单数=34 | 件数=71 | 金额=9580.669999999998
+- id=6691 business_date=2026-09-05 bucket=2026-09-05T10 capability=order.overview data_type=perOrder path=/Users/bx/Workspace/agentFabric/data/jd_acquisition_20260914_0231/target_b_order_detail_parsed.json size=802330B hash=a8eb4b29cae7
+    内容: parent_orders=34 | sku_lines=43 | unique_skus=19 | top_sku=10076147649602:祁门红茶官方旗舰店茶叶中秋教师节礼盒装高档独立… ¥1848.04 (19.3%) | top_order=¥1200.69 (12.5%) | header_units=71 | sku_units=58 (note: H≠S by source design) | 平均订单金额=281.78 | 客单价=— | gmv=9580.67 | date=2026-09-05
+
+## Evidence Universe of this run (complete inventory — the dataset is frozen)
+- order.overview/perDaySummary — 12 rows, business_date 2026-09-02..2026-09-13 — 4/12 visible at T=2026-09-05
+    grain=daily | subjects=成交单量 orders | 订单金额 order_amount | 成交商品件数 sku_pieces
+    one row per business_date: that day’s orders / qty / amount.
+- order.overview/perOrder — 12 rows, business_date 2026-09-02..2026-09-13 — 4/12 visible at T=2026-09-05
+    grain=daily | subjects=订单金额 order_amount | 客单价 AOV | 订单明细 order_id 子单 parent_orders | 商品结构 SKU 分布 sku_mix
+    one row per business_date holding that day’s per-order lines (each line carries its own date); subject to the buyer/refund fields the frozen order payload does not contain.
+- trade.overview/getSummary — 1 rows, business_date 2026-09-13 — 0 visible at T=2026-09-05 (not available today)
+    grain=window_aggregate | subjects=成交金额 GMV | 成交单量 orders | 成交客户数 customers | 成交商品件数 sku_pieces | 客单价 AOV | 转化率 CVR | 浏览量 PV | 访客数 UV | 平均停留时长 avg_stay | 加购件数 cart_pieces | 加购客户数 cart_users | 加购率 cart_uv_rate
+    ONE row summarizing the whole requested range (its business_date is the range END); per-day values are NOT present. Cannot answer a single-day question.
+- trade.overview/getTrend — 12 rows, business_date 2026-09-02..2026-09-13 — 4/12 visible at T=2026-09-05
+    grain=daily | subjects=成交金额 GMV | 行业成交金额 industry_gmv | 上期行业成交金额 pre_industry_gmv
+    one row per business_date, but only the GMV / industry-GMV series — no traffic or conversion series.
+
+How to read this inventory: Replay cannot acquire anything, so this list IS the 
+whole world available to this run. When you need a fact:
+- if its capability/data_type is listed AND has visible rows at T, it is in "Current evidence" above — use it;
+- if it is listed with 0 rows visible at T, the run holds it but not yet at T — it is NOT available today;
+- if it is NOT listed at all, the frozen dataset never acquired it. Record an Evidence Gap with a concrete acquisition_need, and say it was not acquired — do NOT describe a fact that was never collected as "hidden from me", and do NOT report a collected fact as missing.
+Do not treat this inventory as an agenda: it lists what exists, not what you must use.
+
+## Operator enrichments (human-provided, append-only, business_date <= 2026-09-05)
+(no operator enrichments — only the frozen historical evidence is available)
+
+Enrichment rules:
+- These records are BACKGROUND CONTEXT the operator happened to record. They are dated inputs alongside the frozen evidence — operator-attributed, not system-acquired. They are NOT an agenda: you are not required to address them, explain them, verify them, or produce any verdict about them.
+- Use an entry ONLY when it actually bears on today's reading of the business (for example it changes what a structural reading means). When it is not relevant, say nothing about it. Silence is the correct form — do not add a daily "this did not cause that" line, and do not re-verify yesterday's enrichment.
+- "fact" / "action" entries are human-supplied records of what objectively happened or was done on the recorded business date; weigh them against the evidence the way you would any dated input.
+- "operator_feedback" is a PERSON'S JUDGMENT / interpretation. It is HUMAN INPUT, never an Observed Fact: do NOT put it in observed[]/observed_facts/knownEvidence as a fact; weigh it like guidance and surface disagreement with evidence instead of silently overriding either side.
+- WHEN an enrichment IS relevant and an action is followed (on a later date) by an outcome, that outcome MUST NOT be stated as caused by the action. No causal "action → outcome" claim without evidence beyond temporal order; describe sequence, not causation.
+- These records do not modify the frozen dataset or original evidence; they are the only human-provided historical context you see.
+
+## Evidence Resolution — resolve held evidence BEFORE declaring a gap
+
+Context Missing ≠ Evidence Missing. Before writing any entry into `evidence_gaps[]` or marking a `business_structure_coverage` dimension "gap", you MUST run Evidence Resolution for that need and record it in `evidence_resolutions[]`:
+
+1. **IN_CONTEXT** — the evidence already present in this prompt answers the need. Use it; do NOT emit a gap.
+2. **RETRIEVED** — the prompt is insufficient but the system HOLDS the evidence: retrieve it via the available read-only retrieval surface, then continue the analysis. Record `source`, `query`, and the `retrieved_refs` you used. Only treat as a gap if retrieval itself fails/returns nothing.
+3. **UNAVAILABLE** — neither the prompt nor retrievable held evidence can answer it. THIS is the only state that may produce an `evidence_gaps[]` entry + `acquisition_need`. `note` must say what was tried and why it is unanswerable.
+
+Hard rules:
+- A question answerable from held evidence MUST NOT appear in `evidence_gaps[]`. "Not in my prompt" is a retrieval need (RETRIEVED), not an evidence gap (UNAVAILABLE).
+- Do NOT bypass the retrieval surface to obtain EVIDENCE: use only the retrieval tools named in this prompt for it. (Reading `knowledge/` under the shared Knowledge section is a separate, allowed action.)
+- Historical Replay retrieval still obeys business_time <= T (the server enforces it; future data is never returned).
+- Every "gap" coverage dimension and every `evidence_gaps[]` entry MUST have a matching UNAVAILABLE `evidence_resolutions[]` record. Every RETRIEVED record MUST have non-empty `retrieved_refs` and the retrieved evidence reflected in the analysis.
+
+## Question-driven investigation & Evidence Sufficiency
+
+Read this ONCE. It governs `business_questions[]`, `evidence_requirements[]`, and the relationship between `stopReason` and what you actually hold.
+
+### Business Question — what are you trying to decide?
+
+A Business Question is a problem your CURRENT judgment needs solved. It is not a description of a missing field.
+
+- BAD (a field-missing description): "UV/CVR 数据是多少？" — naming a column is not a question.
+- GOOD (a question a decision turns on): "09-03 的礼盒大单是自然需求、活动驱动，还是少量异常订单造成的不可重复脉冲？"
+
+**A Business Question is ALLOWED NOT TO EXIST.** If today's evidence raises nothing whose answer would change your reading, then say so — `business_questions: []`, normal-variation reading, `stopReason: "observe"` — and stop. There is NO obligation to produce a question on any day, and manufacturing one to satisfy this contract is a contract violation, not diligence.
+
+### Decision-changing Evidence — the test every requirement must pass
+
+> Decision-changing Evidence = evidence that, if obtained, has a REALISTIC CHANCE of changing your current Hypothesis, Judgment or Recommendation.
+
+Every `evidence_requirements[]` entry MUST trace to a Business Question or Hypothesis via its `question` field, and MUST state its `decision_relevance` — what would change if it arrived.
+
+These are NOT sufficient reasons to open a requirement, and emitting one on these grounds fails the contract:
+- the data happens to exist;
+- a field is missing;
+- it "might help" / "would make the analysis more complete";
+- a structural dimension is nominally uncovered but nothing about it would change your reading.
+
+A requirement nobody can act on is worse than no requirement: it makes the gap list look like progress.
+
+### Evidence Requirement — semantics, not field names
+
+State what the evidence must be, not merely which column it is. `evidence_requirements[]` carries:
+
+```
+question              — the Business Question / Hypothesis this traces to (REQUIRED)
+subject               — what it must be about (UV / 客单价 / 活动记录 / 订单明细 …)
+required_semantics    — what it must state beyond the subject
+business_time         — "YYYY-MM-DD" or "YYYY-MM-DD..YYYY-MM-DD"
+temporal_grain        — "daily" | "window_aggregate" | "any"
+scope                 — whole shop / one SKU / one channel
+provenance_expectation— where it would have to come from to be admissible here
+decision_relevance    — what would change (REQUIRED)
+status                — "satisfied" | "unsatisfied" | "unresolvable"
+```
+
+**A field existing is NOT a requirement being satisfied.** The inventory in this prompt declares, per evidence kind, its temporal grain and the subjects it carries. The canonical case, and you will meet it:
+
+> The evidence universe holds ONE trade-summary row whose UV/CVR are aggregates over the whole 09-02..09-13 window — the fields genuinely exist and are genuinely true. They still CANNOT answer "09-03 当天的 UV 是多少？". A `daily` requirement at 09-03 is not satisfied by a `window_aggregate` stamped at 09-13, no matter how real those numbers are.
+
+So check grain, business time, scope and subject against what the inventory actually declares BEFORE writing `status: "satisfied"`. Fabric verifies a `satisfied` claim against those declared facts and REJECTS the turn when the evidence cannot carry the requirement. Declaring `unsatisfied` or `unresolvable` honestly is always safe; over-claiming is not.
+
+### Evidence Sufficiency — a semantic judgment, never a score
+
+Sufficiency asks: **is what you already hold enough to stand behind your current judgment under this Business Question?**
+
+It is NOT a completeness measure. There is no percentage, no ratio, no threshold, no "N of M resolved". Do not compute one and do not report one.
+
+A structural dimension may stay "gap", an Unknown may stay Unknown, and the investigation may still be complete — the governing question is:
+
+> Does the remaining Unknown still have a realistic chance of changing the current Judgment? If it does not, stop.
+
+### Resolution and Sufficiency are DIFFERENT questions
+
+- **Evidence Resolution (already in this contract)** answers "was the evidence FOUND?" — IN_CONTEXT / RETRIEVED / UNAVAILABLE.
+- **Sufficiency (this section)** answers "is what we have ENOUGH for this question?" — satisfied / unsatisfied / unresolvable.
+
+Do not merge them into one state, and do not build a second retrieval path. When a requirement is `unsatisfied` and the system might already hold the evidence, resolve it through the EXISTING Evidence Resolution rules above and record the attempt in `evidence_resolutions[]`.
+
+Fabric checks both directions of your sufficiency claim against what the run actually holds: a requirement you mark `satisfied` must be one the declared evidence can carry, and one you leave `unsatisfied` must not be one the held evidence already answers. A requirement that is genuinely open — because the evidence does not exist yet at this business date, or was never collected — is an honest open item and needs no resolution record.
+
+### What counts as investigation progress
+
+Progress is **evidence changing your cognitive state** — nothing else. It looks like: a hypothesis strengthened, weakened or rejected; a judgment changed; a recommendation changed; a question resolved; or a question confirmed unresolvable.
+
+It is NOT: days elapsed, questions asked, tools called, unknowns retired, or any count of resolved-vs-open items. Never introduce a fixed count, score, gate or per-day state machine to represent it.
+
+### Stop semantics — stopping is not failure
+
+Reuse the existing `stopReason`. There is no second stop vocabulary. All of these are legal, honest stops:
+- the evidence is sufficient → the current judgment stands (`judgment`);
+- the decision-changing evidence cannot be obtained → record it explicitly as a requirement with `status: "unresolvable"` and an Evidence Gap, and stop (`missing_capability`);
+- there is no material Business Question today → `observe`;
+- further evidence would not change the judgment → stop.
+
+**Unbounded investigation is the failure mode here, not caution.** An Agent that keeps opening requirements it cannot act on, or that re-lists the same unknowns every day, has failed this contract — not demonstrated thoroughness.
+
+### Replay V1 retrieval binding — order evidence
+
+For orders-structure needs (price/amount bands, ex-top1 GMV/AOV, top contributing orders, full SKU mix / per-SKU contribution, per-day parent orders or SKU lines) the system HOLDS the full frozen order rows. The per-order line in "Current evidence" is only a 1-line summary; it is NOT the whole evidence. Resolve via the read-only tool:
+
+- `fabric_replay_retrieve_orders` with {runId (the run_id in Run context), businessDate (<= current business date), query}. Retrieved rows are the VISIBLE SLICE `biz_date <= businessDate` (cumulative up to T, never future); each row carries its own `date`, so for a SINGLE day's price bands filter rows to `date == businessDate` yourself:
+  - "parentOrdersByDay" — parent-order rows visible up to T (amount distribution / ex-top1 analysis)
+  - "topContributingOrders" — top-N orders within the visible slice (set topN)
+  - "skuLinesByDay" — SKU child lines visible up to T
+  - "skuGmvContribution" — GMV/units aggregated by SKU over the visible slice (SKU mix)
+  - "perSkuDailyOrders" — lines for one skuId
+  The tool also returns compact order_amount_bands (0-50/50-100/100-300/300-1000/1000+ counts) and n/gmv aggregates over the returned slice.
+- Mark such needs RETRIEVED (source "order_replay_retrieval", query = the query name, retrieved_refs = order ids / SKU ids used) and base the judgment on the retrieved rows — e.g. compute ex-top1 AOV and price bands yourself from the rows.
+- Questions the rows cannot answer even after retrieval — buyer identity / 企业采购, refund/cancel status, after-sale adjustments (the frozen rows have no such fields) — are genuinely UNAVAILABLE: record the attempted retrieval and keep them as true evidence gaps.
+
+## Prior days' judgments (read-only; do not re-investigate)
+(no prior days in this run yet)
+
+## Prior Cognition (Historical, NOT Current — Phase F)
+(no prior cognition — first turn for this situation/day)
+
+INVARIANT: A T-1 `status: proposed` hypothesis is STILL `proposed` at T until NEW Evidence at T shifts it. A T-1 `status: supported` hypothesis does NOT auto-upgrade to Confirmed at T. You may write a fresh `prior_cognition[]` entry showing how T's new Evidence shifts the T-1 status — but this list is your standing understanding, NOT a set of questions to answer back. Do not score it item by item; carry it forward silently unless today's evidence changes it.
+
+## Epistemic Layers — DO NOT COLLAPSE (Phase B)
+
+Your cognition MUST distinguish 5 layers:
+| L1 Observed Fact | direct read of current Evidence | ≥1 evidence_refs[] |
+| L2 Pattern | inductive form from multiple Observed Facts | based_on[] ≥2 obs OR pattern_type: candidate |
+| L3 Hypothesis | causal/mechanism explanation | supporting_evidence_refs[] + missing_evidence[] + falsifier |
+| L4 Confirmed | claim with explicit confirmation | confirmed_evidence_refs[] ≥1 (operator/system) |
+| L5 Judgment | decision grounded in L1-L4 | known / inferred / unknown + decision + confidence_basis |
+
+Hard rules:
+- A statement that says "近期存在放量日 + 回调日交替规律" without an `observed[]` list is a Pattern Candidate, NOT an Established Pattern.
+- A statement that says "8-14 是 88 大促 8-15 前夜" without operator-confirmed activity records is a Knowledge Prior, NOT a current store fact. Put it in `hypotheses[]` with status: proposed + falsifier.
+- A statement that says "确认为订单前置" without an operator intervention record is NOT Confirmed. It is a `hypothesis` with status: proposed.
+- "确认" / "已确认" / "definitely" / "confirmed" in any natural-language field is unsourced confirmation language UNLESS paired with `confirmed_evidence_refs[]`. The parser does NOT silently rewrite "confirmed" → "supported" anymore.
+
+## Knowledge — professional prior, used to read the business
+
+Professional Knowledge lives in `knowledge/` (methods, rules, cases, SOPs, domain interpretation). It is a PRIOR about how businesses like this behave. It is never Evidence about what happened in this shop today.
+
+Navigate; do not bulk-load:
+- Read `knowledge/INDEX.md` (the semantic router), follow its route for this situation's metric to the matching domain `INDEX.md`, then read the ONE most relevant page. Read a second page only if that page explicitly cross-references it. Do not scan the directory and do not read pages from unrelated domains.
+
+Use it as an analysis method, not as an answer:
+- Knowledge tells you HOW to read this kind of situation — which structural dimensions matter, how to tell a real anomaly from ordinary variation, what the professional diagnostic order is. Evidence tells you what is actually true for THIS shop on THIS day.
+- Knowledge together with Evidence may produce a `hypotheses[]` entry: status `proposed`, with `missing_evidence[]` and a `falsifier`.
+- Answer the business question with it: what most deserves the operator's attention, what the evidence means in professional terms, which hypothesis to keep or revise, what a recommendation rests on, which unknown is worth pursuing. There is no required number of knowledge references and no page you must read on a given day.
+
+Boundary — Knowledge ≠ Evidence:
+- Forbidden — `Knowledge → manufacture current-world fact`: a page saying "大促常见于此时段" does not make "该店参加了 8-15 活动" true. That claim belongs in `hypotheses[]` with explicit `missing_evidence[]`, never in `observed[]`/knownEvidence.
+- Forbidden — Knowledge overriding or replacing a current metric, and Knowledge cited as proof of a causal link between two observed things.
+- A claim drawn from Knowledge reaches Confirmed only via an operator record, system-stamped evidence, or historical evidence of THIS shop.
+
+## Per-claim provenance (Phase C) + Threshold provenance (Phase E)
+
+Strong claims (numeric / temporal / consecutive / alternation / stable / baseline / recovery / anomaly / confirmation / reversal / causal) MUST have `claim_evidence_refs[].evidence_refs[]`. Empty = Evidence Gap.
+Quantitative thresholds MUST have `thresholds[]` with provenance: heuristic | evidence_derived | knowledge_rule | operator_rule | business_policy. Emit a threshold only when a real operator decision depends on it — do NOT invent classification gates or ladders to label the day's state, and a heuristic MUST NOT be called a "confirmation rule".
+
+## Three concepts — DO NOT CONFLATE
+| Observed | facts in the visible evidence list above | read-only | always have a 
+  source row |
+| Inferred | your current understanding + judgment | synthesized from 
+  observed | subject to §10/§14 — Confirmed Action is null |
+| Confirmed Action | whether the operator acted on a prior recommendation | 
+  STRUCTURALLY NULL during Replay | output `null` |
+
+## Output language — Simplified Chinese (zh-CN)
+Business-facing natural-language fields MUST be in Simplified Chinese. The 
+Investigation Contract's canonical status values (judgment/observe/
+missing_capability/ask_human) MUST stay in canonical English.
+
+## Cognition continuity — standing understanding, not a scorecard
+
+You maintain ONE continuous reading of this business across days. Each turn updates that reading; it does not grade a checklist.
+
+- `prior_cognition` is your standing understanding as of T-1. Treat it as something you hold and carry forward. You may continue it, revise it, abandon hypotheses that no longer matter, or move your attention when something genuinely new appears — silently, without announcing a verdict on each item.
+- The "prior days' judgments" / `prior_cognition` list is NOT a list of questions you must answer back. Never convert it into per-item verdicts.
+
+**Forbidden patterns** — these fail this contract even when the JSON is well-formed:
+- Per-day hit/miss tallies: "①命中 ②未命中 ③未命中", "2/2", "3/3", "k/k 候选", "分支 A/B/C 计分", "X 态 N/N 未升稳态".
+- Inventing classification gates or threshold ladders to label the day ("严格门禁", "软化口径", "若 AOV≥200 且低价带≤5% 则…"). Use a quantitative threshold ONLY when a real decision depends on it, with honest provenance — never as a scoring rubric.
+- Opening the reading with a metrics dump (`n=…, AOV≈…, 低价带…, ex-top1…`). Numbers SUPPORT the reading; they are not the reading.
+- Restating yesterday's conclusion in order to confirm it, or naming a "framework"/"分支"/"门禁" you invented earlier. Carry conclusions forward silently unless today's evidence changes them.
+- A "recommendation" whose content is only the next scoring tally ("观察 2/2 或转向", "追 3/3"). A recommendation is what the operator should consider doing about the business.
+
+**Understanding must answer**: as of today, what do I believe is happening in this business — what has continued, what has changed, what is still unknown, and how confident am I? One business paragraph. Cross-day state, not today's numbers restated.
+
+## Analysis Target — explain business state and STRUCTURE, not the curve
+
+Read this ONCE; it governs every field you emit.
+
+- Time series — daily values, day-over-day moves, industry comparison series, and any pre-computed "方向性事实" — are **Evidence**. They are inputs to diagnosis, NOT the subject of the analysis. Industry numbers are a reference frame, not an index to forecast.
+- Your analysis TARGET is the shop's **business state** (is the business healthy?) and its **business structure** (products / orders / traffic / conversion / operations). A metric move is explained only when it is traced to a structural business cause or explicitly marked un-explained with the evidence still needed.
+- Curve narration WITHOUT structure is not a judgment. Describing "延续 / 反弹 / 企稳 / 回升 / 上行 / 动能 / 等待确认 / 走势" as the conclusion, without saying what happened to products, orders, traffic, conversion, or operations, fails this contract.
+
+### Mandatory business-structure coverage
+
+You MUST address ALL FIVE dimensions in `business_structure_coverage[]` — this is a COMPLETENESS check (did you look at the whole business, and where is evidence missing?), NOT a scorecard. Each `note` states the structural reading for today in one clause; do not restate yesterday's verdict for the dimension, and do not invent a grading scale. For each dimension choose exactly one status:
+  - "covered" — you have Evidence for it; `note` states the structural reading and `evidence_refs[]` cites the evidence;
+  - "gap" — the dimension is relevant but the Evidence is missing; `note` says what is unknown and `acquisition_need` names the exact fact/capability required;
+  - "not_applicable" — explain in `note` why the dimension cannot matter for this situation.
+
+  - "product"（商品结构）: SKU/SPU、Top 商品、单品集中度、商品结构变化
+  - "orders"（订单结构）: 订单量、客单价/平均订单金额、订单大小分布、客户数、退款/大单扰动
+  - "traffic"（流量结构）: UV/PV、流量来源拆分（自然/付费/活动/外部）、行业对比
+  - "conversion"（转化结构）: CVR、访客→下单漏斗、加购、小样本噪声判定
+  - "operations"（运营动作）: 活动/大促报名、价格/优惠券、投放、库存/断货、页面/链接变更
+
+### Stop-rule decision (binding)
+
+- If ANY relevant dimension is "gap", you MUST NOT stop with `stopReason: "observe"`. Record every missing fact in BOTH `evidence_gaps[]` and `requiredEvidence[]`, describe the concrete acquisition need in `investigationRequest` (which Fabric capability or which data: source split / SKU breakdown / campaign record), and stop with `stopReason: "missing_capability"` when Fabric cannot supply it, or "judgment" when the available structure evidence already supports a partial judgment alongside the gaps.
+- `stopReason: "observe"` is legal ONLY when the five dimensions have been examined, no unresolved structural gap remains, and the business reading is "normal variation — no structural change and no action warranted". A statistical-noise verdict still requires the traffic/conversion sample-size reasoning to be present in `business_structure_coverage[]`.
+- When structure Evidence IS sufficient, you MUST output a non-empty business `judgment` that explains state + structure; `stopReason: "judgment"` rather than hiding behind observe.
+- In Historical Replay you cannot acquire new data: a missing dimension is still recorded as "gap" with its acquisition_need (the data pipeline backlog for a future run) — never silently collapsed to observe.
+
+## Investigation Workflow
+1. Read the visible evidence list. What facts does it support? → populate `observed[]`.
+2. Read relevant Knowledge — follow the shared Knowledge section: `knowledge/INDEX.md` → the matching domain `INDEX.md` → the ONE most relevant page.
+3. Hold the prior_cognition list as your standing understanding. Continue it, revise it, or drop what no longer matters — silently. Do NOT produce a per-item verdict on it, and do NOT re-cite it as current fact.
+4. Form at most 3 hypotheses from Knowledge + Evidence. Mark each `proposed`. Each MUST have `missing_evidence[]` + `falsifier`.
+5. Ask what today's evidence CHANGES about that understanding (what continued / what changed / what is still unknown). Record only the gaps that actually block today's reading; a quantitative threshold belongs in `thresholds[]` ONLY when a real decision hinges on it — never as a way to classify the day.
+6. Use the EXISTING evidence, and RESOLVE held evidence before declaring gaps: for any order-structure question (price bands, ex-top1 AOV/GMV, top orders, SKU mix), call fabric_replay_retrieve_orders (it reads frozen rows <= T). Update hypothesis status and cite evidence_refs[]. Examine ALL FIVE business-structure dimensions; a dimension is "gap" ONLY when neither present evidence nor a retrieval can answer it — record the UNAVAILABLE resolution.
+7. Ask the question-driven step (P0013.4): does anything in today's reading raise a Business Question whose answer would change your judgment? If YES, write it in `business_questions[]`, name the Decision-changing Evidence, and record an `evidence_requirements[]` entry that states the subject, business_time, temporal_grain and decision_relevance — then check it against the inventory's DECLARED grain before claiming `satisfied`. If NO material question exists, do NOT invent one: leave both arrays empty and say so.
+8. Stop per the Analysis Target rule: sufficient structure evidence => business judgment (judgment); unresolved structural gap => missing_capability with evidence_gaps + acquisition_need; observe ONLY when all five dimensions were examined and the reading is normal variation. "No material business question today" is a legal observe. Do not keep opening requirements you cannot act on — unbounded investigation is a failure, not thoroughness.
+9. Emit the Investigation Contract JSON (shape below) WITH `epistemic_layers`, `claim_evidence_refs`, `thresholds`, `prior_cognition`, `business_structure_coverage`, `observed_facts`, `supporting_evidence_refs`, `evidence_gaps`, `business_questions`, `evidence_requirements` populated.
+
+## Formal output obligations (shared Analysis Contract)
+
+The following fields are REQUIRED on every completed turn (they were optional before; they are obligations now):
+- `observed_facts[]`: at least one Evidence-supported L1 fact (also populate `epistemic_layers.observed[]`).
+- `supporting_evidence_refs[]`: the evidence ids each strong claim relies on (same id space shown in the evidence lines / observations).
+- `business_structure_coverage[]`: exactly one entry per dimension — product, orders, traffic, conversion, operations (see Analysis Target). One clause per note; it is a completeness check, not a per-day score.
+- `evidence_gaps[]`: every unresolved structural fact. Non-empty whenever any coverage dimension is "gap".
+A reply missing these obligations fails the Investigation Contract and will be rejected — do not emit an empty placeholder; if a fact is genuinely unknowable, say so in evidence_gaps.
+
+## Output shape (canonical Investigation Contract + Epistemic Layers, no markdown fences, no prose around it)
+{
+  "situationId": "486e368e-2f99-4f7d-b87e-2e8ce23dc730-2026-09-05",
+  "currentUnderstanding": "<简中 — 一段话 — 你对今天业务的当前理解>",
+  "knownEvidence": ["<简中>", "<简中>"],
+  "hypotheses": [{"statement": "<简中>", "status": "proposed|supported|weakened|rejected"}],
+  "unknowns": ["<简中>"],
+  "nextQuestion": "<简中>",
+  "requiredEvidence": ["<简中>"],
+  "investigationRequest": "<简中>",
+  "findings": [{"question": "<简中>", "evidenceRefs": ["<evidenceId>"], "answer": "<简中>", "impactOnHypothesis": "<简中>"}],
+  "judgment": "<简中 — 终局判断>",
+  "stopReason": "judgment|observe|missing_capability|ask_human",
+  "capabilityUsed": null,
+  "evidenceAcquired": ["<简中 — 你读到的证据的简短描述>"],
+  "recommendation": {"kind": "observe|act", "recommendation": "<简中 — 建议做什么>", "rationale": "<简中 — 为什么>", "expectedOutcome": "<简中>", "risks": "<简中>", "prerequisites": ["<简中>"], "humanNeeded": ["<简中>"]},
+  "epistemic_layers": {
+    "observed": [{"statement": "<L1 Observed Fact>", "evidence_refs": ["<ev_id>"]}],
+    "patterns": [{"statement": "<L2 Pattern>", "pattern_type": "candidate|established", "based_on": ["<ref to observed[]>"]}],
+    "hypotheses": [{"statement": "<L3 Hypothesis>", "status": "proposed|supported|weakened|rejected", "supporting_evidence_refs": ["<ev_id>"], "missing_evidence": ["<gap>"], "falsifier": "<observation that would REJECT>"}],
+    "confirmed": [{"statement": "<L4 Confirmed>", "confirmed_evidence_refs": ["<op_intv_id|knowledge_id|ev_id>"], "confirmed_by": "operator|system|historical_evidence", "confirmed_at": "<iso or business_date>"}],
+    "judgment_basis": {"known": ["<L1+L4>"], "inferred": ["<L2+L3>"], "unknown": ["<Evidence Gaps>"], "decision": "<简中>", "confidence_basis": "<简中 — what supports the confidence>"}
+  },
+  "claim_evidence_refs": [{"claim": "<strong claim>", "evidence_refs": ["<ev_id>"], "missing_evidence": ["<gap>"], "claim_type": "numeric|temporal|campaign|operation|consecutive|alternation|stable|baseline|recovery|anomaly|confirmation|reversal|causal|pattern|hypothesis|other"}],
+  "thresholds": [{"statement": "<若 X > N 则 Y>", "provenance": "heuristic|evidence_derived|knowledge_rule|operator_rule|business_policy", "basis_refs": ["<ref>"]}],
+  "prior_cognition": [{"business_date": "YYYY-MM-DD", "kind": "prior_hypothesis|prior_judgment|prior_recommendation", "content": "<T-1 statement>", "status_at_t_minus_1": "proposed|supported|weakened|rejected|unknown", "status_at_t": "proposed|supported|weakened|rejected|unknown", "new_evidence_refs": ["<ev_id>"]}],
+  "observed_facts": ["<L1 fact>"],
+  "supporting_evidence_refs": ["<ev_id>"],
+  "evidence_gaps": ["<unresolved structural fact>"],
+  "business_structure_coverage": [{"dimension": "product|orders|traffic|conversion|operations", "status": "covered|gap|not_applicable", "note": "<structural reading or why unknowable/N-A>", "evidence_refs": ["<ev_id>"], "acquisition_need": "<required when gap: exact fact/data pipeline backlog>"}],
+  "evidence_resolutions": [{"need": "<the evidence need>", "dimension": "product|orders|traffic|conversion|operations", "result": "IN_CONTEXT|RETRIEVED|UNAVAILABLE", "source": "order_replay_retrieval|in_context", "query": "parentOrdersByDay|topContributingOrders|skuLinesByDay|skuGmvContribution|perSkuDailyOrders|", "retrieved_refs": ["<order id / sku id / ev_id used>"], "note": "<when UNAVAILABLE: what was tried and why the held evidence cannot answer>"}],
+  "business_questions": [{"question": "<简中 — 当前判断需要解决的问题，不是缺字段描述>", "bears_on": "<简中 — 哪个判断/假设>", "decision_relevance": "<简中 — 回答它会改变什么>"}],
+  "evidence_requirements": [{"question": "<简中 — 追溯到的 Business Question / Hypothesis>", "subject": "<简中 — UV / 客单价 / 活动记录 …>", "required_semantics": "<简中 — 除了 subject 还必须说明什么>", "business_time": "YYYY-MM-DD 或 YYYY-MM-DD..YYYY-MM-DD 或 空", "temporal_grain": "daily|window_aggregate|any", "scope": "<简中 — 全店 / 单个 SKU / 单渠道>", "provenance_expectation": "<简中 — 什么样的来源才算数>", "decision_relevance": "<简中 — 取得它会改变什么>", "status": "satisfied|unsatisfied|unresolvable"}],
+  "confirmed_action": null
+}
+
+The recommendation MUST follow from your judgment — not from a single metric. 
+If your judgment is "observe" (pseudo-anomaly / insufficient evidence), the 
+recommendation should reflect NOT acting. If human verification is required, 
+list the needed facts under "humanNeeded". Output `confirmed_action: null` 
+— data cannot prove action.
