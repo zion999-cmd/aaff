@@ -2,6 +2,40 @@
 
 |**版本**: v0.13.28 | **Hermes**: v0.20.5 | **S0002 + S0001 governance activated (2026-09-04)** | **2026-09-13 P0013.1 管道建成（IMPLEMENTED — BUSINESS VERIFICATION PENDING）**：Need/Result/Candidate 三合同 + gap/resolution + BLIND goal + freezer（机器 manifest v2.0、对账门控）+ acquisition_jobs + 真 Hermes turn runner + /api/replay/acquisitions + Workspace gap UX；67/67 新测试；真实采集待值守场次。| **2026-09-12 P0013+ Replay 时间区间选择**: 去 5 处硬编码；新增 `GET /api/replay/datasets` 发现端点（dataset-catalog.ts）；POST /runs 服务端读盘校验覆盖区间（越界 400 named error）+ 真 manifest 哈希落库（placeholder 假哈希缺陷修复，ADR-086）；loadRun 补 start_business_date（越界导航修复）；月度评审按 run 实际跨月渲染。追加 UX 修复：「重新回放」改为回到日期选择面板（不再直接建 run），消除面板闪现。134/134 replay 套件（含新 restart-panel 契约 4）+ 真实对账 integration 绿；真实路径全验（子窗口 08-20→09-02 真 Hermes step，51 refs 0 future，探针已清理）。⏳ 待 operator 硬刷新后亲手 Workspace 验收。| **2026-09-12 Task 2 Phase J — Real Replay Acceptance Closure**: run 16468bd3 真实 30/30 日 COMPLETED、30 快照、1396 refs；4/4 验收日（08-10/08-18/09-01/09-02）正式 wiring 真实 Hermes 认知；§2 双粒度对账（header 订单锚定 ¥3932.08/37.1% vs child SKU 行级 ¥3513.89/33.1%，Task 2 无错）；§5 Evidence Access / 指标语义 / No-Future-Leak（SQL+HTTP 400+文本 0 未来事实）/ Evidence Gap 全 PASS（机检 13 PASS 0 FAIL，7 WARN 全部人工裁定）；ADR-085（Hermes 长会话 compression 撞 600s deadline，5/30 日 operator fresh-session 恢复，非接线替代）。**§6 当前 PARTIAL（6/7），唯一未关门项 = operator 真实浏览器 Workspace 亲手验收**；点完即 ACCEPTED。报告 `context/phasej-final-report-2026-09-12.md`，原始认知 `context/phasej-cognition-raw-2026-09-12.md`。OPERATOR ACCEPTANCE ⏳ PENDING（dev server :3000 保持运行至验收完成）。
 
+## ✅ P0013.5 Domain Exploration Methodology & Contract Boundary（2026-09-22，ADR-095，真实 Hermes 已验证）
+
+> 命名空间说明：Proposal 与 ADR 是两套编号空间；P0013.5 由 ADR-092 / ADR-093 / ADR-095 共同服务。
+
+把两次只读审计（`artifacts/fabric-prompt-contract-audit/`）的结论收敛为一条可执行的职责边界：**Fabric owns Goal + Domain Exploration Methodology + Evidence Semantics + Contract；Hermes Runtime owns Execution Planning / Tool Use / Retry / Search / Branching / Orchestration。** 关键修正是：pass 1 的「HOW 应整体移出 Fabric」**过宽** —— 那个桶里 37% 其实是 Fabric 应拥有的领域方法论，只有 22% 是执行控制流。
+
+**实现**：新增 3 个规范 shared section（`EPISTEMIC_DISCIPLINE_SECTION` / `PROVENANCE_SECTION` / `OUTPUT_CONTRACT_SECTION`），两条路径现在 **9 个 shared section 逐字共用**；删除 Execution HOW（固定 9 步 Workflow、Production 的调用预算/重试/预批调用模式、index-first 搜索策略、retrieve→continue 控制流、手工计算步骤）；删除 prompt debt（Output shape 完整 Schema 复述、重复 obligations、Three Concepts、Output Language 逐字段枚举、零 enrichment 时的 6 条规则）；采集 goal builder 去掉强制步骤顺序与重试预算。新增 `prompt-boundary.ts` 机器化边界检查。
+
+**体积**：Production 38,995 → **26,456 B（−32.2%）**；Replay heavy 33,299 → **26,341 B（−20.9%）**；SC1 扫描器对 Production / Replay / acquisition goal 报告 **0 个未豁免 Execution HOW 实例**。
+
+**真实验收**：SC6 run `85c0bded` —— **同一 Hermes session**（`20260922_062634_85d64e`）连续 09-02→09-04 三天 COMPLETED，`prior_cognition` 逐日累积，出现 `proposed→supported` 与 **`supported→weakened`（依反证推翻前日判断）**，No-Future 0 违规。SC7 真实 Production situation `sit_7fa8662b02f1421ebe0f` 完成完整 Evidence-grounded investigation（真实 capabilityUsed、business_questions、带 temporal_grain 的 evidence_requirements、五维 coverage、6 条 resolutions、recommendation.kind=act）。
+
+**SC7 抓到我自己引入的真实回归（已修）**：第一版 output contract 把 JSON 骨架包在代码围栏里，同段又写 "no markdown fences" —— 第一次真实 Production turn 因此输出 Python 单引号 dict，parser 直接失败。去围栏后通过。只有真实 Production cognition 才暴露。
+
+**测试**：新增 `tests/contract/prompt-boundary.contract.ts`（7）；改既有断言 26 处，全部**重新指向新 canonical 位置**，无削弱；全量 **1850 passed / 7 failed**（7 个与 P0013.5 无关，已证实为既存）。
+
+## 🚧 P0013.4 Question-Driven Investigation & Evidence Sufficiency（2026-09-20，ADR-094）— **IMPLEMENTED, ACCEPTANCE BLOCKED**
+
+> 命名空间说明：Proposal 与 ADR 是两套编号空间；P0013.4 由 ADR-091（Cognition Continuity）与 ADR-094（Question-Driven Investigation）共同服务。
+
+把「发现 Unknown → 列 Evidence Gap → 缺少为何值得调查的约束 → observe」推进为**问题驱动调查**：Business Question（**允许不存在**）→ Decision-changing Evidence → Evidence Requirement（结构化语义）→ Evidence Sufficiency → 复用 P0013.2 Resolution → Judgment / Stop。
+
+**实现**：新增 `evidence-grain.ts`（Fabric 对每种 `capability/data_type` 的**时态粒度声明**：`getSummary` = window_aggregate、`getTrend`/`perDaySummary`/`perOrder` = daily；未声明 = `unknown` **fail closed**）与 `evidence-sufficiency.ts`（纯谓词，无评分/无阈值/无 N/N）；`EVIDENCE_SUFFICIENCY_SECTION` 逐字嵌入两条 prompt；`business_questions[]` / `evidence_requirements[]` 加进 `InvestigationSchema` 并落进 `raw_investigation_json`；obligations 新增可机检项。新增 39 个测试 + 7 个 obligation 用例。
+
+**粒度规则的依据是真实 frozen 数据**：`data/jd_acquisition_20260914_0231` 的 getSummary 是**单行整窗口聚合**（`date_range 09-02..09-13`，UV=45124/CVR=0.0936 戳在 09-13），故「有 UV」≠「满足 09-03 的 daily UV Requirement」。
+
+**真实验收发现我自己实现的 3 个缺陷**（全部已修复 + 回归测试）：① subject 列表被截断，恰好切掉 UV/加购等 traffic 指标；② 分组 alias 使 `订单金额分布/Top 单/SKU 贡献` 无法包含匹配 → 正确 claim 被拒；③ obligation 6e 要求每个 `unsatisfied` 都必须有 resolution 记录（把合理的"未来日观察项"判成失败）；④ obligation 6c 要求 requirement 的 question 与 business question **字面包含**（Agent 复述措辞即被拒）。后两项改为**基于证据**的双向判定与结构性下限。
+
+**真 Hermes 证据**：run `da2fc53a`（session `20260920_165118_e4e013`，grok-4.5/new-api）09-03 产出完整链条 —— Business Question「09-03三笔千元级中秋礼盒大单…是节令礼赠/活动放量，还是不可重复的少量脉冲？」+ 2 条追溯其上的 requirement（1 `unresolvable` / 1 `satisfied`，Fabric 谓词独立确认 satisfied 为真）。**该 turn 未被重跑**（见阻塞）。No-Future 违规 0。
+
+**BLOCKED（两项，均在实现之外）**：① provider `403` 额度耗尽（team credits / monthly limit）→ 无法跑完 11 天窗口；按提案边界不得改 model/provider，故停止而非替代。② Hermes learning loop 在本次运行中**重新生成了 P0013 污染**：`~/.hermes/skills/investigation-contract-output/references/case-log-p0013-replay-order-structure.md`（2026-09-20 17:04 新建，记录 run `da2fc53a`）+ 同目录 `SKILL.md` 新增 `## P0013 Historical Cognitive Replay (order structure)` 段；run `8f8924b4` 的 session 已加载该 case log → 该 run 不可作为干净证据。**未删除/未修改**（前次隔离授权仅限当时任务）。这说明此前的污染隔离**不具持久性**。
+
+**未验证**：完整 11 天窗口的最终契约 clean Replay；与 "observe 11/11" 基线的对比；固定契约下 09-03 行为的 live 复现。业务问题质量属 SC10，由 operator 判定。报告 `context/p0013-4-acceptance-2026-09-20.md`。
+
 ## ✅ P0013.5 Cognition Path Audit — Production vs Replay（2026-09-16，ADR-093）
 
 Operator 报告 Replay「退化为订单/商品复述并错误声称 Traffic/CVR 不可见」。只读审计（代码 + persistence + `~/.hermes/state.db` 真实 trace）结论：**不存在两套 cognition pipeline**（共用 WS client / collectTurn / parseInvestigation / 同一份共享 contract）；真正的分叉在 **Evidence Universe 层** —— Production runtime loop 按业务日采 `trade.overview`（每日有 UV/CVR），而 Replay 的 frozen 数据集对 KPI **只有整窗口聚合**（8 次抓取全部 `09-02..09-13`）。**第一次丢失点** = 聚合被戳成 `business_date = window.end (09-13)`，`business_date <= T` 下 run 窗口内永不可见；**第二次丢失点** = getSummary 渲染器只输出 4/12 KPI。故 Agent 的「不可见」陈述**事实正确**（按日 traffic/CVR 从未采集）。

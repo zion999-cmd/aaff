@@ -3513,3 +3513,80 @@ Date: 2026-09-16 | Status: ACCEPTED | 依据：Production vs Replay cognition pa
   - **Production probe**（真 Hermes，`sit_7a844c4ba80c3305a399`）：`stopReason=judgment`，`traffic:covered` / `conversion:covered`（因有按日 UV/CVR），7 hypotheses / 4 obs facts / 6 gaps，judgment 引用真实 `uv=390、cvr≈6.9%`。**Production lifecycle 无回归**。
 - **测试**：新增 `tests/contract/replay-evidence-universe.contract.ts` **9/9**（含对**真实 frozen 文件**的两项断言：UV/PV/CVR 必须被渲染、必须标注覆盖窗口）。全套件 **1786 passed / 5 failed + 1 file error**；其中 4 项为本任务前既存（live-d1 缺 token、chat.contract CDP 超时、clear-block-dispatcher 按钮漂移、evidence-store-history 日期硬编码、gettrend-provider-watermark 文案漂移），另 1 项 `executor.test.ts` 为并行测试的 `trg_situations_lifecycle_guard already exists` schema 竞态（**单独运行通过**）。typecheck 83（= 基线）。
 - **边界**：未为 Replay 硬编码 UV/CVR；未新建第二套 Replay investigation framework；未向 prompt 塞更多固定字段；未改 Knowledge 内容；未实现自动 Evidence Gap acquisition；未改 runner / clock / coverage / dataset / schema / Hermes / 模型。Artifact：`context/p0013-5-cognition-path-audit-2026-09-16.md`。
+
+---
+
+## ADR-094 — Evidence has a temporal grain: "field exists ≠ requirement satisfied" (P0013.4 Question-Driven Investigation)
+
+Date: 2026-09-20 | Status: IMPLEMENTED — ACCEPTANCE BLOCKED（见文末）| 依据：`proposals/P0013.4-question-driven-investingation-evidence-sufficiency.md`
+
+> 命名空间说明：P0013.4 由 ADR-091（Cognition Continuity）与本 ADR-094（Question-Driven Investigation & Evidence Sufficiency）共同服务。
+
+- **Context**: Hermes contamination isolation 后，干净 Replay 的 Recommendation 仍是 `observe 11/11`，且每天重复同一份 missing-field 列表。瓶颈不在状态分类污染，也不在数据量，而在 Investigation 缺少一条语义链：**我在回答什么 Business Question → 什么 Evidence 会改变当前判断 → 现有证据够不够 → 什么时候该停**。
+
+  还有一个更具体、此前无法表达的事实：frozen 数据集 `data/jd_acquisition_20260914_0231` 的 `trade.overview/getSummary` 是**单行整窗口聚合**（`date_range 2026-09-02..2026-09-13`，UV=45124 / CVR=0.0936 全部戳在 `business_date=2026-09-13`），而 `getTrend` 是 12 行按日但**只带 GMV/行业 GMV 序列**。也就是说 UV/CVR **真实存在**，但**无法回答「09-03 当天 UV 是多少」**。在 `(capability, data_type, business_date)` 这一层，12 天聚合与单日读数**无法区分**——所以系统当时根本说不出这句话。
+
+- **Decision**:
+  1. **新增粒度声明层** `evidence-grain.ts`：Fabric 显式声明每种 `capability/data_type` 的 `temporal_grain`（`daily` / `window_aggregate` / `point_in_time` / `unknown`）与它承载的 subject aliases。**未声明的 kind 一律 `unknown` 并对任何带日期的 requirement fail closed** —— 绝不默认按日。
+  2. **新增纯谓词** `evidence-sufficiency.ts`：`sufficient` 当且仅当「有 held 且 visible 的 kind 承载该 subject，且其粒度/时间能覆盖 requirement 的 business_time」。**没有百分比、没有比值、没有阈值阶梯、没有 N/N**（提案逐条禁止）。
+  3. **契约只有一份**：`EVIDENCE_SUFFICIENCY_SECTION` 逐字嵌入 Production 与 Replay 两条 prompt；Business Question **允许不存在**，`business_questions: []` 是合法的一天。
+  4. **Schema 纯增量**：`business_questions[]` / `evidence_requirements[]`（question / subject / required_semantics / business_time / temporal_grain / scope / provenance_expectation / decision_relevance / status）。可选字段容忍模型显式 `null`（本文件既有惯例）；两个义务字段不宽容。
+  5. **Resolution 与 Sufficiency 保持两个问题**：不新建 resolver；对 claim 做**双向**机检 —— 声称 `satisfied` 但证据撑不起 = over-claim；留 `unsatisfied` 而证据其实已覆盖 = under-claim（P0013.2「Context Missing ≠ Evidence Missing」的另一方向）。
+
+- **真实验收发现并修正了我自己实现的 4 个缺陷**（只有跑真 Hermes 才会暴露）：
+  1. prompt 中 subject 列表被截断到 14 项，恰好切掉 UV/加购等 traffic 指标；
+  2. 分组 alias 使复合 subject（`订单金额分布/Top 单/SKU 贡献`）包含匹配失败 → 正确的 `satisfied` 被误拒。修正＝匹配 alias（细粒度）与展示 label（分组）分离；
+  3. obligation 6e 要求每个 `unsatisfied` 都配 resolution 记录 → 把「未来日观察项」这种合法开放项判成失败。已删除，改为基于证据的判定；
+  4. obligation 6c 要求 requirement 的 question 与 business question **字面包含** → Agent 复述措辞即被拒。判断两段散文是不是同一个问题是**语义判断**，属 operator（SC10），不属 Fabric。改为结构性下限。
+
+- **真 Hermes 证据**：run `da2fc53a`（session `20260920_165118_e4e013`；provider/model 为 config 声明值 `grok-4.5`/`new-api`，state.db 无 model 列故未能在运行时独立证实）2026-09-03 产出完整链条：Business Question「09-03三笔千元级中秋礼盒大单（1596/1311/1016）是节令礼赠/活动放量，还是不可重复的少量脉冲？」→ 2 条追溯其上的 Evidence Requirement（1 `unresolvable`：活动/客户类型字段 frozen 订单行没有；1 `satisfied`：订单金额结构，`perOrder` daily 在 T=09-03 确实可见）。Fabric 谓词**独立确认该 `satisfied` 为真**（`tests/unit/replay/p0013-4-real-output-replay.test.ts` 把这段真实输出喂回修正后的 validator，断言接受；并把 claim 改指到未持有证据时断言拒绝）。No-Future 违规 0。
+
+- **BLOCKED**（两项均在实现之外，未发明等价验收）：
+  1. provider `403`：team credits 耗尽 / monthly limit。按提案边界不得改 model/provider。
+  2. **Hermes learning loop 在本次运行中重新生成了 P0013 污染**：`~/.hermes/skills/investigation-contract-output/references/case-log-p0013-replay-order-structure.md`（2026-09-20 17:04 新建，内容为 run `da2fc53a` 的 case log）＋同 skill 的 `SKILL.md` 新增 `## P0013 Historical Cognitive Replay (order structure)` 段与索引；run `8f8924b4` 的 session 通过 `skill_view` 加载了该 case log（session `20260920_171249_9e98b6` 的消息 27738/27744）。因此该 run 不是干净证据。**未删除/未修改任何 Hermes 状态**（前次隔离授权仅限当时任务）。结论：**污染隔离不具持久性**——learning loop 会在同一会话内重建等价物。
+
+- **边界**：未创建第二套 Resolution / 未新建 cognition kernel / 未为 Replay 建专用调查框架 / 未强制每日生成 Business Question / 未使用 N/N、评分、阈值、固定 gate / 未改 Knowledge 内容 / 未动 `producer.ts`、`rules.ts`、P0010.2.11 watermark、Workspace UI / 未改 model、provider 或 Hermes 源码。Production 仅新增共享段落与 shape 字段，producer/rules 选择语义未变。
+
+- **未验证**：完整 11 天窗口的最终契约 clean Replay；与「observe 11/11」基线的对比；固定契约下 09-03 行为的 live 复现。业务问题质量属 SC10。
+
+---
+
+## ADR-095 — Domain Exploration Methodology vs Execution HOW: the Fabric/Hermes boundary (P0013.5)
+
+Date: 2026-09-22 | Status: IMPLEMENTED + REAL-HERMES VERIFIED | 依据：`proposals/P0013.5-domain-exploration-methodology-contract-boundary.md`
+
+> 命名空间说明：Proposal 编号与 ADR 编号是两套独立命名空间 —— 同一个 Proposal 可以由多条 ADR 服务（P0013.5 目前由 ADR-092 / ADR-093 / 本 ADR-095 共同服务），ADR 编号也不会被某个 Proposal「占用」。引用历史结论时带标题是为了可检索，不是因为编号冲突。
+
+- **Context**: 两次只读审计（`artifacts/fabric-prompt-contract-audit/`，pass 1 + pass 2）把 prompt 逐字节归因后得到：Replay heavy 零证据 33,299 B、Production investigation 零证据 38,995 B；其中 **Fabric 合法拥有 57.6% / 52.6%、Hermes Execution HOW 13.2% / 19.8%、纯 prompt debt 29.1% / 27.6%**。pass 1 曾判断「HOW 应整体移出 Fabric」，pass 2 证明该判断过宽：那个 HOW 桶里 **37% 其实是领域探索方法论**（Fabric 应当拥有），只有 22% 是真正的执行控制流。
+
+  同时发现两个结构问题：**~13.5 KB 规则文本被两条路径各维护一份且已漂移**（Output Language 2,144 B vs 256 B、Epistemic Layers 2,300 B vs 1,365 B 等）；以及 **prompt 复述了 parser/schema 已经 fail-closed 强制的内容**（Output shape 4.3–4.8 KB + obligations 0.9 KB）。
+
+- **Decision**（新增 3 个规范 shared section，删除/精简 Execution HOW，不新增任何 fabric 侧 agent 行为）：
+
+  1. **新增单一来源** `analysis-contract.ts`：`EPISTEMIC_DISCIPLINE_SECTION`（L1–L5 表；删掉 4 条 how-to-classify 示例）、`PROVENANCE_SECTION`（合并 per-claim + threshold）、`OUTPUT_CONTRACT_SECTION`（字段骨架 + 语言/动作边界；删除逐字段散文）。加上原有 6 个常量，两条路径现在 **9 个 shared section 逐字共用**。
+
+  2. **删除 Execution HOW**：两条 prompt 的固定 9 步 `## Investigation Workflow`；Production 的 Tool Surface 调用预算/重试/预批调用模式（`call ONCE per`、`retry ONCE`、`allowed pattern A → B → C`、`tool_search at most once`）；`INDEX.md → domain INDEX → ONE page` 这种 index-first **搜索策略**；`retrieve ... then continue` 控制流；`filter rows to date == T yourself / compute ex-top1 AOV yourself` 这类手工计算步骤。权限边界、T 边界、provenance、证据语义、方法论**全部保留**。
+
+  3. **删除 prompt debt**：`## Output shape` 完整 Schema 复述（4,269/4,813 B）、重复的 `## Formal output obligations`、`## Three Concepts`、Production 的 `## Output Language` 逐字段枚举（1,644 B）、零 enrichment 时的 6 条规则（改为**有 enrichment 才输出**，1,172 B）。
+
+  4. **采集 goal builder 去越界**：删掉 `## Step 1 — Inventory existing assets before exploring (required)` 的强制顺序与 `do not retry the same path more than 3 times` 重试预算，改为陈述交付物而非步骤。
+
+  5. **新增机器可检边界** `apps/ecommerce/runtime/investigation/prompt-boundary.ts`：对**渲染后**的 prompt 扫描 10 类 Execution-HOW 形态，返回未豁免实例；豁免表显式声明且被测试钉住（不能静默放宽）。
+
+- **结果（零证据基准）**：Production **38,995 → 26,456 B（−32.2%）**；Replay heavy **33,299 → 26,341 B（−20.9%）**；SC1 扫描器对 Production / Replay / acquisition goal 均报告 **0 个未豁免 Execution HOW 实例**。
+
+- **真实验收**：
+  - **SC6 Replay 连续认知**：run `85c0bded`，**同一个 Hermes session**（`20260922_062634_85d64e`，3 条 user prompt）连续 09-02 → 09-04 三天全部 COMPLETED；`prior_cognition` 逐日累积；出现 `proposed→supported`（新证据支持假设）与 **`supported→weakened`（反证出现后推翻前日判断）**；**No-Future 违规 0**。
+  - **SC7 Production 不退化**：真实 situation `sit_7fa8662b02f1421ebe0f` 完成完整 Evidence-grounded investigation —— 真实 `capabilityUsed`（traffic.overview / trade.detail / product.overview…）、`business_questions[1]`、带 `temporal_grain` 的 `evidence_requirements[1]`、五维 `business_structure_coverage`（1 covered / 4 gap）、`evidence_resolutions[6]`（RETRIEVED/IN_CONTEXT/UNAVAILABLE）、`epistemic_layers`、`claim_evidence_refs[5]`、`thresholds[3]`、`recommendation.kind=act`、`recommendation_executed=false`。
+
+- **SC7 抓到的真实回归（我自己的改动引起，已修）**：第一版 `OUTPUT_CONTRACT_SECTION` 把 JSON 骨架包在 ``` 代码围栏里，而同一段又写着 "no markdown fences" —— 自相矛盾。第一次真实 Production turn 因此以 **Python 单引号 dict**（`{'situationId': ...}`）输出，`parseInvestigation` 直接失败。去掉围栏后重跑即通过。**这条只有在真实 Production cognition 下才暴露**，是 SC7 存在的理由。
+
+- **测试**：新增 `tests/contract/prompt-boundary.contract.ts`（7，SC1 双向：无 Execution HOW + 方法论未丢）；改动既有断言 26 处 —— 全部是**重新指向新的 canonical 位置**，没有削弱语义（S0002 §15）；其中 3 处按真实行为更正（`confirmed→supported` 早在 2026-09-06 已从 normalizer 删除，旧 prompt 属**陈旧指引**）。全量 **1850 passed / 7 failed**，7 个失败与 P0013.5 无关且已逐一证实为既存（app.js / cdp-client Sep-7 债务、chat.contract 需 live MCP、fabric-mcp-browser-tools 并行 flake、runtime-loop 既存）。
+
+- **边界**：未新增/补齐任何 traffic/conversion/operations/inventory/refund/buyer 数据；未实现新 acquisition capability；未修 `parentOrdersByDay` 接线；未改 Hermes planner/tool loop/retry/session/provider；未新增 fabric 侧 loop/branching/retry/tool-orchestrator；未把探索方法写成固定 SOP；未修改 Knowledge 内容或业务数据；**未重构 `situation-chat.ts` 的 `finalizePrompt` 分支**（已记录为 Runtime-boundary debt，本阶段只保证不再扩张）；Light Prompt 未接线为默认。
+
+- **未解决 / 记录**：`finalizePrompt` 仍是 Fabric 侧唯一一次「依据中间结果分支」（F3 判定：Fabric 尚未成为 Agent，但它把控制流写进了 prompt）；`output contract` 仍是最大单块（~3.7 KB 字段骨架 + 规范枚举），保留理由是模型无法自行推断字段名与 canonical 词表。
+- **残留风险（三条，operator 2026-09-23 复核后保留）**：
+  1. **`prompt-boundary.ts` 是静态模式扫描器，不是职责边界本身。** 它能防**已知形态**回归（10 类 pattern + 显式豁免表），但**不能证明**未来没有人换一种措辞把 execution control 写回去。真正的 authority 仍然是 ADR / Proposal + code review；扫描器只是 guardrail。
+  2. **`finalizePrompt`（`situation-chat.ts:817-831`）是最值得挂账的 Runtime 边界债务**：`model output → Fabric 判断 → Fabric 改变下一次 prompt → 再执行`。目前只有一次分支，本阶段**故意未处理**；但若继续增加同类分支，它会很快长成 Fabric planner。**必须保留醒目标记。**
+  3. **测试表述必须精确**：本阶段应表述为「**P0013.5 scoped tests pass；full suite 有 7 个已证明的 pre-existing failures**」，不得写成"全量 suite 通过"。
