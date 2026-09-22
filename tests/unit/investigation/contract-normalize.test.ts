@@ -356,12 +356,19 @@ describe('buildInvestigationPrompt — vocabulary constraint is enforced in the 
     expect(p).toMatch(/"rejected"/);
   });
 
-  test('prompt names the known drift values that the system normalizes', () => {
-    const p = buildInvestigationPrompt(stub, null);
-    // The prompt must teach the Agent what we will (and won't) accept.
-    expect(p).toMatch(/confirmed/);
-    expect(p).toMatch(/strongly_supported/);
-    expect(p).toMatch(/partially_rejected/);
+  test('enum legality is runtime-enforced: the live synonyms normalize, the removed one fails closed', () => {
+    // P0013.5 moved this guarantee (Design §3 — "enum legality" is
+    // Runtime-Enforced, and the code is the final authority), so the assertion
+    // lives with the normalizer that owns it.
+    //
+    // The prompt used to advertise a drift allow-list that was itself stale:
+    // it listed `confirmed -> supported`, a rewrite the 2026-09-06 Epistemic
+    // Integrity work had DELETED (it masked an L3->L4 silent upgrade). Removing
+    // the list from the prompt removed stale guidance; the live behaviour is
+    // asserted here instead.
+    expect(normalizeHypothesisStatus('strongly_supported')).toEqual({ ok: true, status: 'supported', original: 'strongly_supported' });
+    expect(normalizeHypothesisStatus('partially_rejected')).toEqual({ ok: true, status: 'weakened', original: 'partially_rejected' });
+    expect(normalizeHypothesisStatus('confirmed')).toEqual({ ok: false, original: 'confirmed' });
   });
 
   test('prompt lists the four canonical stop reasons as EXACT strings', () => {

@@ -58,16 +58,22 @@ const replayPrompt = buildReplayInvestigationPrompt({
 });
 
 describe('P0013.5 shared Knowledge obligation', () => {
-  it('the shared section states index-first navigation, not directory scanning', () => {
+  it('the shared section names the index as an available asset without mandating a search procedure', () => {
+    // P0013.5 (Design §6) removed the prescribed index-first SEQUENCE: how to
+    // search is Execution HOW and belongs to the Runtime. What must survive is
+    // that the Agent knows the index exists and that no page is compulsory.
     expect(KNOWLEDGE_ANALYSIS_SECTION).toContain('knowledge/INDEX.md');
     expect(KNOWLEDGE_ANALYSIS_SECTION).toMatch(/semantic router/i);
-    expect(KNOWLEDGE_ANALYSIS_SECTION).toMatch(/domain `INDEX\.md`/);
-    expect(KNOWLEDGE_ANALYSIS_SECTION).toMatch(/do not scan the directory/i);
+    expect(KNOWLEDGE_ANALYSIS_SECTION).toMatch(/domain has its own `INDEX\.md`/i);
+    expect(KNOWLEDGE_ANALYSIS_SECTION).toMatch(/How you search it is yours to decide/i);
   });
 
-  it('the shared section bounds reading (one page; more only if cross-referenced)', () => {
-    expect(KNOWLEDGE_ANALYSIS_SECTION).toMatch(/ONE most relevant page/i);
-    expect(KNOWLEDGE_ANALYSIS_SECTION).toMatch(/second page only if that page explicitly cross-references/i);
+  it('the shared section keeps reading unbounded by quota (no compulsory page)', () => {
+    // The old "exactly ONE page, a second only if cross-referenced" rule was a
+    // reading procedure. The requirement that survives — and the one that
+    // matters for behaviour — is that no page is mandatory and no reference
+    // count is required.
+    expect(KNOWLEDGE_ANALYSIS_SECTION).toMatch(/no required number of knowledge references and no page you must read/i);
   });
 
   it('the shared section requires using Knowledge as method, with Evidence as the world', () => {
@@ -93,16 +99,22 @@ describe('P0013.5 shared Knowledge obligation', () => {
     expect(replayPrompt).toContain(KNOWLEDGE_ANALYSIS_SECTION);
   });
 
-  it('BOTH prompts carry the navigation instruction (replay is no longer boundary-only)', () => {
+  it('BOTH prompts carry the shared Knowledge section, and it names the index', () => {
     for (const prompt of [productionPrompt, replayPrompt]) {
+      expect(prompt).toContain(KNOWLEDGE_ANALYSIS_SECTION);
       expect(prompt).toContain('knowledge/INDEX.md');
-      expect(prompt).toMatch(/ONE most relevant page/i);
+      expect(prompt).toMatch(/never evidence about what happened in this shop today/i);
     }
   });
 
   it('BOTH prompts make Knowledge + Evidence a hypothesis source', () => {
-    expect(productionPrompt).toMatch(/Form initial hypotheses\*\* from Knowledge \+ Evidence/);
-    expect(replayPrompt).toMatch(/Form at most 3 hypotheses from Knowledge \+ Evidence/);
+    // P0013.5 removed the fixed Investigation Workflow that used to carry this
+    // sentence. The requirement is unchanged and now lives once, in the shared
+    // section both prompts embed.
+    expect(KNOWLEDGE_ANALYSIS_SECTION).toMatch(/Knowledge together with Evidence may produce a `hypotheses\[\]` entry/);
+    for (const prompt of [productionPrompt, replayPrompt]) {
+      expect(prompt).toContain(KNOWLEDGE_ANALYSIS_SECTION);
+    }
   });
 
   it('replay no longer restricts reading to the single retrieval tool', () => {

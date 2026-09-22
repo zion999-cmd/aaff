@@ -29,16 +29,16 @@ You are tasked with acquiring REAL, VERIFIABLE historical business data for the 
 
 The requested window is a NEED, not a promise about what the source can provide. The source may cover only part of it (for example it may only serve a recent rolling window). Record the **actual window** truthfully. Never relabel a source date to match the requested window, never synthesize missing days, never treat the requested window as satisfied when it is not. Missing/unavailable facts must be reported explicitly as gaps.
 
-## Step 1 — Inventory existing assets before exploring (required)
+## Report what you reused
 
-Before touching the browser, inventory what already exists in this repository: existing application code, prior acquisition scripts, prior experiment outputs, and whatever capabilities Fabric exposes through its tools. Prefer reusing an existing asset over rebuilding. Reuse of an existing proven path is a GOOD outcome, not a failure.
+You are free to inventory this repository, prior acquisition scripts, prior experiment outputs and the capabilities Fabric exposes, and reusing a proven path is a good outcome rather than a failure — but which assets you consult, and in what order, is yours to decide.
 
 Your final report AND result.json MUST explicitly partition everything you used into three lists:
 - **reused**: existing assets you used as-is (name each file/tool),
 - **rediscovered**: facts/methods that already existed somewhere but you found again yourself,
 - **newly built**: assets you had to create.
 
-## Step 2 — Acquire using whatever reasonable path you choose
+## How to acquire — your choice
 
 Any path is allowed: existing Fabric capabilities, existing repository code or scripts, browser automation, Python, your own temporary tools — whichever you judge most likely to produce real verified data. Neither path is forced. If you create new helper code, place it **inside the intake directory**; do not modify production application code. If you run an existing script, direct all of its outputs into the intake directory.
 
@@ -49,7 +49,7 @@ Any path is allowed: existing Fabric capabilities, existing repository code or s
 - At most one debugger connection per script invocation, and reuse ONE page object across that whole script. Never loop "open a new tab + navigate" — doing so steals the operator's foreground and invalidates the run.
 - Do not launch a separate browser instance.
 
-## Step 3 — Deliver the Evidence Contract into the intake directory
+## What to deliver — the Evidence Contract
 
 Intake directory (write everything here):
 ${intakeDir}
@@ -114,7 +114,7 @@ A description of the method that actually worked, as a candidate for FUTURE reus
 - ACQUISITION FAILED (source found but data could not be pulled)
 - VERIFICATION FAILED (data obtained but completeness or semantics cannot be proven)
 
-Do not wait on the operator for implementation hints. Do not ask questions. If you find yourself looping on one failing approach, switch path or stop; do not retry the same path more than 3 times.
+Do not wait on the operator for implementation hints. Do not ask questions. If you find yourself looping on one failing approach, change approach or stop.
 
 ## Final message
 

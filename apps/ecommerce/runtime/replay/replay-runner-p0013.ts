@@ -104,6 +104,13 @@ export interface KernelStepResult {
     readonly supportingEvidenceRefs?: readonly string[];
     readonly businessStructureCoverage?: ReadonlyArray<Record<string, unknown>>;
     readonly evidenceResolutions?: ReadonlyArray<Record<string, unknown>>;
+    // ── P0013.4 question-driven investigation ──
+    // Traceability artifacts: the Business Questions the Agent actually asked
+    // and the structured requirements it derived from them. Persisted through
+    // raw_investigation_json so "the requirement traces to a question" is
+    // auditable from the snapshot alone, not only from the Hermes transcript.
+    readonly businessQuestions?: ReadonlyArray<Record<string, unknown>>;
+    readonly evidenceRequirements?: ReadonlyArray<Record<string, unknown>>;
     readonly stopReason?: string | null;
   };
 }

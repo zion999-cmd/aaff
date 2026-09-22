@@ -9,14 +9,35 @@
 
 import type { Investigation } from '#shared/schemas/investigation.js';
 import { BUSINESS_STRUCTURE_DIMENSIONS } from './analysis-contract.js';
+import {
+  evaluateRequirementSufficiency,
+  type AvailableEvidence,
+} from './evidence-sufficiency.js';
 
 const DIMENSION_KEYS = BUSINESS_STRUCTURE_DIMENSIONS.map((d) => d.key);
+
+/**
+ * P0013.4 — what the caller knows about the evidence the system holds.
+ *
+ * `availableEvidence` is supplied by Historical Replay (it already builds the
+ * run's inventory via `heldEvidenceFor`). Production has no equivalent
+ * inventory today and passes nothing, which disables ONLY the
+ * fabric-verified sufficiency check below. The traceability and
+ * decision-relevance obligations always apply on both paths — they need no
+ * inventory, they only need the Agent to have said why it is asking.
+ */
+export interface AnalysisObligationContext {
+  readonly availableEvidence?: readonly AvailableEvidence[];
+}
 
 /**
  * Returns the list of contract violations. Empty array = the completed
  * investigation satisfies the shared Analysis Contract.
  */
-export const validateAnalysisObligations = (inv: Investigation): string[] => {
+export const validateAnalysisObligations = (
+  inv: Investigation,
+  context: AnalysisObligationContext = {},
+): string[] => {
   const errors: string[] = [];
 
   // ── 1. At least one L1 fact the judgment stands on ──────────────────
@@ -149,6 +170,115 @@ export const validateAnalysisObligations = (inv: Investigation): string[] => {
     errors.push(
       `UNAVAILABLE evidence resolutions require a note explaining what was tried and why held evidence cannot answer`,
     );
+  }
+
+  // ── 6. P0013.4 Question-driven investigation & Evidence Sufficiency ──
+  //
+  // NOTE ON ABSENCE: an empty `business_questions[]` / `evidence_requirements[]`
+  // is a VALID turn — "no material business question today" is a legal answer
+  // and the contract never asks for a question per day. Every check below is
+  // conditional on requirements having been emitted at all. Nothing here may
+  // be turned into an "at least one requirement" rule.
+  const requirements = inv.evidence_requirements ?? [];
+  const questions = inv.business_questions ?? [];
+
+  if (requirements.length > 0) {
+    // 6a. Traceability — a requirement must say which question it serves.
+    const untraceable = requirements.filter((r) => !r.question || r.question.trim().length === 0);
+    if (untraceable.length > 0) {
+      errors.push(
+        `evidence_requirements[] entries must name the Business Question / Hypothesis they trace to ` +
+          `(${untraceable.length} missing) — a free-floating requirement is the missing-field list this contract forbids`,
+      );
+    }
+
+    // 6b. Decision relevance — what would change if the evidence arrived.
+    const unrelevant = requirements.filter(
+      (r) => !r.decision_relevance || r.decision_relevance.trim().length === 0,
+    );
+    if (unrelevant.length > 0) {
+      errors.push(
+        `evidence_requirements[] entries require decision_relevance: what judgment/hypothesis/recommendation ` +
+          `would change if the evidence were obtained (${unrelevant.length} missing)`,
+      );
+    }
+
+    // 6c. Requirements must have somewhere to trace FROM. This is a
+    //     STRUCTURAL floor, not a semantic match.
+    //
+    //     An earlier version compared the requirement's `question` against the
+    //     stated questions by normalized string containment, and the
+    //     2026-09-20 acceptance run showed why that cannot work: the Agent
+    //     traced its requirements to a real Business Question but restated it
+    //     in the requirement field (dropping the parenthesised amounts and the
+    //     word "少量"), so an honest, correctly-linked turn was rejected for
+    //     not matching character-for-character. Deciding whether two prose
+    //     statements are the same question is a semantic judgement, not a
+    //     string operation — and it is the Human operator's call (SC10), not
+    //     Fabric's.
+    //
+    //     What Fabric CAN soundly reject is the pathological case the proposal
+    //     names: requirements appearing when there is nothing at all they
+    //     could have come from — no Business Question, no Hypothesis, and no
+    //     prior cognition.
+    if (questions.length === 0 && (inv.hypotheses ?? []).length === 0
+        && (inv.prior_cognition ?? []).length === 0) {
+      errors.push(
+        'evidence_requirements[] emitted with no business_questions[], no hypotheses[] and no prior_cognition[]: ' +
+          'a requirement must come from something you are actually trying to decide, not from a missing-field list',
+      );
+    }
+
+    // 6d. Both DIRECTIONS of the sufficiency claim are checked against
+    //     Fabric's own grain/coverage facts, wherever an inventory exists:
+    //
+    //       claimed `satisfied` but the held evidence cannot carry it
+    //         → over-claim ("field exists ≠ requirement satisfied");
+    //       left `unsatisfied` while the held evidence already DOES carry it
+    //         → under-claim, i.e. a gap declared for something the system
+    //           holds (P0013.2's "Context Missing ≠ Evidence Missing").
+    //
+    //     This is deliberately an EVIDENCE check, not a bookkeeping one. An
+    //     earlier version demanded that every unsatisfied requirement carry a
+    //     matching `evidence_resolutions[]` row; the 2026-09-20 acceptance run
+    //     showed why that is wrong — Hermes raised a legitimately open,
+    //     forward-looking requirement ("后续日订单结构中的礼盒大单…", evidence
+    //     that does not exist yet at T) and the run FAILED for not filing
+    //     paperwork, not for any epistemically wrong claim. A requirement that
+    //     neither claim can be refuted on is simply an honest open item.
+    const available = context.availableEvidence;
+    if (available !== undefined) {
+      const overclaims: string[] = [];
+      const underclaims: string[] = [];
+      for (const r of requirements) {
+        if (r.status === 'satisfied') {
+          const verdict = evaluateRequirementSufficiency(r, available);
+          if (!verdict.sufficient) {
+            overclaims.push(`"${r.subject}" — ${verdict.reasons.join('; ')}`);
+          }
+        } else if (r.status === 'unsatisfied') {
+          const verdict = evaluateRequirementSufficiency(r, available);
+          if (verdict.sufficient) {
+            underclaims.push(
+              `"${r.subject}" — held evidence already carries it; resolve it through the existing ` +
+                `Evidence Resolution (IN_CONTEXT/RETRIEVED) instead of leaving it open`,
+            );
+          }
+        }
+      }
+      if (overclaims.length > 0) {
+        errors.push(
+          `evidence_requirements[] claimed satisfied but the held evidence cannot carry the requirement ` +
+            `(field exists ≠ requirement satisfied): ${overclaims.join(' | ')}`,
+        );
+      }
+      if (underclaims.length > 0) {
+        errors.push(
+          `evidence_requirements[] left unsatisfied but the held evidence already carries them ` +
+            `(resolve before declaring a gap): ${underclaims.join(' | ')}`,
+        );
+      }
+    }
   }
 
   return errors;

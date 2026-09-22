@@ -22,3 +22,25 @@ export type {
   ContractNormalizationResult,
   EpistemicDriftRecord,
 } from './normalize.js';
+// P0013.4 — Question-driven investigation & Evidence Sufficiency.
+export { validateAnalysisObligations } from './analysis-obligations.js';
+export type { AnalysisObligationContext } from './analysis-obligations.js';
+export {
+  EVIDENCE_KIND_DECLARATIONS,
+  findEvidenceKindDeclaration,
+  resolveEvidenceGrain,
+  subjectMatchesKind,
+  isSubjectDeclaredAnywhere,
+  normalizeSubject,
+} from './evidence-grain.js';
+export type { EvidenceKindDeclaration } from './evidence-grain.js';
+export {
+  evaluateRequirementSufficiency,
+  parseBusinessTime,
+  toAvailableEvidence,
+} from './evidence-sufficiency.js';
+export type {
+  AvailableEvidence,
+  HeldEvidenceLike,
+  RequirementSufficiency,
+} from './evidence-sufficiency.js';

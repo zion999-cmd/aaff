@@ -59,10 +59,16 @@ import {
   ANALYSIS_OUTPUT_OBLIGATIONS,
   COGNITION_CONTINUITY_SECTION,
   EVIDENCE_RESOLUTION_SECTION,
+  EVIDENCE_SUFFICIENCY_SECTION,
   KNOWLEDGE_ANALYSIS_SECTION,
   REPLAY_ORDER_RETRIEVAL_SECTION,
+  EPISTEMIC_DISCIPLINE_SECTION,
+  PROVENANCE_SECTION,
+  OUTPUT_CONTRACT_SECTION,
   formatPriorCognitionSection,
 } from '../investigation/analysis-contract.js';
+import { findEvidenceKindDeclaration } from '../investigation/evidence-grain.js';
+import { toAvailableEvidence } from '../investigation/evidence-sufficiency.js';
 import { visibleEnrichmentsAt, type EnrichmentRow } from './enrichment-store.js';
 
 // ── P0013.3 Enrichment rendering ───────────────────────────────────────
@@ -84,6 +90,24 @@ const formatEnrichments = (rows: readonly EnrichmentRow[]): string => {
     )
     .join('\n');
 };
+
+/**
+ * P0013.5 — the enrichment RULES are emitted only when there is something to
+ * apply them to. They used to be unconditional: with zero enrichments the
+ * prompt still carried six bullets explaining how to weigh records that did not
+ * exist. The rules are unchanged in substance — this is dead-text removal.
+ */
+const enrichmentRules = (rows: readonly EnrichmentRow[]): string[] =>
+  rows.length === 0
+    ? []
+    : [
+        `Enrichment rules:`,
+        `- These records are BACKGROUND CONTEXT the operator happened to record — dated inputs, operator-attributed, not system-acquired. They are NOT an agenda: you are not required to address them, explain them, verify them, or produce any verdict about them.`,
+        `- Use an entry ONLY when it actually bears on today's reading; when it is not relevant, say nothing about it. Silence is the correct form — do not add a daily "this did not cause that" line, and do not re-verify yesterday's enrichment.`,
+        `- "operator_feedback" is a PERSON'S JUDGMENT, never an Observed Fact: do NOT put it in observed[]/observed_facts/knownEvidence. Weigh it like guidance and surface disagreement with evidence instead of silently overriding either side.`,
+        `- WHEN an enrichment IS relevant and an action is followed by an outcome, that outcome MUST NOT be stated as caused by the action — describe sequence, not causation.`,
+        `- These records do not modify the frozen dataset or original evidence; they are the only human-provided historical context you see.`,
+      ];
 
 // ── Prompt builder ──────────────────────────────────────────────────────
 
@@ -443,8 +467,16 @@ const computeRelativePerformanceForFile = (
  * count, business_date coverage, how many rows are visible at T). It never
  * describes a value, and it does not widen what the Agent may read:
  * "Current evidence" remains the only visible slice.
+ *
+ * P0013.4 — each line now also carries the DECLARED temporal grain and the
+ * subjects that kind actually holds. Without this the Agent cannot tell a
+ * one-row 12-day aggregate from a per-day series, and would have to guess
+ * whether a requirement is satisfiable — the guess that produced the
+ * "UV/CVR 数据缺失" gaps in the first place. The declaration comes from
+ * evidence-grain.ts; an undeclared kind is reported as `grain=unknown`
+ * rather than being assumed daily.
  */
-const formatHeldEvidence = (
+export const formatHeldEvidence = (
   kinds: readonly HeldEvidenceKind[],
   businessDate: string,
 ): string => {
@@ -459,12 +491,23 @@ const formatHeldEvidence = (
         k.visibleAtT === 0
           ? `0 visible at T=${businessDate} (not available today)`
           : `${k.visibleAtT}/${k.rows} visible at T=${businessDate}`;
-      return `- ${k.capability}/${k.data_type} — ${k.rows} rows, business_date ${coverage} — ${availability}`;
+      const decl = findEvidenceKindDeclaration(k.capability, k.data_type);
+      const grain = decl?.grain ?? 'unknown';
+      // Render the WHOLE grouped label list — never a prefix. Truncating it
+      // would hide exactly the traffic indicators the window-vs-daily rule
+      // turns on. These are the human-readable labels; matching uses the
+      // finer-grained alias list in evidence-grain.ts.
+      const subjects = decl ? decl.subjectLabels.join(' | ') : '(undeclared)';
+      return (
+        `- ${k.capability}/${k.data_type} — ${k.rows} rows, business_date ${coverage} — ${availability}\n` +
+        `    grain=${grain} | subjects=${subjects}\n` +
+        `    ${decl ? decl.note : 'grain undeclared — treat as unknown: it cannot satisfy a dated requirement.'}`
+      );
     })
     .join('\n');
 };
 
-const formatVisibleEvidence = (rows: readonly VisibleEvidence[]): string => {
+export const formatVisibleEvidence = (rows: readonly VisibleEvidence[]): string => {
   if (rows.length === 0) {
     return '(no visible evidence yet — this is the first day of the run, or no data was acquired for any prior business_date)';
   }
@@ -663,17 +706,13 @@ export const buildReplayInvestigationPrompt = (
     // ===== P0013.3 Historical Evidence Enrichment =====
     `## Operator enrichments (human-provided, append-only, business_date <= ${businessDate})`,
     formatEnrichments(enrichments),
-    ``,
-    `Enrichment rules:`,
-    `- These records are BACKGROUND CONTEXT the operator happened to record. They are dated inputs alongside the frozen evidence — operator-attributed, not system-acquired. They are NOT an agenda: you are not required to address them, explain them, verify them, or produce any verdict about them.`,
-    `- Use an entry ONLY when it actually bears on today's reading of the business (for example it changes what a structural reading means). When it is not relevant, say nothing about it. Silence is the correct form — do not add a daily "this did not cause that" line, and do not re-verify yesterday's enrichment.`,
-    `- "fact" / "action" entries are human-supplied records of what objectively happened or was done on the recorded business date; weigh them against the evidence the way you would any dated input.`,
-    `- "operator_feedback" is a PERSON'S JUDGMENT / interpretation. It is HUMAN INPUT, never an Observed Fact: do NOT put it in observed[]/observed_facts/knownEvidence as a fact; weigh it like guidance and surface disagreement with evidence instead of silently overriding either side.`,
-    `- WHEN an enrichment IS relevant and an action is followed (on a later date) by an outcome, that outcome MUST NOT be stated as caused by the action. No causal "action → outcome" claim without evidence beyond temporal order; describe sequence, not causation.`,
-    `- These records do not modify the frozen dataset or original evidence; they are the only human-provided historical context you see.`,
+    ...enrichmentRules(enrichments),
     ``,
     // ===== P0013.2 Evidence Resolution (shared Production + Replay) =====
     EVIDENCE_RESOLUTION_SECTION,
+    ``,
+    // ===== P0013.4 Question-driven investigation & Evidence Sufficiency =====
+    EVIDENCE_SUFFICIENCY_SECTION,
     ``,
     REPLAY_ORDER_RETRIEVAL_SECTION,
     ``,
@@ -695,41 +734,12 @@ export const buildReplayInvestigationPrompt = (
     ``,
     `INVARIANT: A T-1 \`status: proposed\` hypothesis is STILL \`proposed\` at T until NEW Evidence at T shifts it. A T-1 \`status: supported\` hypothesis does NOT auto-upgrade to Confirmed at T. You may write a fresh \`prior_cognition[]\` entry showing how T's new Evidence shifts the T-1 status — but this list is your standing understanding, NOT a set of questions to answer back. Do not score it item by item; carry it forward silently unless today's evidence changes it.`,
     ``,
-    `## Epistemic Layers — DO NOT COLLAPSE (Phase B)`,
-    ``,
-    `Your cognition MUST distinguish 5 layers:`,
-    `| L1 Observed Fact | direct read of current Evidence | ≥1 evidence_refs[] |`,
-    `| L2 Pattern | inductive form from multiple Observed Facts | based_on[] ≥2 obs OR pattern_type: candidate |`,
-    `| L3 Hypothesis | causal/mechanism explanation | supporting_evidence_refs[] + missing_evidence[] + falsifier |`,
-    `| L4 Confirmed | claim with explicit confirmation | confirmed_evidence_refs[] ≥1 (operator/system) |`,
-    `| L5 Judgment | decision grounded in L1-L4 | known / inferred / unknown + decision + confidence_basis |`,
-    ``,
-    `Hard rules:`,
-    `- A statement that says "近期存在放量日 + 回调日交替规律" without an \`observed[]\` list is a Pattern Candidate, NOT an Established Pattern.`,
-    `- A statement that says "8-14 是 88 大促 8-15 前夜" without operator-confirmed activity records is a Knowledge Prior, NOT a current store fact. Put it in \`hypotheses[]\` with status: proposed + falsifier.`,
-    `- A statement that says "确认为订单前置" without an operator intervention record is NOT Confirmed. It is a \`hypothesis\` with status: proposed.`,
-    `- "确认" / "已确认" / "definitely" / "confirmed" in any natural-language field is unsourced confirmation language UNLESS paired with \`confirmed_evidence_refs[]\`. The parser does NOT silently rewrite "confirmed" → "supported" anymore.`,
+    EPISTEMIC_DISCIPLINE_SECTION,
     ``,
     // ===== P0013.5 shared Knowledge obligation (Production + Replay) =====
     KNOWLEDGE_ANALYSIS_SECTION,
     ``,
-    `## Per-claim provenance (Phase C) + Threshold provenance (Phase E)`,
-    ``,
-    `Strong claims (numeric / temporal / consecutive / alternation / stable / baseline / recovery / anomaly / confirmation / reversal / causal) MUST have \`claim_evidence_refs[].evidence_refs[]\`. Empty = Evidence Gap.`,
-    `Quantitative thresholds MUST have \`thresholds[]\` with provenance: heuristic | evidence_derived | knowledge_rule | operator_rule | business_policy. Emit a threshold only when a real operator decision depends on it — do NOT invent classification gates or ladders to label the day's state, and a heuristic MUST NOT be called a "confirmation rule".`,
-    ``,
-    `## Three concepts — DO NOT CONFLATE`,
-    `| Observed | facts in the visible evidence list above | read-only | always have a `,
-    `  source row |`,
-    `| Inferred | your current understanding + judgment | synthesized from `,
-    `  observed | subject to §10/§14 — Confirmed Action is null |`,
-    `| Confirmed Action | whether the operator acted on a prior recommendation | `,
-    `  STRUCTURALLY NULL during Replay | output \`null\` |`,
-    ``,
-    `## Output language — Simplified Chinese (zh-CN)`,
-    `Business-facing natural-language fields MUST be in Simplified Chinese. The `,
-    `Investigation Contract's canonical status values (judgment/observe/`,
-    `missing_capability/ask_human) MUST stay in canonical English.`,
+    PROVENANCE_SECTION,
     ``,
     // ===== P0013.4 Cognition continuity (shared) =====
     COGNITION_CONTINUITY_SECTION,
@@ -737,51 +747,9 @@ export const buildReplayInvestigationPrompt = (
     // ===== P0013.2 Shared Analysis Contract (Production + Replay) =====
     ANALYSIS_TARGET_SECTION,
     ``,
-    `## Investigation Workflow`,
-    `1. Read the visible evidence list. What facts does it support? → populate \`observed[]\`.`,
-    `2. Read relevant Knowledge — follow the shared Knowledge section: \`knowledge/INDEX.md\` → the matching domain \`INDEX.md\` → the ONE most relevant page.`,
-    `3. Hold the prior_cognition list as your standing understanding. Continue it, revise it, or drop what no longer matters — silently. Do NOT produce a per-item verdict on it, and do NOT re-cite it as current fact.`,
-    `4. Form at most 3 hypotheses from Knowledge + Evidence. Mark each \`proposed\`. Each MUST have \`missing_evidence[]\` + \`falsifier\`.`,
-    `5. Ask what today's evidence CHANGES about that understanding (what continued / what changed / what is still unknown). Record only the gaps that actually block today's reading; a quantitative threshold belongs in \`thresholds[]\` ONLY when a real decision hinges on it — never as a way to classify the day.`,
-    `6. Use the EXISTING evidence, and RESOLVE held evidence before declaring gaps: for any order-structure question (price bands, ex-top1 AOV/GMV, top orders, SKU mix), call fabric_replay_retrieve_orders (it reads frozen rows <= T). Update hypothesis status and cite evidence_refs[]. Examine ALL FIVE business-structure dimensions; a dimension is "gap" ONLY when neither present evidence nor a retrieval can answer it — record the UNAVAILABLE resolution.`,
-    `7. Stop per the Analysis Target rule: sufficient structure evidence => business judgment (judgment); unresolved structural gap => missing_capability with evidence_gaps + acquisition_need; observe ONLY when all five dimensions were examined and the reading is normal variation.`,
-    `8. Emit the Investigation Contract JSON (shape below) WITH \`epistemic_layers\`, \`claim_evidence_refs\`, \`thresholds\`, \`prior_cognition\`, \`business_structure_coverage\`, \`observed_facts\`, \`supporting_evidence_refs\`, \`evidence_gaps\` populated.`,
-    ``,
     ANALYSIS_OUTPUT_OBLIGATIONS,
     ``,
-    `## Output shape (canonical Investigation Contract + Epistemic Layers, no markdown fences, no prose around it)`,
-    `{`,
-    `  "situationId": "${run.id}-${businessDate}",`,
-    `  "currentUnderstanding": "<简中 — 一段话 — 你对今天业务的当前理解>",`,
-    `  "knownEvidence": ["<简中>", "<简中>"],`,
-    `  "hypotheses": [{"statement": "<简中>", "status": "proposed|supported|weakened|rejected"}],`,
-    `  "unknowns": ["<简中>"],`,
-    `  "nextQuestion": "<简中>",`,
-    `  "requiredEvidence": ["<简中>"],`,
-    `  "investigationRequest": "<简中>",`,
-    `  "findings": [{"question": "<简中>", "evidenceRefs": ["<evidenceId>"], "answer": "<简中>", "impactOnHypothesis": "<简中>"}],`,
-    `  "judgment": "<简中 — 终局判断>",`,
-    `  "stopReason": "judgment|observe|missing_capability|ask_human",`,
-    `  "capabilityUsed": null,`,
-    `  "evidenceAcquired": ["<简中 — 你读到的证据的简短描述>"],`,
-    `  "recommendation": {"kind": "observe|act", "recommendation": "<简中 — 建议做什么>", "rationale": "<简中 — 为什么>", "expectedOutcome": "<简中>", "risks": "<简中>", "prerequisites": ["<简中>"], "humanNeeded": ["<简中>"]},`,
-    `  "epistemic_layers": {`,
-    `    "observed": [{"statement": "<L1 Observed Fact>", "evidence_refs": ["<ev_id>"]}],`,
-    `    "patterns": [{"statement": "<L2 Pattern>", "pattern_type": "candidate|established", "based_on": ["<ref to observed[]>"]}],`,
-    `    "hypotheses": [{"statement": "<L3 Hypothesis>", "status": "proposed|supported|weakened|rejected", "supporting_evidence_refs": ["<ev_id>"], "missing_evidence": ["<gap>"], "falsifier": "<observation that would REJECT>"}],`,
-    `    "confirmed": [{"statement": "<L4 Confirmed>", "confirmed_evidence_refs": ["<op_intv_id|knowledge_id|ev_id>"], "confirmed_by": "operator|system|historical_evidence", "confirmed_at": "<iso or business_date>"}],`,
-    `    "judgment_basis": {"known": ["<L1+L4>"], "inferred": ["<L2+L3>"], "unknown": ["<Evidence Gaps>"], "decision": "<简中>", "confidence_basis": "<简中 — what supports the confidence>"}`,
-    `  },`,
-    `  "claim_evidence_refs": [{"claim": "<strong claim>", "evidence_refs": ["<ev_id>"], "missing_evidence": ["<gap>"], "claim_type": "numeric|temporal|campaign|operation|consecutive|alternation|stable|baseline|recovery|anomaly|confirmation|reversal|causal|pattern|hypothesis|other"}],`,
-    `  "thresholds": [{"statement": "<若 X > N 则 Y>", "provenance": "heuristic|evidence_derived|knowledge_rule|operator_rule|business_policy", "basis_refs": ["<ref>"]}],`,
-    `  "prior_cognition": [{"business_date": "YYYY-MM-DD", "kind": "prior_hypothesis|prior_judgment|prior_recommendation", "content": "<T-1 statement>", "status_at_t_minus_1": "proposed|supported|weakened|rejected|unknown", "status_at_t": "proposed|supported|weakened|rejected|unknown", "new_evidence_refs": ["<ev_id>"]}],`,
-    `  "observed_facts": ["<L1 fact>"],`,
-    `  "supporting_evidence_refs": ["<ev_id>"],`,
-    `  "evidence_gaps": ["<unresolved structural fact>"],`,
-    `  "business_structure_coverage": [{"dimension": "product|orders|traffic|conversion|operations", "status": "covered|gap|not_applicable", "note": "<structural reading or why unknowable/N-A>", "evidence_refs": ["<ev_id>"], "acquisition_need": "<required when gap: exact fact/data pipeline backlog>"}],`,
-    `  "evidence_resolutions": [{"need": "<the evidence need>", "dimension": "product|orders|traffic|conversion|operations", "result": "IN_CONTEXT|RETRIEVED|UNAVAILABLE", "source": "order_replay_retrieval|in_context", "query": "parentOrdersByDay|topContributingOrders|skuLinesByDay|skuGmvContribution|perSkuDailyOrders|", "retrieved_refs": ["<order id / sku id / ev_id used>"], "note": "<when UNAVAILABLE: what was tried and why the held evidence cannot answer>"}],`,
-    `  "confirmed_action": null`,
-    `}`,
+    OUTPUT_CONTRACT_SECTION,
     ``,
     `The recommendation MUST follow from your judgment — not from a single metric. `,
     `If your judgment is "observe" (pseudo-anomaly / insufficient evidence), the `,
@@ -946,7 +914,15 @@ export const createReplayCognitionKernel = (
     await submitP;
 
     // REUSE the production contract parser.
-    const parsed = parseInvestigation(reply, `${run.id}-${businessDate}`);
+    //
+    // P0013.4 — hand the parser the run's evidence inventory so a claimed
+    // `satisfied` requirement is checked against the DECLARED grain/coverage
+    // of what the run actually holds. This is the one obligation that needs
+    // an inventory; it lives here because Replay is the path that has one.
+    const availableEvidence = toAvailableEvidence(heldEvidence, businessDate);
+    const parsed = parseInvestigation(reply, `${run.id}-${businessDate}`, {
+      availableEvidence,
+    });
     if (!parsed.ok) {
       throw new Error(
         `[P0013 replay kernel] parseInvestigation failed at business_date=${businessDate}: ${parsed.error}`,
@@ -1001,6 +977,15 @@ export const createReplayCognitionKernel = (
           Record<string, unknown>
         >,
         evidenceResolutions: (inv.evidence_resolutions ?? []) as unknown as ReadonlyArray<
+          Record<string, unknown>
+        >,
+        // P0013.4 — pass the question-driven artifacts through so the
+        // snapshot's raw_investigation_json carries the traceability the
+        // proposal requires (requirement → question), not just the gaps.
+        businessQuestions: (inv.business_questions ?? []) as unknown as ReadonlyArray<
+          Record<string, unknown>
+        >,
+        evidenceRequirements: (inv.evidence_requirements ?? []) as unknown as ReadonlyArray<
           Record<string, unknown>
         >,
         // P0013.2 — persist the canonical stop reason so observe-vs-gap

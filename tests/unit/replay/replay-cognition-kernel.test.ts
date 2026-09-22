@@ -162,7 +162,7 @@ describe('buildReplayInvestigationPrompt', () => {
     expect(prompt).toContain('"currentUnderstanding"');
     expect(prompt).toContain('"judgment"');
     expect(prompt).toContain('"stopReason"');
-    expect(prompt).toContain('"judgment|observe|missing_capability|ask_human"');
+    expect(prompt).toContain('"judgment"|"observe"|"missing_capability"|"ask_human"');
     expect(prompt).toContain('"recommendation"');
     expect(prompt).toContain('"confirmed_action": null');
   });
@@ -247,7 +247,9 @@ describe('buildReplayInvestigationPrompt — Epistemic Integrity (Phase F) Prior
       priorSnapshots: [],
       priorCognition: [],
     });
-    expect(prompt).toMatch(/## Epistemic Layers/);
+    // P0013.5: the L1-L5 layers moved to the shared EPISTEMIC_DISCIPLINE_SECTION so
+    // both paths stop maintaining their own copy. Same requirement, one source.
+    expect(prompt).toMatch(/## Epistemic discipline/);
     expect(prompt).toContain('L1 Observed Fact');
     expect(prompt).toContain('L2 Pattern');
     expect(prompt).toContain('L3 Hypothesis');
@@ -282,8 +284,10 @@ describe('buildReplayInvestigationPrompt — Epistemic Integrity (Phase F) Prior
       priorSnapshots: [],
       priorCognition: [],
     });
-    expect(prompt).toMatch(/Per-claim provenance/i);
-    expect(prompt).toMatch(/Threshold provenance/i);
+    // P0013.5: per-claim + threshold provenance are ONE shared section now.
+    expect(prompt).toMatch(/## Provenance — every strong claim carries its basis/);
+    expect(prompt).toMatch(/claim_evidence_refs\[\]\.evidence_refs\[\]/);
+    expect(prompt).toMatch(/thresholds\[\]` with a provenance/);
   });
 
   it('output JSON shape includes epistemic_layers, claim_evidence_refs, thresholds, prior_cognition', () => {

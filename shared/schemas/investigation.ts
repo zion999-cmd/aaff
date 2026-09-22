@@ -154,6 +154,133 @@ export const EvidenceResolutionSchema = z.object({
 });
 export type EvidenceResolution = z.infer<typeof EvidenceResolutionSchema>;
 
+// ─── P0013.4 Question-Driven Investigation & Evidence Sufficiency ────────
+//
+// Before P0013.4 the investigation path had `nextQuestion` (a loose string)
+// and `requiredEvidence` (a loose string list). A real clean Replay run
+// showed the consequence: the Agent listed missing fields as Evidence Gaps
+// with no stated reason why obtaining them would change anything, resolved
+// nothing, and ended 11/11 days on `observe`. The gap was not data volume —
+// it was the absence of a semantics chain from "what am I trying to decide"
+// to "is what I hold enough to decide it".
+//
+// These types are ADDITIVE. Every field is optional or defaulted, so
+// pre-P0013.4 records still parse byte-for-byte and a turn that emits no
+// Business Question is valid (see EvidenceRequirementStatusSchema below).
+
+/**
+ * P0013.4 — temporal grain of an EVIDENCE KIND (what Fabric's acquisition
+ * actually produced), and of a REQUIREMENT (what the question needs).
+ *
+ * This is the axis that makes "field exists ≠ requirement satisfied"
+ * checkable. The canonical case: a 12-day window request
+ * (`startDate=2026-09-02 & endDate=2026-09-13`) returns ONE row whose UV/CVR
+ * are RANGE AGGREGATES stamped at the range end. Those fields really exist,
+ * and they still cannot answer "what was 09-03's UV?".
+ */
+export const EvidenceTemporalGrainSchema = z.enum([
+  /** One observation per business_date; the value describes that single day. */
+  'daily',
+  /** One observation summarizing a business-time RANGE; stamped at the range END. */
+  'window_aggregate',
+  /** A snapshot valid at its stamp only (e.g. stock on hand). */
+  'point_in_time',
+  /** Not declared by Fabric. FAILS CLOSED against any dated requirement. */
+  'unknown',
+]);
+export type EvidenceTemporalGrain = z.infer<typeof EvidenceTemporalGrainSchema>;
+
+/** What grain a REQUIREMENT needs. `any` = the grain is not material to the question. */
+export const RequiredTemporalGrainSchema = z.enum(['daily', 'window_aggregate', 'any']);
+export type RequiredTemporalGrain = z.infer<typeof RequiredTemporalGrainSchema>;
+
+/**
+ * P0013.4 — a Business Question the current judgment actually needs solved.
+ *
+ * NOT a field-missing description ("UV/CVR 数据是多少？"), and NOT an
+ * obligation: a day may legitimately have no material question, in which case
+ * the Agent says so and stops with `observe`. There is deliberately no
+ * "at least one per day" rule anywhere in this contract.
+ */
+export const BusinessQuestionSchema = z.object({
+  /** The question, in business terms. */
+  question: z.string().min(1),
+  /** Which current judgment / hypothesis answering it would bear on. */
+  bears_on: z.preprocess((v) => (v == null ? '' : v), z.string()),
+  /**
+   * Why the answer would change what the operator should do. Optional here:
+   * the QUESTION may be stated before its consequence is worked out, and the
+   * decision-relevance obligation is enforced on the Requirement (where the
+   * evidence is actually asked for), not on the question.
+   */
+  decision_relevance: z.preprocess((v) => (v == null ? '' : v), z.string()),
+});
+export type BusinessQuestion = z.infer<typeof BusinessQuestionSchema>;
+
+/**
+ * Outcome of a requirement against the evidence the system actually holds.
+ *   satisfied    — the requirement is met; a claim of `satisfied` is checked
+ *                  against Fabric's own grain/coverage facts and REJECTED if
+ *                  the evidence cannot carry it.
+ *   unsatisfied  — not met yet; must enter the EXISTING P0013.2 Evidence
+ *                  Resolution (no second resolver).
+ *   unresolvable — decision-changing evidence cannot be obtained. This is a
+ *                  legal, explicit stop, not a failure.
+ */
+export const EvidenceRequirementStatusSchema = z.enum([
+  'satisfied',
+  'unsatisfied',
+  'unresolvable',
+]);
+export type EvidenceRequirementStatus = z.infer<typeof EvidenceRequirementStatusSchema>;
+
+/**
+ * P0013.4 — a structured Evidence Requirement.
+ *
+ * `question` is the traceability link: a requirement that traces to no
+ * Business Question / Hypothesis is exactly the "independent missing-field
+ * list" this proposal exists to eliminate.
+ *
+ * `decision_relevance` is the Decision-changing Evidence test: what would
+ * change if this evidence were obtained. "Data exists / field is missing /
+ * might help / would make the analysis more complete" do NOT pass it.
+ *
+ * Null tolerance follows the existing convention in this file: a model that
+ * writes an explicit `null` for a field it does not need means "empty", and
+ * coercing that to the empty default is a representation fix, not a fact
+ * fix. The two REQUIRED fields (question, decision_relevance) deliberately
+ * do not get this treatment — they are the obligations.
+ */
+const optionalText = z.preprocess((v) => (v == null ? '' : v), z.string());
+
+export const EvidenceRequirementSchema = z.object({
+  /** The Business Question (or Hypothesis) this requirement traces to. */
+  question: z.string().min(1),
+  /** The subject the evidence must be about (e.g. UV, 客单价, 活动记录). */
+  subject: z.string().min(1),
+  /** What the evidence must state, beyond the subject — the semantics asked for. */
+  required_semantics: optionalText,
+  /** The business time it must cover: `YYYY-MM-DD` or `YYYY-MM-DD..YYYY-MM-DD`. */
+  business_time: optionalText,
+  /** The grain the question needs. Defaults to `any` — grain is opt-in. */
+  temporal_grain: z.preprocess(
+    (v) => (v == null ? 'any' : v),
+    RequiredTemporalGrainSchema,
+  ),
+  /** The scope it must cover (whole shop / one SKU / one channel). */
+  scope: optionalText,
+  /** Where the evidence would have to come from to be admissible. */
+  provenance_expectation: optionalText,
+  /** What judgment/hypothesis/recommendation would change if it were obtained. */
+  decision_relevance: z.string().min(1),
+  /** The Agent's own assessment — validated against Fabric's grain facts. */
+  status: z.preprocess(
+    (v) => (v == null ? 'unsatisfied' : v),
+    EvidenceRequirementStatusSchema,
+  ),
+});
+export type EvidenceRequirement = z.infer<typeof EvidenceRequirementSchema>;
+
 /**
  * The full Investigation Contract for one situation.
  * Fabric stores this (additively in the situation's Learning Context) and the
@@ -351,6 +478,20 @@ export const InvestigationSchema = z.object({
    */
   evidence_resolutions: z
     .preprocess((v) => v ?? [], z.array(EvidenceResolutionSchema))
+    .default([]),
+  /**
+   * P0013.4 — the Business Questions today's judgment actually needs solved.
+   * MAY BE EMPTY. An empty list is the honest representation of "no material
+   * business question today"; the contract never requires one per day.
+   */
+  business_questions: z.preprocess((v) => v ?? [], z.array(BusinessQuestionSchema)).default([]),
+  /**
+   * P0013.4 — structured Evidence Requirements, each tracing to a Business
+   * Question. Fail-closed obligations (traceability, decision relevance,
+   * no fabricated sufficiency) live in analysis-obligations.ts.
+   */
+  evidence_requirements: z
+    .preprocess((v) => v ?? [], z.array(EvidenceRequirementSchema))
     .default([]),
 });
 export type Investigation = z.infer<typeof InvestigationSchema>;

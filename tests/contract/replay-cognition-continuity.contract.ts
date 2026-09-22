@@ -145,7 +145,10 @@ describe('replay kernel source invariants', () => {
 
   it('workflow no longer instructs a per-item verdict on prior cognition', () => {
     expect(src).not.toMatch(/What did T-1 already conclude\? → keep as prior/);
-    expect(src).toMatch(/silently\. Do NOT produce a per-item verdict/);
+    // P0013.5: the phrase moved out of the (removed) fixed Investigation Workflow
+    // into the shared continuity section, where the rule now lives once. The
+    // REQUIREMENT is unchanged and is still asserted here.
+    expect(COGNITION_CONTINUITY_SECTION).toMatch(/Never convert it into per-item verdicts/);
   });
 
   it('evidence, prior cognition and enrichment all feed one updated reading', () => {

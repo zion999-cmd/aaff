@@ -24,7 +24,10 @@ import {
   type ContractNormalizationResult,
   type EpistemicDriftRecord,
 } from './normalize.js';
-import { validateAnalysisObligations } from './analysis-obligations.js';
+import {
+  validateAnalysisObligations,
+  type AnalysisObligationContext,
+} from './analysis-obligations.js';
 
 export type ParseInvestigationResult =
   | { ok: true; investigation: Investigation; drift: ContractNormalizationResult['drift']; epistemicDrift?: EpistemicDriftRecord[] }
@@ -53,7 +56,11 @@ export const extractJsonObject = (text: string): string | null => {
  * fail-closed with the unmappable values so the operator can see exactly
  * which field tripped the contract.
  */
-export const parseInvestigation = (reply: string, situationId: string): ParseInvestigationResult => {
+export const parseInvestigation = (
+  reply: string,
+  situationId: string,
+  obligationContext: AnalysisObligationContext = {},
+): ParseInvestigationResult => {
   const candidate = extractJsonObject(reply);
   if (!candidate) {
     return { ok: false, error: 'No JSON Investigation Contract found in the reply.' };
@@ -84,7 +91,7 @@ export const parseInvestigation = (reply: string, situationId: string): ParseInv
     // populate the confirmed[] list".
     const epistemicDrift = validateEpistemicContract(withId as Record<string, unknown>);
     // P0013.2 — shared Analysis Contract obligations are fail-closed.
-    const obligationErrors = validateAnalysisObligations(direct.data);
+    const obligationErrors = validateAnalysisObligations(direct.data, obligationContext);
     if (obligationErrors.length > 0) {
       return {
         ok: false,
@@ -103,7 +110,7 @@ export const parseInvestigation = (reply: string, situationId: string): ParseInv
     if (normalized.success) {
       const epistemicDrift = validateEpistemicContract(norm.normalized);
       // P0013.2 — shared Analysis Contract obligations are fail-closed.
-      const obligationErrors = validateAnalysisObligations(normalized.data);
+      const obligationErrors = validateAnalysisObligations(normalized.data, obligationContext);
       if (obligationErrors.length > 0) {
         return {
           ok: false,
